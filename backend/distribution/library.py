@@ -7,7 +7,7 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from .delivery import existing_deliveries
-from .folders import MAX_FILE_BYTES, MEDIA, SOURCE_LINK, export_metadata, markdown_fields, parse_folders
+from .folders import MAX_FILE_BYTES, MEDIA, export_header, export_metadata, markdown_fields, parse_folders
 from .search import day_start
 from .store import canonicalize, compact, digest, transaction
 
@@ -78,10 +78,9 @@ def article_header(folder,bodies):
         sample=stream.read(8193)
         # A truncated URL can still look valid. Only match complete lines.
         prefix=sample[:8192].rpartition(b"\n")[0] if len(sample)>8192 else sample
-        header=prefix.decode("utf-8-sig").strip()
-        title=header.partition("\n")[0].strip("# ").strip() or folder.name
-        match=SOURCE_LINK.search(header)
-        url=match[1] if match else None
+        header=export_header(prefix.decode("utf-8-sig").strip(),folder.name)
+        title=header.title
+        url=header.url or None
         source=canonicalize(url) if url else None
         markdown_sha=None
         identity=source
@@ -96,7 +95,7 @@ def article_header(folder,bodies):
                         _,_,identity,_=markdown_fields(md,folder.name)
                     except ValueError:
                         pass
-    meta=export_metadata(header)
+    meta=export_metadata(header.metadata)
     return dict(title=title,url=url,source=source,markdown_sha=markdown_sha,identity=identity,
                 source_name=meta["source_name"],publish_time=meta["publish_time"])
 

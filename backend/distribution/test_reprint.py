@@ -745,6 +745,31 @@ class Reprint(unittest.TestCase):
         self.assertEqual(restored["state"],"pending")
         self.assertEqual(unchanged,peer)
 
+    def test_body_citation_cannot_reuse_the_cited_articles_delivery(self):
+        from .library import read_folder
+        original,missing,valid=(self.source(i) for i in (81,82,83))
+        prior=self.create([original],"cited")
+        self.prepare()
+        self.approve(prior,self.batch(prior)["reviews"])
+        cited="https://mp.weixin.qq.com/s/test-export-81"
+        actual="https://mp.weixin.qq.com/s/test-export-83"
+        body=f"这段引言需要保留。\n\n原文地址：{cited}\n\n![配图](img/0.png)"
+        (self.root/missing/"正文.md").write_text("正文中的参考资料\n====\n\n"+body,encoding="utf-8")
+        # A link label can itself be a URL. Only its actual href identifies this article.
+        (self.root/valid/"正文.md").write_text(f"# 认识 C#\n\n非原创 公号:测试号 发布时间:2026-01-01 08:00\n\n原文地址：[{cited}]({actual} \"阅读\")\n\n"+body,encoding="utf-8")
+        catalog={r["directory"]:r for r in self.client.get(BASE+"library").json["items"]}
+        self.assertIsNone(catalog[missing]["source"])
+        self.assertEqual(catalog[missing]["deliveries"],{})
+        self.assertTrue(catalog[missing]["selection_key"].startswith("file-"))
+        self.assertEqual((catalog[valid]["title"],catalog[valid]["source"]),("认识 C#",actual))
+        for directory in (missing,valid):
+            item,_=read_folder(self.root,directory)
+            self.assertEqual(item["doc"]["markdown_content"],body)
+        bid=self.create([missing,valid],"cites-another-article")
+        self.prepare()
+        unresolved,ready=self.batch(bid)["reviews"]
+        self.assertEqual((unresolved["state"],unresolved["assignments"],ready["state"]),("invalid",[],"pending"))
+
     def test_catalog_file_selection_checks_full_markdown_beyond_header(self):
         directory=self.source(53)
         md=self.root/directory/"正文.md"

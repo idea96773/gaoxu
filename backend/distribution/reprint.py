@@ -41,7 +41,7 @@ def review_snapshot(doc, destination, platforms, links):
         names="、".join(ref[:120] for ref in local[:3])
         raise ValueError(f"有 {len(missing)} 处配图无法本地读取，请核对 Markdown、HTML 与 img 文件夹"+(f"（{names}）" if names else ""))
     if not canonicalize(doc["source_url"] or ""):
-        raise ValueError("Markdown 缺少有效的公众号原文地址，请检查导出设置并补全资料")
+        raise ValueError("Markdown 头部缺少公众号原文地址，请在下载器勾选「添加原文链接」，重新导出并选取这篇文章")
     body=doc["markdown_content"]
     tokens=MARKDOWN.parse(body)
     images,files=[],{}

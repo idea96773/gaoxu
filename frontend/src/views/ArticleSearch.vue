@@ -45,7 +45,7 @@ const empty=()=>({items:[],total:0,page:1,page_size:25})
 const result=ref(empty())
 const kinds={deliver:'冻结稿模拟交付',publish:'模拟流程发布',pipeline:'模拟流程',review:'转载审核'}
 const colors={done:'success',failed:'danger',blocked:'danger',invalid:'danger',ready:'primary',pending:'warning',running:'warning'}
-const states={done:'已模拟交付',pending:'待审核',invalid:'资料异常',blocked:'排期前失败',unscheduled:'待排期'}
+const states={preparing:'准备转载资料',done:'已模拟交付',pending:'待审核',invalid:'资料异常',blocked:'排期前失败',unscheduled:'待排期'}
 const platforms=computed(()=>[...new Set([...Object.keys(props.names),...choices.value.map(x=>x.platform)])])
 const accounts=computed(()=>[...new Set(choices.value.filter(x=>!form.platform || x.platform===form.platform).map(x=>x.account))].sort())
 function syncAccount(){if(!accounts.value.includes(form.account))form.account=''}

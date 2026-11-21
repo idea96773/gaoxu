@@ -4,15 +4,15 @@ import json
 import re
 import time
 import uuid
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from urllib.parse import unquote
 
 from flask import jsonify
 from markdown_it import MarkdownIt
 
 from .delivery import schedule_in
-from .library import read_selected
-from .store import canonicalize, clean_rules, compact, digest, transaction
+from .library import read_folder, selected_directories
+from .store import canonicalize, clean_rules, compact, digest, enqueue, transaction
 
 DESTINATION = "https://mp.weixin.qq.com/s/YFkz4nZBTLm-GHtqz_5lUw"
 CHANNELS = ("zhihu", "toutiao")
@@ -94,20 +94,8 @@ def create(path,root,data):
         if row and row["digest"]!=fingerprint:
             raise ValueError("请求编号已用于不同的批次")
         return row["id"] if row else None
-    with transaction(path,False) as db:
-        old=previous(db)
-    if old:
-        return old
-    prepared=[]
-    for item in read_selected(root,dirs):
-        view=None
-        error=item.get("error","")
-        if not error:
-            try:
-                view=snapshot(item["doc"],destination)
-            except ValueError as exc:
-                error=str(exc)
-        prepared.append((item,view,error))
+    directories=selected_directories(dirs)
+    now=int(time.time())
     with transaction(path) as db:
         old=previous(db)
         if old:
@@ -116,17 +104,64 @@ def create(path,root,data):
         db.execute("INSERT INTO batches VALUES(?,?,?,?,?,?,?)",
                    (bid,key,fingerprint,int(time.time()),"active",compact(targets),compact(rules)))
         db.execute("INSERT INTO reprint_batches VALUES(?,?)",(bid,destination))
-        for line,(item,view,error) in enumerate(prepared,1):
-            identity="folder:"+item["canonical"] if item["canonical"] else None
-            rid=db.execute("INSERT INTO rows(batch,line,url,canonical,kind,note) VALUES(?,?,?,?,'reprint',?)",
-                           (bid,line,item["url"],identity,error)).lastrowid
-            payload=compact(view)
-            db.execute("INSERT INTO reprint_reviews VALUES(?,?,?,?,?)",(rid,view["title"] if view else item["label"],
-                       "pending" if view else "invalid",digest(payload),payload))
-            if view:
-                for sha,mime,blob in item["assets"].values():
-                    db.execute("INSERT OR IGNORE INTO media VALUES(?,?,?)",(sha,mime,blob))
+        for line,directory in enumerate(directories,1):
+            rid=db.execute("INSERT INTO rows(batch,line,url,kind) VALUES(?,?,?,'reprint')",
+                           (bid,line,directory)).lastrowid
+            db.execute("INSERT INTO reprint_sources VALUES(?,?,?)",(rid,str(Path(root).absolute()),directory))
+            db.execute("INSERT INTO reprint_reviews VALUES(?,?, 'preparing','','null')",
+                       (rid,PurePosixPath(directory).name or directory))
+            enqueue(db,rid,"reprint_prepare",now)
         return bid
+
+
+def prepare_one(path,ticket,now):
+    from .engine import close_attempt
+    query="""SELECT j.*,b.control,s.root,s.directory,spec.destination FROM jobs j
+        JOIN reprint_sources s ON s.row_id=j.row_id JOIN rows r ON r.id=j.row_id
+        JOIN batches b ON b.id=r.batch JOIN reprint_batches spec ON spec.batch=b.id
+        WHERE j.id=? AND j.token=? AND j.state='running' AND j.stage='reprint_prepare'"""
+    with transaction(path,False) as db:
+        source=db.execute(query,ticket).fetchone()
+    if not source:
+        return
+    transient=False
+    error=None
+    read_started=source["control"]=="active"
+    if read_started:
+        try:
+            item,_=read_folder(source["root"],source["directory"])
+            if item["error"]:
+                raise ValueError(item["error"])
+            view=snapshot(item["doc"],source["destination"])
+            payload=compact(view)
+            sha=digest(payload)
+        except OSError as exc:
+            error=str(exc)
+            transient=isinstance(exc,(TimeoutError,BlockingIOError)) or getattr(exc,"winerror",0) in (32,33)
+        except (ValueError,RecursionError,AssertionError) as exc:
+            error=str(exc) or "文章格式异常，请检查下载文件"
+    with transaction(path) as db:
+        job=db.execute(query,ticket).fetchone()
+        if not job:
+            return
+        if job["control"]!="active" or not read_started:
+            close_attempt(db,job,now,"cancelled" if job["control"]=="cancelled" else "ready")
+            return
+        rid=job["row_id"]
+        if error is not None:
+            db.execute("UPDATE rows SET note=? WHERE id=?",(error,rid))
+            if transient and job["attempts"]<3:
+                close_attempt(db,job,now,"ready",error,now+5*2**(job["attempts"]-1))
+                return
+            db.execute("UPDATE reprint_reviews SET state='invalid' WHERE row_id=?",(rid,))
+            close_attempt(db,job,now,"failed",error)
+            return
+        for media_sha,mime,blob in item["assets"].values():
+            db.execute("INSERT OR IGNORE INTO media VALUES(?,?,?)",(media_sha,mime,blob))
+        db.execute("UPDATE rows SET url=?,canonical=?,note='' WHERE id=?",(item["url"],"folder:"+item["canonical"],rid))
+        db.execute("UPDATE reprint_reviews SET title=?,state='pending',sha=?,snapshot=? WHERE row_id=?",
+                   (view["title"],sha,payload,rid))
+        close_attempt(db,job,now,"done")
 
 
 def approve_one(path,bid,rid,sha,now):
@@ -165,8 +200,10 @@ def approve_one(path,bid,rid,sha,now):
 
 
 def overview(db,bid):
-    items=db.execute("""SELECT r.id,r.line,r.note,q.title,q.state,q.sha FROM rows r
-        JOIN reprint_reviews q ON r.id=q.row_id WHERE r.batch=? ORDER BY r.line""",(bid,)).fetchall()
+    items=db.execute("""SELECT r.id,r.line,r.note,q.title,q.state,q.sha,j.id AS prepare_job,
+        j.state AS prepare_state,j.attempts AS prepare_attempts FROM rows r
+        JOIN reprint_reviews q ON r.id=q.row_id
+        LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare' WHERE r.batch=? ORDER BY r.line""",(bid,)).fetchall()
     assignments=db.execute("""SELECT a.row_id,a.platform,a.reused,j.account,j.slot,j.state,j.id,j.receipt,f.draft
         FROM reprint_assignments a JOIN rows r ON r.id=a.row_id JOIN jobs j ON j.id=a.job
         JOIN frozen_deliveries f ON j.id=f.job WHERE r.batch=? ORDER BY a.row_id,a.platform""",(bid,)).fetchall()
@@ -212,6 +249,8 @@ def register(api,path,root,body):
                 WHERE r.batch=? AND r.id=?""",(bid,rid)).fetchone()
             if not r:
                 raise KeyError("找不到转载稿")
+            if r["state"] not in ("pending","approved","duplicate"):
+                return jsonify(error="这篇文章尚无可审核的稿件"),409
             return jsonify(snapshot=json.loads(r["snapshot"]),sha=r["sha"])
 
     @api.post("/reprints/<bid>/approve")

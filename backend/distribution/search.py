@@ -44,7 +44,7 @@ records AS (
     UNION ALL
     SELECT q.row_id,NULL,NULL,'review',NULL,
            CASE WHEN a.control='cancelled' THEN 'cancelled' ELSE q.state END,NULL,NULL,NULL
-    FROM reprint_reviews q JOIN articles a ON a.row_id=q.row_id WHERE q.state IN ('pending','invalid')
+    FROM reprint_reviews q JOIN articles a ON a.row_id=q.row_id WHERE q.state IN ('preparing','pending','invalid')
 )
 SELECT a.row_id,a.batch,a.created,a.control,a.title,x.edition,x.stage,x.platform,x.account,
        x.job_id,x.state,x.slot,x.received FROM records x JOIN articles a ON a.row_id=x.row_id

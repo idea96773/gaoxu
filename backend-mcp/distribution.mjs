@@ -34,7 +34,7 @@ function tool(name,description,inputSchema,call) {
 }
 tool('library_list','只读查看配置的本地保存目录及已入库标记',{},()=>api('library'))
 tool('reprint_settings','读取管理台保存的常用转载账号、文末链接和排期规则',{},()=>api('reprint-settings'))
-tool('reprint_prepare','按目录和给定设置生成待人工审核的转载批次，request_id 用于重复提交去重',{
+tool('reprint_prepare','按选定目录创建转载批次并返回批次编号。后台逐篇读取资料，使用 batch_status 查询进度，request_id 用于去重',{
   request_id:admission.request_id,directories:z.array(z.string()).min(1).max(100),
   targets:z.array(z.object({platform:z.enum(['zhihu','toutiao']),account:target.shape.account})).min(1).max(28),
   destination:z.string().url(),rules:reprintRule

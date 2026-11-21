@@ -30,7 +30,7 @@
       <el-button link :disabled="loading || busy || saving" @click="reloadDefaults">读取常用设置</el-button>
       <small role="status">{{notice}}</small></div>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
-    <template #footer><el-button @click="visible=false">关闭</el-button><el-button type="primary" :disabled="loading || saving || !dirs.length || !targets.length" :loading="busy" @click="submit">生成待审核转载稿</el-button></template>
+    <template #footer><el-button @click="visible=false">关闭</el-button><el-button type="primary" :disabled="loading || saving || !dirs.length || !targets.length" :loading="busy" @click="submit">提交选稿到后台</el-button></template>
   </el-dialog>
 </template>
 <script setup>

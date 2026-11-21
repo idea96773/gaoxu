@@ -15,7 +15,9 @@
     <el-table :data="batch.reviews" row-key="id">
       <el-table-column width="50"><template #default="{row}"><input type="checkbox" :aria-label="'选择审核 '+row.title" :disabled="row.state!=='pending'||!active" v-model="ids" :value="row.id"></template></el-table-column>
       <el-table-column label="转载文章" min-width="190"><template #default="{row}"><b>{{row.title}}</b><p v-if="row.note">{{row.note}}</p>
-        <el-button v-if="row.state!=='invalid'" type="primary" link @click="preview(row)">预览转载稿</el-button></template></el-table-column>
+        <el-button v-if="['pending','approved','duplicate'].includes(row.state)" type="primary" link @click="preview(row)">预览转载稿</el-button>
+        <el-button v-if="row.prepare_job" link @click="$emit('job',row.prepare_job)">读取记录（{{row.prepare_attempts}} 次）</el-button>
+        <el-button v-if="row.prepare_state==='failed' && active" link type="primary" @click="$emit('retry',row.prepare_job)">重新读取这篇</el-button></template></el-table-column>
       <el-table-column label="进度" width="98"><template #default="{row}">{{row.progress==='pending'?'待审核':label(row.progress)}}</template></el-table-column>
       <el-table-column label="模拟账号、排期和回执" min-width="230"><template #default="{row}">
         <div v-for="a in row.assignments" :key="a.platform" class="assignment"><el-button link @click="$emit('job',a.id)">{{names[a.platform]}} · {{a.account}} · {{label(a.state)}} ›</el-button>
@@ -34,7 +36,7 @@ import {ref,computed} from 'vue'
 import {ElMessageBox,ElMessage} from 'element-plus'
 const props=defineProps({batch:Object,api:Function,names:Object,label:Function,date:Function})
 const clock=m=>[Math.floor(m/60),m%60].map(n=>String(n).padStart(2,'0')).join(':')
-const emit=defineEmits(['job','refresh'])
+const emit=defineEmits(['job','refresh','retry'])
 const ids=ref([]),error=ref(''),busy=ref(false),opened=ref(false),view=ref(null)
 const pending=computed(()=>props.batch.reviews.filter(r=>r.state==='pending'))
 const checked=computed(()=>pending.value.filter(r=>ids.value.includes(r.id)))

@@ -17,19 +17,22 @@ IMAGE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC
 class SimulatedFailure(Exception):
     pass
 
-def claim(path, now, lease=30):
+def claim(path, now, lease=30, *, preparation=None):
+    # Worker lanes are disjoint. A standalone tick may claim any due job.
+    lane = {None:"", True:" AND j.stage='reprint_prepare'", False:" AND j.stage!='reprint_prepare'"}[preparation]
     with transaction(path) as db:
         # A recovered lease never invalidates a completed checkpoint.
-        expired = db.execute("SELECT id FROM jobs WHERE state='running' AND lease_until<=?",(now,)).fetchall()
+        expired = db.execute("SELECT j.id FROM jobs j WHERE j.state='running' AND j.lease_until<=?"+lane,(now,)).fetchall()
         for row in expired:
             db.execute("UPDATE attempts SET ended=?,outcome='interrupted' WHERE job=? AND ended IS NULL",
                        (now,row["id"]))
             db.execute("UPDATE jobs SET state='ready',token=NULL WHERE id=?",(row["id"],))
-        job = db.execute("""SELECT j.id FROM jobs j JOIN rows r ON r.id=j.row_id
-              JOIN batches b ON b.id=r.batch WHERE j.state='ready' AND j.due<=? AND b.control='active'
-              ORDER BY j.due,j.id LIMIT 1""",(now,)).fetchone()
+        job = db.execute("""SELECT j.id,j.stage FROM jobs j JOIN rows r ON r.id=j.row_id
+              JOIN batches b ON b.id=r.batch WHERE j.state='ready' AND j.due<=? AND b.control='active'"""+lane+" ORDER BY j.due,j.id LIMIT 1",(now,)).fetchone()
         if not job:
             return None
+        if job["stage"]=="reprint_prepare":
+            lease=max(lease,300)
         token = uuid.uuid4().hex
         db.execute("UPDATE jobs SET state='running',token=?,lease_until=?,attempts=attempts+1 WHERE id=?",
                    (token,now+lease,job["id"]))
@@ -86,6 +89,11 @@ def make_variant(p, doc, analysis):
 
 def execute(path, ticket, now, fault=None, after_send=None):
     jid, token = ticket
+    with transaction(path,False) as db:
+        prep=db.execute("SELECT 1 FROM jobs WHERE id=? AND stage='reprint_prepare'",(jid,)).fetchone()
+    if prep:
+        from .reprint import prepare_one
+        return prepare_one(path,ticket,now)
     with transaction(path) as db:
         j = db.execute("""SELECT j.*,r.url,r.canonical,b.control,b.targets,b.rules FROM jobs j
            JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch
@@ -191,18 +199,18 @@ def execute(path, ticket, now, fault=None, after_send=None):
             reason = f"暂时错误：{e}"
             close_attempt(db,j,now,"ready" if budget<2 else "failed",reason,now+min(300,2**(budget+1)))
 
-def tick(path, now=None, **kwargs):
+def tick(path, now=None, *, preparation=None, **kwargs):
     now = int(time.time()) if now is None else int(now)
-    ticket = claim(path,now)
+    ticket = claim(path,now,preparation=preparation)
     if ticket:
         execute(path,ticket,now,**kwargs)
     return bool(ticket)
 
-def worker(path, concurrency=1):
+def worker(path, concurrency=1, preparation_concurrency=1):
     from threading import Event
     import logging
     stopped = Event()
-    def loop():
+    def loop(preparation):
         last_beat = 0
         while not stopped.is_set():
             try:
@@ -211,7 +219,7 @@ def worker(path, concurrency=1):
                     with transaction(path) as db:
                         db.execute("INSERT OR REPLACE INTO health VALUES('worker',?)",(now,))
                     last_beat = now
-                if not tick(path,now):
+                if not tick(path,now,preparation=preparation):
                     stopped.wait(0.4)
             except Exception:
                 logging.exception("分发工作进程异常")
@@ -225,8 +233,9 @@ def worker(path, concurrency=1):
             except Exception:
                 logging.exception("成稿队列异常")
                 stopped.wait(2)
-    with ThreadPoolExecutor(max_workers=concurrency+1) as pool:
-        threads = [pool.submit(loop) for _ in range(concurrency)]
+    with ThreadPoolExecutor(max_workers=concurrency+preparation_concurrency+1) as pool:
+        threads = [pool.submit(loop,False) for _ in range(concurrency)]
+        threads.extend(pool.submit(loop,True) for _ in range(preparation_concurrency))
         threads.append(pool.submit(draft_loop))
         try:
             for t in threads:
@@ -238,8 +247,9 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default=os.getenv("DIST_DB",str(DEFAULT_DB)))
     ap.add_argument("--concurrency",type=int,choices=range(1,9),default=1)
+    ap.add_argument("--preparation-concurrency",type=int,choices=range(1,3),default=1)
     args = ap.parse_args()
     from .runtime import instance_lock
     initialize(args.db)
     with instance_lock(str(args.db)+'.scheduler.lock'):
-        worker(args.db,args.concurrency)
+        worker(args.db,args.concurrency,args.preparation_concurrency)

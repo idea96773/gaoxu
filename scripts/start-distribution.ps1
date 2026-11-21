@@ -1,4 +1,4 @@
-﻿param([ValidateRange(1,8)][int]$Concurrency=1)
+﻿param([ValidateRange(1,8)][int]$Concurrency=1,[ValidateRange(1,2)][int]$PreparationConcurrency=1)
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 $python=Join-Path $root '.dist-venv/Scripts/python.exe'
@@ -51,7 +51,7 @@ function Start-Component([string]$Module,[string[]]$Extra) {
 $guard=[IO.File]::Open((Join-Path $state 'launcher.lock'),'OpenOrCreate','ReadWrite','None')
 try {
     $apiId=Start-Component 'distribution.api' @()
-    $workerId=Start-Component 'distribution.engine' @('--concurrency',"$Concurrency")
+    $workerId=Start-Component 'distribution.engine' @('--concurrency',"$Concurrency",'--preparation-concurrency',"$PreparationConcurrency")
 } finally {$guard.Dispose()}
 $ready=$false
 for ($i=0;$i -lt 12;$i++) {

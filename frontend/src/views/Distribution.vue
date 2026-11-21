@@ -26,13 +26,13 @@
         <div v-for="[title,num] in (tab==='deliveries' || batch.reprint) ? deliveryMetrics : [['导入行数',batch.rows_total],['有效唯一文章',batch.unique],['重复行',batch.counts.duplicate||0],['失败步骤',batch.failures.length],['模拟回执',batch.simulated+' / '+batch.expected],['真实公开',batch.public]]" :key="title">
           <small>{{title}}</small><strong>{{num}}</strong></div>
       </div>
-      <p v-if="batch.reprint" class="progress">共 {{batch.rows_total}} 篇　待审核 {{batch.counts.pending||0}}　交付中 {{batch.counts.processing||0}}　全部交付 {{batch.counts.done||0}}　重复 {{batch.counts.duplicate||0}}　资料异常 {{batch.counts.invalid||0}}　部分成功 {{batch.counts.partial||0}}　失败 {{batch.counts.failed||0}}　取消 {{batch.counts.cancelled||0}}</p>
+      <p v-if="batch.reprint" class="progress">共 {{batch.rows_total}} 篇　等待读取 {{batch.counts.preparing||0}}　读取中 {{batch.counts.reading||0}}　待审核 {{batch.counts.pending||0}}　交付中 {{batch.counts.processing||0}}　全部交付 {{batch.counts.done||0}}　重复 {{batch.counts.duplicate||0}}　资料异常 {{batch.counts.invalid||0}}　部分成功 {{batch.counts.partial||0}}　失败 {{batch.counts.failed||0}}　取消 {{batch.counts.cancelled||0}}</p>
       <p v-if="!batch.reprint && tab!=='deliveries'" class="progress">模拟流程进度　已完成 {{batch.counts.done||0}}　处理中 {{batch.counts.processing||0}}　部分成功 {{batch.counts.partial||0}}　失败 {{batch.counts.failed||0}}　取消 {{batch.counts.cancelled||0}}　无效行 {{batch.counts.invalid||0}}</p>
       <div v-if="batch.has_local" class="batchbar"><span>成稿　待生成 {{batch.editorial?.queued||0}}　生成中 {{batch.editorial?.generating||0}}　待审核 {{batch.editorial?.editing||0}}　已冻结 {{batch.editorial?.approved||0}}　失败 {{batch.editorial?.failed||0}}</span>
         <el-button :disabled="!batch.ai_ready || batch.control!=='active'" @click="generateBatch">批量生成平台成稿</el-button></div>
       <el-tabs v-model="tab">
         <el-tab-pane v-if="batch.reprint" label="转载审核与分稿" name="reprint">
-          <ReprintReview :key="batch.id" :batch="batch" :api="api" :names="names" :label="label" :date="date" @refresh="refresh" @job="openJob" />
+          <ReprintReview @retry="retry" :key="batch.id" :batch="batch" :api="api" :names="names" :label="label" :date="date" @refresh="refresh" @job="openJob" />
         </el-tab-pane>
         <el-tab-pane v-else label="文章收件箱" name="rows">
           <el-table :data="batch.rows" max-height="490" @row-click="r=>openArticle(r.id)">
@@ -164,7 +164,7 @@ function targetsForImport(){
 const libraryRoot=ref(''),libraryItems=ref([]),selectedDirs=ref([]),scanning=ref(false),scanned=ref(false)
 async function scan(){scanning.value=true;formError.value='';try{const info=await api('library');libraryRoot.value=info.root;libraryItems.value=info.items;selectedDirs.value=info.items.filter(x=>!x.known).slice(0,100).map(x=>x.directory);scanned.value=true}catch(e){formError.value=e.message}finally{scanning.value=false}}
 const formError=ref(''),submitting=ref(false),article=ref(null),articleOpen=ref(false),job=ref(null),jobOpen=ref(false),newTime=ref('')
-const labels={done:'已完成',ready:'排队中',active:'运行中',paused:'已暂停',cancelled:'已取消',processing:'处理中',partial:'部分成功',failed:'失败',invalid:'无效',duplicate:'重复',running:'执行中',interrupted:'已中断',ingest:'导入正文',normalize:'标准化',analyze:'模拟分析',adapt:'平台适配',check:'质量检查',plan:'生成排期',publish:'模拟发布',deliver:'冻结稿模拟交付'}
+const labels={preparing:'等待读取',reading:'正在读取',reprint_prepare:'读取转载资料',done:'已完成',ready:'排队中',active:'运行中',paused:'已暂停',cancelled:'已取消',processing:'处理中',partial:'部分成功',failed:'失败',invalid:'无效',duplicate:'重复',running:'执行中',interrupted:'已中断',ingest:'导入正文',normalize:'标准化',analyze:'模拟分析',adapt:'平台适配',check:'质量检查',plan:'生成排期',publish:'模拟发布',deliver:'冻结稿模拟交付'}
 const label=x=>labels[x]||x
 const date=t=>t?new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date(t*1000)):'—'
 const deliveryMetrics=computed(()=>{

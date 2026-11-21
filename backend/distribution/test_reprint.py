@@ -5,10 +5,12 @@ from datetime import datetime
 import io
 from pathlib import Path
 import tempfile
+import time
 import unittest
 import zipfile
 
 from .api import create_app
+from .engine import claim, execute, tick
 from .reprint import DESTINATION
 from .store import BEIJING
 from .test_workflow import drain, export_folder
@@ -36,6 +38,10 @@ class Reprint(unittest.TestCase):
         self.assertEqual(response.status_code, 201, response.json)
         return response.json["id"]
 
+    def prepare(self):
+        while tick(self.path,preparation=True):
+            pass
+
     def batch(self, bid):
         return self.client.get(BASE+"batches/"+bid).json
 
@@ -52,6 +58,8 @@ class Reprint(unittest.TestCase):
         md.write_text(md.read_text(encoding="utf-8")+"\n\n保留原句\n\n![再次配图](img/0.png)", encoding="utf-8")
         bid = self.create(dirs+["失效目录"])
         self.assertEqual(self.create(dirs+["失效目录"]), bid)
+        self.assertEqual(self.batch(bid)["counts"], {"preparing":4})
+        self.prepare()
         data = self.batch(bid)
         self.assertEqual(data["counts"], dict(pending=3,invalid=1))
         self.assertEqual(data["deliveries"], [])
@@ -82,6 +90,7 @@ class Reprint(unittest.TestCase):
                 self.assertNotIn("审核后外部文件变更", html)
                 self.assertTrue(zipf.read("img/0.png"))
         other = self.create([dirs[1]], "duplicate")
+        self.prepare()
         self.assertEqual(self.approve(other,self.batch(other)["reviews"])[0]["state"], "duplicate")
         dup = self.batch(other)
         self.assertEqual(dup["expected"], 0)
@@ -93,8 +102,35 @@ class Reprint(unittest.TestCase):
         self.approve(bid,[third])
         self.assertEqual(self.batch(bid)["reviews"][2]["assignments"][0]["account"], "模拟A")
 
+    def test_prepare_recovery_pause_and_independent_retry(self):
+        bid=self.create([self.source(1),"测试号/文章-2","../outside"])
+        now=int(time.time())
+        stale=claim(self.path,now,preparation=True)
+        row=self.batch(bid)["reviews"][0]
+        self.assertEqual(row["progress"],"reading")
+        self.assertEqual(self.client.get(BASE+f"reprints/{bid}/{row['id']}").status_code,409)
+        self.client.post(BASE+f"batches/{bid}/pause",json={})
+        self.client=create_app(self.path,self.root).test_client()
+        self.assertIsNone(claim(self.path,now+301,preparation=True))
+        self.client.post(BASE+f"batches/{bid}/resume",json={})
+        replacement=claim(self.path,now+302,preparation=True)
+        execute(self.path,stale,now+303)
+        self.assertEqual(self.batch(bid)["reviews"][0]["progress"],"reading")
+        execute(self.path,replacement,now+304)
+        self.prepare()
+        first,missing,invalid=self.batch(bid)["reviews"]
+        self.assertEqual([r["state"] for r in (first,missing,invalid)],["pending","invalid","invalid"])
+        self.source(2)
+        self.client.post(BASE+f"jobs/{missing['prepare_job']}/retry",json={})
+        self.prepare()
+        current=self.batch(bid)["reviews"]
+        self.assertEqual(current[0],first)
+        self.assertEqual(current[1]["state"],"pending")
+        self.assertEqual(current[2],invalid)
+
     def test_100_articles_200_independent_receipts(self):
         bid = self.create([self.source(i) for i in range(100)])
+        self.prepare()
         rows = self.batch(bid)["reviews"]
         result = self.approve(bid,rows)
         self.assertEqual(Counter(x.get("state") for x in result), {"approved":100})

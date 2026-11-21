@@ -45,31 +45,51 @@ def catalog(path,root):
     return [{"directory":rel,"title":folder.name,"known":("folder:"+ref in seen if ref else rel in imported)}
             for rel,folder,ref in discover(root)]
 
-def read_selected(root,selected):
+def selected_directories(selected):
     if not isinstance(selected,list) or not 1<=len(selected)<=100 or not all(isinstance(r,str) for r in selected):
         raise ValueError("每批最多选择 100 个文章目录")
-    folders={rel:folder for rel,folder,_ in discover(root)}
+    return list(dict.fromkeys(selected))
+
+
+def selected_folder(root, rel):
+    root=Path(root)
+    if not root.is_dir() or not safe_entry(root):
+        raise ValueError("固定保存目录不可用")
+    folder=root
+    for part in ([] if rel=="." else rel.split("/")):
+        if (not part or part.endswith((" ",".")) or Path(part).is_reserved()
+                or any(ord(ch)<32 or ch in '<>:"|?*\\' for ch in part)):
+            raise ValueError("请选择固定保存目录中的文章")
+        folder=folder/part
+        if not safe_entry(folder) or not folder.is_dir():
+            raise ValueError("目录已移动或下载未完成")
+    return folder
+
+
+def read_folder(root,rel,remaining=256*1024*1024):
+    folder=selected_folder(root,rel)
+    paths=[p for p in folder.iterdir() if safe_entry(p) and p.is_file() and p.suffix.lower() in (".md",".html")]
+    imgs=folder/"img"
+    if imgs.is_dir() and safe_entry(imgs):
+        paths.extend(p for p in imgs.iterdir() if safe_entry(p) and p.is_file() and p.suffix.lower() in MEDIA)
+    size=sum(p.stat().st_size for p in paths)
+    if size>remaining:
+        raise ValueError("导入文件超过 256 MB")
+    with ExitStack() as stack:
+        entries=[((Path(folder.name)/p.relative_to(folder)).as_posix(),stack.enter_context(p.open("rb"))) for p in paths]
+        item=parse_folders(entries)[0]
+    item.update(library_rel=rel,label=folder.name)
+    return item,size
+
+
+def read_selected(root,selected):
     items=[]
-    total=0
-    for rel in dict.fromkeys(selected):
-        if rel not in folders:
-            items.append(dict(label=rel,url=rel or "未知目录",canonical=None,assets={},error="目录已移动或下载未完成"))
-            continue
-        folder=folders[rel]
+    remaining=256*1024*1024
+    for rel in selected_directories(selected):
         try:
-            with ExitStack() as stack:
-                paths=[p for p in folder.iterdir() if safe_entry(p) and p.is_file() and p.suffix.lower() in (".md",".html")]
-                imgs=folder/"img"
-                if imgs.is_dir() and safe_entry(imgs):
-                    paths.extend(p for p in imgs.iterdir() if safe_entry(p) and p.is_file() and p.suffix.lower() in MEDIA)
-                size=sum(p.stat().st_size for p in paths)
-                if total+size>256*1024*1024:
-                    raise ValueError("本批超过 256 MB，请拆分目录")
-                total+=size
-                entries=[(p.relative_to(root).as_posix(),stack.enter_context(p.open("rb"))) for p in paths]
-                item=parse_folders(entries)[0]
+            item,size=read_folder(root,rel,remaining)
+            remaining-=size
         except (ValueError,OSError) as exc:
-            item=dict(label=rel,url=rel,canonical=None,assets={},error=str(exc))
-        item["library_rel"]=rel
+            item=dict(library_rel=rel,label=rel,url=rel,canonical=None,assets={},error=str(exc))
         items.append(item)
     return items

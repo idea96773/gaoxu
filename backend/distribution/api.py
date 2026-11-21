@@ -97,8 +97,10 @@ def batch_view(db, bid, detail=True):
                     state="processing"
                 else:
                     state="partial" if "done" in states else ("failed" if "failed" in states else "cancelled")
-            elif state=="pending" and batch["control"]=="cancelled":
+            elif state in ("pending","preparing","invalid") and batch["control"]=="cancelled":
                 state="cancelled"
+            elif state=="preparing" and review["prepare_state"]=="running":
+                state="reading"
             review["progress"]=state
             counts[state]+=1
         result.update(reprint=True,destination=spec[0],counts=counts,platforms=platforms,
@@ -150,6 +152,9 @@ def job_action(path,jid,action,data,now):
             if j["state"]!="failed":
                 raise ValueError("只能重试失败的步骤")
             db.execute("UPDATE jobs SET state='ready',due=?,failure='' WHERE id=?",(now,jid))
+            if j["stage"]=="reprint_prepare":
+                db.execute("UPDATE rows SET note='' WHERE id=?",(j["row_id"],))
+                db.execute("UPDATE reprint_reviews SET state='preparing' WHERE row_id=? AND state='invalid'",(j["row_id"],))
         elif action=="reschedule":
             if j["stage"]=="deliver":
                 return delivery.move_slot(path,db,j,data,now)

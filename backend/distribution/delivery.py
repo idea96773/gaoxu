@@ -50,6 +50,10 @@ def schedule_in(db, draft_id, data, now):
     payload = draft["frozen"]
     db.execute("INSERT INTO frozen_deliveries VALUES(?,?,?,?,?,?)",
                (job,draft_id,requested,slot,payload,digest(payload)))
+    if draft["provider"]=="reprint" and draft["platform"]=="zhihu":
+        db.execute("""INSERT INTO zhihu_draft_recipients(job,user_id,name)
+            SELECT ?,user_id,name FROM zhihu_draft_bindings WHERE alias=? AND user_id IS NOT NULL""",
+            (job,draft["account"]))
     return {"id":job, "slot":slot, "state":"ready", "created":True}
 
 

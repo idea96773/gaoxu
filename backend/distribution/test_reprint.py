@@ -103,6 +103,42 @@ class Reprint(unittest.TestCase):
         self.approve(bid,[third])
         self.assertEqual(self.batch(bid)["reviews"][2]["assignments"][0]["account"], "模拟A")
 
+    def test_zhihu_draft_recipient_follows_frozen_identity(self):
+        # All identities and heartbeats are fixtures in this test's temporary database.
+        from .zhihu_draft_worker import heartbeat
+        self.targets=[dict(platform="zhihu",account="科普")]
+        accounts_url=BASE+"zhihu-draft-accounts"
+        def bind(uid,revision,alias="科普"):
+            return self.client.post(accounts_url,json=dict(action="bind",alias=alias,revision=revision,user_id=uid))
+        def freeze(index):
+            bid=self.create([self.source(index)],f"account-{index}")
+            self.prepare()
+            self.approve(bid,self.batch(bid)["reviews"])
+            row=self.batch(bid)["reviews"][0]
+            return BASE+f"jobs/{row['assignments'][0]['id']}/platform-draft",row["sha"]
+        def queue(url,sha,uid):
+            return self.client.post(url,json=dict(action="queue",consent=True,sha=sha,user_id=uid))
+
+        early,early_sha=freeze(1)
+        heartbeat(self.path,"fixture-a","相同昵称")
+        self.assertEqual(queue(early,early_sha,"fixture-a").status_code,400)
+        self.assertEqual(bind("fixture-a",0).status_code,200)
+        self.assertEqual(bind("fixture-a",0,"其他别名").status_code,400)
+        self.assertEqual(queue(early,early_sha,"fixture-a").status_code,200)
+        frozen,sha=freeze(2)
+        self.assertEqual(self.client.get(frozen).json["recipient"]["user_id"],"fixture-a")
+        heartbeat(self.path,"fixture-b","相同昵称")
+        self.assertEqual(bind("fixture-b",0).status_code,409)
+        self.assertEqual(bind("fixture-b",1).status_code,200)
+        self.assertEqual(queue(frozen,sha,"fixture-b").status_code,400)
+        self.assertEqual(self.client.get(early).json["record"]["user_id"],"fixture-a")
+        later,later_sha=freeze(3)
+        self.assertEqual(self.client.get(later).json["recipient"]["user_id"],"fixture-b")
+        self.assertEqual(queue(later,later_sha,"fixture-b").status_code,200)
+        heartbeat(self.path,"fixture-a","改名后的昵称")
+        self.assertEqual(queue(frozen,sha,"fixture-a").status_code,200)
+        self.assertEqual(self.client.get(frozen).json["record"]["user_id"],"fixture-a")
+
     def test_platform_footer_review_and_export(self):
         short_url="https://example.invalid/read?ref=case&via=console"
         links={"zhihu":{"mode":"short","short":short_url,"verified":True},"toutiao":{"mode":"omit"}}

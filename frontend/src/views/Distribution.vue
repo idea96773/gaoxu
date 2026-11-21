@@ -4,7 +4,7 @@
       <div><h1>{{calendarView?'排期日历':searching?'跨批次查询':'文章分发'}}</h1><p v-if="!searching && !calendarView">本地导入 · 平台成稿审核 · 模拟排期与发布 · 北京时间</p></div>
       <div v-if="searching || calendarView" class="actions"><el-button v-if="searching" @click="openCalendar">排期日历</el-button><el-button @click="leaveSearch">返回批次管理</el-button></div>
       <div v-else class="actions"><el-button @click="failuresOpen=true">跨批次失败待办</el-button><el-button @click="openCalendar">排期日历</el-button><el-button @click="router.push({query:{...route.query,view:'search'}})">跨批次查询</el-button><el-button :type="online ? 'success' : 'warning'" plain @click="runtimeOpen=true">{{online ? '调度器在线' : '查看调度器状态'}}</el-button>
-        <ReprintCreate :api="api" @created="openReprint" /><el-button @click="showImport=true">导入文章</el-button></div>
+        <el-button @click="openDraftAccounts('')">知乎草稿账号</el-button><ReprintCreate :api="api" @created="openReprint" /><el-button @click="showImport=true">导入文章</el-button></div>
     </header>
     <el-alert v-if="error" :title="error" type="error" show-icon @close="error=''" />
     <ScheduleCalendar v-if="calendarView" :api="api" :names="names" :label="label" @platforms="names=$event" />
@@ -71,6 +71,9 @@
     <el-dialog v-model="failuresOpen" title="跨批次失败待办" width="min(1100px, 96vw)">
       <FailedJobs v-if="failuresOpen" :api="api" :date="date" :label="label" :version="String(retryVersion)" @job="openJob" @retried="refresh" />
     </el-dialog>
+    <el-dialog v-model="accountsOpen" title="知乎草稿账号" append-to-body width="min(650px, 95vw)">
+      <DraftAccounts v-if="accountsOpen" :api="api" :initial-alias="draftAlias" @changed="bindingVersion++" />
+    </el-dialog>
     <el-dialog v-model="runtimeOpen" title="调度器运行状态" width="min(580px, 95vw)">
       <RuntimeStatus v-if="runtimeOpen" :api="api" :date="date" />
     </el-dialog>
@@ -118,7 +121,7 @@
           <p>快照 SHA-256　<code style="overflow-wrap:anywhere">{{job.delivery.sha}}</code></p>
           <p v-if="job.delivery.received">模拟接收端核对　{{job.delivery.received.matches?'与冻结稿一致':'内容不一致'}}</p>
         </div>
-        <PlatformDraftPanel v-if="jobOpen && job.job.platform==='zhihu' && job.delivery?.snapshot.kind==='reprint'" :key="job.job.id" :job="job" :api="api" />
+        <PlatformDraftPanel v-if="jobOpen && job.job.platform==='zhihu' && job.delivery?.snapshot.kind==='reprint'" :key="job.job.id" :job="job" :api="api" :bindings-version="bindingVersion" @accounts="openDraftAccounts" />
         <div v-for="entry in job.delivery?.reschedules" :key="entry.changed+'-'+entry.after_slot" class="record">
           <small>改期于 {{date(entry.changed)}}<br>{{date(entry.before_slot)}} → {{date(entry.after_slot)}}</small>
         </div>
@@ -136,6 +139,7 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import ScheduleCalendar from './ScheduleCalendar.vue'
 import ArticleSearch from "./ArticleSearch.vue"
+import DraftAccounts from './DraftAccounts.vue'
 import PlatformDraftPanel from './PlatformDraftPanel.vue'
 import FailedJobs from "./FailedJobs.vue"
 import RuntimeStatus from "./RuntimeStatus.vue"
@@ -144,6 +148,8 @@ import ReprintReview from "./ReprintReview.vue"
 import EditorialPanel from "./EditorialPanel.vue"
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+const accountsOpen=ref(false),draftAlias=ref(''),bindingVersion=ref(0)
+function openDraftAccounts(alias){draftAlias.value=alias;accountsOpen.value=true}
 const runtimeOpen=ref(false),failuresOpen=ref(false),retryVersion=ref(0)
 const route=useRoute(),router=useRouter()
 const searching=computed(()=>route.query.view==='search')

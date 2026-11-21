@@ -128,7 +128,11 @@ async function saveDefaults(){
 }
 async function open(){
   visible.value=true;loading.value=true;error.value='';notice.value=''
-  const [library,saved]=await Promise.allSettled([props.api('library'),props.api('reprint-settings')])
+  const [library,saved,bound]=await Promise.allSettled([props.api('library'),props.api('reprint-settings'),props.api('zhihu-draft-accounts')])
+  if(bound.status==='fulfilled'){
+    const available=bound.value.items.filter(a=>a.user_id && valid(a.alias)).map(a=>a.alias)
+    aliases.zhihu=[...new Set([...aliases.zhihu,...available])]
+  }
   if(library.status==='fulfilled'){root.value=library.value.root;items.value=library.value.items}
   else{items.value=[];error.value=library.reason.message}
   if(saved.status==='fulfilled')applyDefaults(saved.value)

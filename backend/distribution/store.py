@@ -81,6 +81,11 @@ CREATE TABLE IF NOT EXISTS delivery_reschedules (
 CREATE INDEX IF NOT EXISTS delivery_reschedule_job ON delivery_reschedules(job,id);
 CREATE TABLE IF NOT EXISTS draft_bridge (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), user_id TEXT NOT NULL, name TEXT NOT NULL, seen INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS zhihu_draft_bindings (
+ alias TEXT PRIMARY KEY, user_id TEXT UNIQUE, name TEXT NOT NULL, revision INTEGER NOT NULL,
+ updated INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS zhihu_draft_recipients (
+ job INTEGER PRIMARY KEY REFERENCES frozen_deliveries(job), user_id TEXT NOT NULL, name TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS platform_drafts (
  id INTEGER PRIMARY KEY, job INTEGER NOT NULL REFERENCES frozen_deliveries(job), canonical TEXT NOT NULL,
  sha TEXT NOT NULL, user_id TEXT NOT NULL, name TEXT NOT NULL, state TEXT NOT NULL,

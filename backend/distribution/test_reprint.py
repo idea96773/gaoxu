@@ -282,7 +282,16 @@ class Reprint(unittest.TestCase):
         self.assertEqual(skipped["expected"],0)
         self.assertEqual(skipped["reviews"][0]["sha"],"")
         self.assertEqual({j["id"] for j in skipped["reviews"][0]["assignments"]},{j["id"] for j in assigned})
+        self.assertEqual(skipped["delivery_coverage"]["totals"],{"total":2,"reused":2,"ready":2})
+        self.client.post(BASE+f"batches/{original}/pause",json={})
+        drain(self.path,int(time.time()))
+        result=self.batch(partial)
+        self.assertEqual(result["counts"],{"processing":1})
+        self.assertEqual(result["delivery_coverage"]["totals"],{"created":1,"reused":1,"total":2,"paused":1,"done":1})
+        self.assertEqual(result["delivery_coverage"]["platforms"]["zhihu"]["paused"],1)
         self.client.post(BASE+f"batches/{original}/cancel",json={})
+        self.assertEqual(self.batch(partial)["counts"],{"partial":1})
+        self.assertEqual(self.batch(duplicate)["reviews"][0]["delivery_progress"],"partial")
         self.assertEqual(set(catalog_item()["deliveries"]),{"toutiao"})
 
     def test_linked_reference_images_remain_portable_and_code_examples_stay_text(self):
@@ -383,6 +392,7 @@ class Reprint(unittest.TestCase):
         self.approve(bid,self.batch(bid)["reviews"][:1])
         batch=self.batch(bid)
         shared=batch["reviews"][90]["assignments"]
+        self.assertEqual(batch["delivery_coverage"]["totals"],{"total":2,"created":2,"ready":2})
         self.assertEqual(len(shared),2)
         self.assertTrue(all(job["reused"] for job in shared))
         self.assertEqual(batch["expected"],2)

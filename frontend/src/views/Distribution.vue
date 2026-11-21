@@ -34,7 +34,7 @@
         <div v-for="[title,num] in (tab==='deliveries' || batch.reprint) ? deliveryMetrics : [['导入行数',batch.rows_total],['有效唯一文章',batch.unique],['重复行',batch.counts.duplicate||0],['失败步骤',batch.failures.length],['模拟回执',batch.simulated+' / '+batch.expected],['真实公开',batch.public]]" :key="title">
           <small>{{title}}</small><strong>{{num}}</strong></div>
       </div>
-      <p v-if="batch.reprint" class="progress">共 {{batch.rows_total}} 篇　等待读取 {{batch.counts.preparing||0}}　读取中 {{batch.counts.reading||0}}　待审核 {{batch.counts.pending||0}}　审核退回 {{batch.counts.returned||0}}　交付中 {{batch.counts.processing||0}}　全部交付 {{batch.counts.done||0}}　重复 {{batch.counts.duplicate||0}}　资料异常 {{batch.counts.invalid||0}}　部分成功 {{batch.counts.partial||0}}　失败 {{batch.counts.failed||0}}　取消 {{batch.counts.cancelled||0}}</p>
+      <p v-if="batch.reprint" class="progress">共 {{batch.rows_total}} 行　等待读取 {{batch.counts.preparing||0}}　读取中 {{batch.counts.reading||0}}　待审核 {{batch.counts.pending||0}}　审核退回 {{batch.counts.returned||0}}　交付中 {{batch.counts.processing||0}}　已审且全部交付 {{batch.counts.done||0}}　重复 {{batch.counts.duplicate||0}}　资料异常 {{batch.counts.invalid||0}}　部分成功 {{batch.counts.partial||0}}　失败 {{batch.counts.failed||0}}　取消 {{batch.counts.cancelled||0}}<span v-if="batch.counts.unconfirmed">　待核对回执 {{batch.counts.unconfirmed}}</span></p>
       <p v-if="!batch.reprint && tab!=='deliveries'" class="progress">模拟流程进度　已完成 {{batch.counts.done||0}}　处理中 {{batch.counts.processing||0}}　部分成功 {{batch.counts.partial||0}}　失败 {{batch.counts.failed||0}}　取消 {{batch.counts.cancelled||0}}　无效行 {{batch.counts.invalid||0}}</p>
       <div v-if="batch.has_local" class="batchbar"><span>成稿　待生成 {{batch.editorial?.queued||0}}　生成中 {{batch.editorial?.generating||0}}　待审核 {{batch.editorial?.editing||0}}　已冻结 {{batch.editorial?.approved||0}}　失败 {{batch.editorial?.failed||0}}</span>
         <el-button :disabled="!batch.ai_ready || batch.control!=='active'" @click="generateBatch">批量生成平台成稿</el-button></div>
@@ -54,12 +54,21 @@
             <el-table-column width="72"><template #default><el-button link type="primary">详情</el-button></template></el-table-column>
           </el-table>
         </el-tab-pane>
-        <el-tab-pane :label="'冻结稿交付 ('+(batch.deliveries?.length||0)+')'" name="deliveries">
-          <el-table :data="batch.deliveries" empty-text="审核定稿后可从文章详情加入模拟交付" @row-click="r=>openJob(r.id)">
-            <el-table-column label="成稿"><template #default="{row}">#{{row.draft_id}} · 第 {{row.revision}} 版</template></el-table-column>
+        <el-tab-pane :label="'冻结稿交付 ('+deliveryJobs.length+')'" name="deliveries">
+          <div v-if="batch.reprint" class="batchbar">
+            <label>任务来源 <select v-model="deliveryScope"><option value="">全部</option><option value="created">本批新建</option><option value="reused">跨批沿用</option></select></label>
+            <label>交付状态 <select v-model="deliveryState"><option value="">全部</option><option v-for="s in deliveryStates" :key="s" :value="s">{{label(s)}}</option></select></label>
+            <small>显示 {{visibleDeliveries.length}} 份 · 同一任务只计一次</small>
+          </div>
+          <el-table :data="visibleDeliveries" empty-text="当前没有符合条件的交付任务" @row-click="r=>openJob(r.id)">
+            <el-table-column label="成稿" min-width="185"><template #default="{row}"><b v-if="row.title">{{row.title}}<br></b>#{{row.draft_id ?? row.draft}} · 第 {{row.revision}} 版</template></el-table-column>
+            <el-table-column v-if="batch.reprint" label="任务来源" min-width="140"><template #default="{row}">
+              <span v-if="row.source_batch===batch.id">本批新建</span>
+              <el-button v-else link @click.stop="router.push({query:{batch:row.source_batch,tab:'deliveries'}})">沿用批次 {{row.source_batch.slice(0,6)}} ›</el-button>
+              · 第 {{row.source_line}} 行</template></el-table-column>
             <el-table-column label="平台 / 账号"><template #default="{row}">{{names[row.platform]}} · {{row.account}}</template></el-table-column>
             <el-table-column label="计划交付（北京时间）" min-width="155"><template #default="{row}">{{date(row.slot)}}<div v-if="row.due>row.slot">顺延至 {{date(row.due)}}</div></template></el-table-column>
-            <el-table-column label="状态"><template #default="{row}">{{label(row.state)}}</template></el-table-column>
+            <el-table-column label="状态"><template #default="{row}">{{label(row.display_state || row.state)}}</template></el-table-column>
             <el-table-column label="模拟回执" prop="receipt" min-width="185"/>
           </el-table>
         </el-tab-pane>
@@ -75,7 +84,8 @@
           <FailedJobs v-if="tab==='failed'" :key="batch.id" :api="api" :date="date" :label="label" :batch="batch.id" :version="failureVersion" @job="openJob" @retried="refresh"/>
         </el-tab-pane>
         <el-tab-pane label="平台统计" name="stats">
-          <el-table :data="stats"><el-table-column prop="platform" label="平台"/><el-table-column prop="done" label="模拟成功"/><el-table-column prop="failed" label="发布失败"/><el-table-column prop="pending" label="待执行"/><el-table-column prop="rate" label="模拟终态成功率"/></el-table>
+          <p v-if="batch.reprint">含本批新建及跨批沿用的任务。成功率按已模拟交付份数除以成功与失败份数之和计算。</p>
+          <el-table :data="stats"><el-table-column prop="platform" label="平台"/><el-table-column v-if="batch.reprint" prop="reused" label="跨批沿用"/><el-table-column prop="done" label="模拟成功"/><el-table-column prop="failed" label="交付失败"/><el-table-column prop="pending" label="待执行或执行中"/><el-table-column v-if="batch.reprint" prop="paused" label="已暂停"/><el-table-column prop="cancelled" label="已取消"/><el-table-column v-if="stats.some(s=>s.unconfirmed)" prop="unconfirmed" label="待核对回执"/><el-table-column prop="rate" label="模拟终态成功率"/></el-table>
         </el-tab-pane>
       </el-tabs>
     </template>
@@ -222,18 +232,31 @@ async function scan(){
 }
 const formError=ref(''),submitting=ref(false),article=ref(null),articleOpen=ref(false),job=ref(null),jobOpen=ref(false)
 const labels={preparing:'等待读取',reading:'正在读取',reprint_prepare:'读取转载资料',done:'已完成',ready:'排队中',active:'运行中',paused:'已暂停',cancelled:'已取消',processing:'处理中',partial:'部分成功',failed:'失败',invalid:'无效',duplicate:'重复',running:'执行中',interrupted:'已中断',ingest:'导入正文',normalize:'标准化',analyze:'模拟分析',adapt:'平台适配',check:'质量检查',plan:'生成排期',publish:'模拟发布',deliver:'冻结稿模拟交付'}
-const label=x=>labels[x]||x
+const label=x=>x==='unconfirmed'?'待核对回执':labels[x]||x
 const date=t=>t?new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date(t*1000)):'—'
 const failureVersion=computed(()=>(batch.value?.failures||[]).map(j=>j.id+"-"+j.attempts).join(","))
+const deliveryStates=['ready','paused','running','done','failed','cancelled','unconfirmed']
+const deliveryScope=ref(''),deliveryState=ref('')
+watch(bid,()=>{deliveryScope.value='';deliveryState.value=''})
+const deliveryJobs=computed(()=>batch.value?.delivery_coverage?.jobs ?? batch.value?.deliveries ?? [])
+const visibleDeliveries=computed(()=>!batch.value?.reprint?deliveryJobs.value:deliveryJobs.value.filter(job=>
+  (!deliveryState.value || job.display_state===deliveryState.value) &&
+  (!deliveryScope.value || (job.source_batch===batch.value.id?'created':'reused')===deliveryScope.value)))
 const deliveryMetrics=computed(()=>{
+  if(batch.value?.delivery_coverage){
+    const n=batch.value.delivery_coverage.totals
+    return [['已关联任务',n.total||0],['本批新建',n.created||0],['跨批沿用',n.reused||0],['已模拟交付',n.done||0],
+      ['排队、暂停或执行中',(n.ready||0)+(n.paused||0)+(n.running||0)],['交付失败',n.failed||0]]
+  }
   const tasks=batch.value?.deliveries||[]
   const count=state=>tasks.filter(t=>t.state===state).length
   return [['冻结稿任务',tasks.length],['排队中',count('ready')],['执行中',count('running')],['已模拟交付',count('done')],['交付失败',count('failed')],['已取消',count('cancelled')]]
 })
 const ordered=computed(()=>[...(batch.value?.publishes||[])].sort((a,b)=>a.slot-b.slot))
 const stats=computed(()=>[...new Set((batch.value?.targets||[]).map(t=>t.platform))].map(key=>{
-  const n=batch.value.platforms[key]||{},done=n.done||0,failed=n.failed||0
-  return {platform:names.value[key],done,failed,pending:(n.ready||0)+(n.running||0),rate:done+failed?Math.round(done*100/(done+failed))+'%':'—'}
+  const n=(batch.value.delivery_coverage?.platforms ?? batch.value.platforms)[key]||{},done=n.done||0,failed=n.failed||0
+  return {platform:names.value[key],done,failed,pending:(n.ready||0)+(n.running||0),paused:n.paused||0,
+    cancelled:n.cancelled||0,reused:n.reused||0,unconfirmed:n.unconfirmed||0,rate:done+failed?Math.round(done*100/(done+failed))+'%':'—'}
 }))
 async function api(path,data){
   const opts=data===undefined?{}:{method:'POST',headers:data instanceof FormData?{'X-Distribution-Import':'folder'}:{'Content-Type':'application/json'},body:data instanceof FormData?data:JSON.stringify(data)}

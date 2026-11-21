@@ -29,6 +29,42 @@ def outcome(row, jobs, target_count):
         return "partial"
     return "failed" if "failed" in states else "cancelled"
 
+
+def assigned_progress(assignments):
+    states={job["display_state"] for job in assignments}
+    if states=={"done"}:
+        return "done"
+    if states & {"ready","running","paused"}:
+        return "processing"
+    if "unconfirmed" in states:
+        return "unconfirmed"
+    if "done" in states:
+        return "partial"
+    return "failed" if "failed" in states else "cancelled"
+
+
+def delivery_coverage(reviews,bid,detail):
+    # Several submitted directories can refer to the same platform job.
+    jobs={}
+    totals=Counter()
+    platforms=defaultdict(Counter)
+    for review in reviews:
+        for job in review["assignments"]:
+            if job["id"] in jobs:
+                continue
+            jobs[job["id"]]=job
+            scope="created" if job["source_batch"]==bid else "reused"
+            for counter in (totals,platforms[job["platform"]]):
+                counter.update(["total",scope,job["display_state"]])
+    coverage=dict(totals=totals,platforms=platforms)
+    if detail:
+        fields=("id","platform","account","slot","due","finished","receipt","draft","revision","title",
+                "display_state","source_batch","source_line")
+        coverage["jobs"]=[{k:job[k] for k in fields} for job in
+                          sorted(jobs.values(),key=lambda job:(job["slot"],job["id"]))]
+    return coverage
+
+
 def batch_view(db, bid, detail=True):
     batch = db.execute("SELECT * FROM batches WHERE id=?",(bid,)).fetchone()
     if not batch:
@@ -85,18 +121,14 @@ def batch_view(db, bid, detail=True):
         counts=Counter()
         platforms=defaultdict(Counter)
         for review in reviews:
-            states=[a["state"] for a in review["assignments"] if not a["reused"]]
             for a in review["assignments"]:
                 if not a["reused"]:
                     platforms[a["platform"]][a["state"]]+=1
             state=review["state"]
-            if states:
-                if all(s=="done" for s in states):
-                    state="done"
-                elif any(s in ("ready","running") for s in states):
-                    state="processing"
-                else:
-                    state="partial" if "done" in states else ("failed" if "failed" in states else "cancelled")
+            if review["assignments"]:
+                review["delivery_progress"]=assigned_progress(review["assignments"])
+                if state=="approved":
+                    state=review["delivery_progress"]
             elif state in ("pending","preparing","invalid","returned") and batch["control"]=="cancelled":
                 state="cancelled"
             elif state=="preparing" and review["prepare_state"]=="running":
@@ -104,6 +136,7 @@ def batch_view(db, bid, detail=True):
             review["progress"]=state
             counts[state]+=1
         result.update(reprint=True,destination=spec[0],counts=counts,platforms=platforms,
+                      delivery_coverage=delivery_coverage(reviews,bid,detail),
                       unique=len(reviews)-counts["duplicate"]-counts["invalid"],
                       simulated=sum(c["done"] for c in platforms.values()),
                       expected=sum(sum(c.values()) for c in platforms.values()))

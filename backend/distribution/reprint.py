@@ -350,14 +350,21 @@ def overview(db,bid,platforms=()):
         JOIN reprint_reviews q ON r.id=q.row_id
         LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare' WHERE r.batch=? ORDER BY r.line""",(bid,)).fetchall()
     assignments=db.execute("""SELECT a.row_id,a.platform,a.reused,j.account,j.slot,j.due,j.state,j.id,j.receipt,f.draft,
+        j.revision,j.finished,d.title,origin.batch AS source_batch,origin.line AS source_line,owner.control AS source_control,
         coalesce(pin.name,t.name) draft_recipient,coalesce(pin.user_id,t.user_id) draft_recipient_id,
         coalesce((SELECT e.scope FROM reprint_rights e WHERE e.job=j.id ORDER BY e.id DESC LIMIT 1),'local') usage_scope
         FROM reprint_assignments a JOIN rows r ON r.id=a.row_id JOIN jobs j ON j.id=a.job
-        JOIN frozen_deliveries f ON j.id=f.job LEFT JOIN zhihu_draft_recipients pin ON pin.job=j.id
+        JOIN rows origin ON origin.id=j.row_id JOIN batches owner ON owner.id=origin.batch
+        JOIN frozen_deliveries f ON j.id=f.job JOIN drafts d ON d.id=f.draft LEFT JOIN zhihu_draft_recipients pin ON pin.job=j.id
         LEFT JOIN platform_drafts t ON t.job=j.id WHERE r.batch=? ORDER BY a.row_id,a.platform""",(bid,)).fetchall()
     by_row={}
     for a in assignments:
-        by_row.setdefault(a["row_id"],[]).append(dict(a))
+        status=a["state"]
+        if status=="done" and (not a["receipt"] or a["finished"] is None):
+            status="unconfirmed"
+        elif status=="ready" and a["source_control"]=="paused":
+            status="paused"
+        by_row.setdefault(a["row_id"],[]).append(dict(a,display_state=status))
     returns={}
     if platforms:
         for event in db.execute("""SELECT h.* FROM rows r JOIN reprint_returns h ON h.row_id=r.id

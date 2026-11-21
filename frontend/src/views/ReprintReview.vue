@@ -29,13 +29,14 @@
         <el-button v-if="active && ['pending','returned'].includes(row.state) && row.prepare_job" link :disabled="busy" @click="reread(row)">从目录重读</el-button>
         <el-button v-if="row.prepare_job" link @click="$emit('job',row.prepare_job)">读取记录（{{row.prepare_attempts}} 次）</el-button>
         <el-button v-if="row.prepare_state==='failed' && active" link type="primary" @click="$emit('retry',row.prepare_job,row.prepare_attempts)">重新读取这篇</el-button></template></el-table-column>
-      <el-table-column label="进度" width="98"><template #default="{row}">{{row.progress==='pending'?'待审核':row.progress==='returned'?'审核退回':label(row.progress)}}</template></el-table-column>
+      <el-table-column label="进度" width="116"><template #default="{row}">{{row.progress==='pending'?'待审核':row.progress==='returned'?'审核退回':label(row.progress)}}
+        <small v-if="row.state==='duplicate' && row.delivery_progress"> · 关联任务{{label(row.delivery_progress)}}</small></template></el-table-column>
       <el-table-column label="模拟账号、排期和回执" min-width="230"><template #default="{row}">
         <template v-if="row.state==='pending'">
           <small v-if="row.missing_platforms?.length">审核后排期　{{row.missing_platforms.map(p=>names[p]).join('、')}}</small>
           <div v-for="job in row.prior_jobs" :key="job.id"><el-button link @click="$emit('job',job.id)">已有任务 · {{names[job.platform]}} · {{job.account}} · {{label(job.state)}} ›</el-button></div>
         </template>
-        <div v-for="a in row.assignments" :key="a.platform" class="assignment"><el-button link @click="$emit('job',a.id)">{{names[a.platform]}} · {{a.account}} · {{label(a.state)}} ›</el-button>
+        <div v-for="a in row.assignments" :key="a.platform" class="assignment"><el-button link @click="$emit('job',a.id)">{{names[a.platform]}} · {{a.account}} · {{label(a.display_state)}} ›</el-button>
           <small>{{date(a.slot)}}　{{a.reused?'沿用原冻结稿及排期，本批跳过':''}}</small>
           <small v-if="a.due>a.slot">顺延至 {{date(a.due)}}</small>
           <small v-if="a.draft_recipient_id">知乎草稿接收账号　{{a.draft_recipient}}（{{a.draft_recipient_id}}）</small>

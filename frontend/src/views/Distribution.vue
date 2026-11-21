@@ -129,7 +129,8 @@
     </el-drawer>
     <el-dialog v-model="jobOpen" title="任务与回执" width="min(570px, 95vw)">
       <template v-if="job"><h3>{{label(job.job.stage)}} · {{names[job.job.platform]||'文章'}} {{job.job.account}}</h3>
-        <div v-if="job.delivery"><b>冻结稿 #{{job.delivery.draft_id}} · 第 {{job.job.revision}} 版</b>
+        <div v-if="job.delivery"><b>平台冻结稿 #{{job.delivery.draft_id}} · 第 {{job.job.revision}} 版</b>
+          <ReprintApproval :info="job.delivery.approval" :date="date" />
           <p>{{job.delivery.snapshot.title}}</p>
           <FrozenReprintCheck v-if="jobOpen && job.delivery.snapshot.kind==='reprint'" :key="[job.job.id,job.delivery.sha,job.job.slot].join(':')" :job="job" :api="api" />
           <details v-else><summary>查看交付正文与配图</summary>
@@ -170,6 +171,7 @@ import ReprintCreate from "./ReprintCreate.vue"
 import LibrarySettings from "./LibrarySettings.vue"
 import ReprintReview from "./ReprintReview.vue"
 import FrozenReprintCheck from "./FrozenReprintCheck.vue"
+import ReprintApproval from "./ReprintApproval.vue"
 import EditorialPanel from "./EditorialPanel.vue"
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'

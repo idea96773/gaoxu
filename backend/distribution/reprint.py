@@ -12,16 +12,11 @@ from .delivery import existing_deliveries, schedule_in
 from .editorial import checked_link
 from .library import check_library_root, read_folder, selected_header, selection_key, validate_directories
 from .markdown_media import MARKDOWN, inline_tokens, local_path
+from .reprint_approval import REVIEW_REVISION, origin, reviewed_snapshot
 from .store import canonicalize, clean_rules, compact, digest, enqueue, transaction
 
 DESTINATION = "https://mp.weixin.qq.com/s/YFkz4nZBTLm-GHtqz_5lUw"
 CHANNELS = ("zhihu", "toutiao")
-
-# Reading the source again advances j.revision. Reopening the same snapshot
-# also starts a fresh review, including on older batches without a prepare job.
-REVIEW_REVISION = """(coalesce(j.revision,1)+(SELECT count(*) FROM reprint_returns h
-    WHERE h.row_id=q.row_id AND h.resumed_as='snapshot'))"""
-
 
 def pools_for(targets):
     if not isinstance(targets,list) or not 1<=len(targets)<=28:
@@ -312,7 +307,7 @@ def approve_one(path,bid,rid,sha,now,revision=1,expected_prior=None):
             return row["state"]
         if row["state"]!="pending" or row["control"]!="active":
             raise ValueError("仅运行中批次的待审文章可通过")
-        reviewed=json.loads(row["snapshot"])
+        reviewed=reviewed_snapshot(row)
         assigned=[]
         history=existing_deliveries(db,[row["canonical"]]).get(row["canonical"],{})
         pools=pools_for(json.loads(row["targets"]))
@@ -336,12 +331,14 @@ def approve_one(path,bid,rid,sha,now,revision=1,expected_prior=None):
             position=cursor[0] if cursor else 0
             account=accounts[position%len(accounts)]
             did=db.execute("""INSERT INTO drafts(row_id,platform,account,rev,state,title,body,provider,frozen)
-                VALUES(?,?,?,1,'approved',?,?,'reprint',?)""",(rid,p,account,view["title"],view["text"],compact(view))).lastrowid
+                VALUES(?,?,?,?,'approved',?,?,'reprint',?)""",(rid,p,account,revision,view["title"],view["text"],compact(view))).lastrowid
             job=schedule_in(db,did,{},now)
             db.execute("INSERT INTO reprint_assignments VALUES(?,?,?,0)",(rid,p,job["id"]))
             db.execute("INSERT OR REPLACE INTO account_rotation VALUES(?,?)",(pool,(position+1)%len(accounts)))
             assigned.append(dict(platform=p,account=account))
         db.execute("INSERT INTO row_targets VALUES(?,?)",(rid,compact(assigned)))
+        db.execute("INSERT INTO reprint_approvals(row_id,revision,review_sha,approved_at) VALUES(?,?,?,?)",
+                   (rid,revision,row["sha"],now))
         state="approved" if assigned else "duplicate"
         db.execute("UPDATE reprint_reviews SET state=? WHERE row_id=?",(state,rid))
         return state
@@ -491,16 +488,17 @@ def register(api,path,current_root,body):
                 raise ValueError("已有平台任务，请选择平台核对对应冻结稿")
             if platform in jobs:
                 job,reused=jobs[platform]
-                frozen=db.execute("""SELECT f.snapshot,f.sha,j.account FROM frozen_deliveries f
-                    JOIN jobs j ON j.id=f.job WHERE f.job=?""",(job,)).fetchone()
+                frozen=db.execute("""SELECT f.snapshot,f.sha,j.account,j.row_id,d.rev,d.provider FROM frozen_deliveries f
+                    JOIN jobs j ON j.id=f.job JOIN drafts d ON d.id=f.draft WHERE f.job=?""",(job,)).fetchone()
                 if not frozen or digest(frozen["snapshot"])!=frozen["sha"]:
                     return jsonify(error="任务绑定的冻结稿校验失败，请核对任务记录"),409
                 return jsonify(snapshot=json.loads(frozen["snapshot"]),platform=platform,
                                edition_sha=frozen["sha"],sha=r["sha"],revision=r["revision"],
-                               job=job,account=frozen["account"],reused=reused)
+                               job=job,account=frozen["account"],reused=reused,
+                               approval=origin(db,frozen["row_id"],platform,frozen["sha"],frozen["rev"]) if frozen["provider"]=="reprint" else None)
             if not r["sha"]:
                 return jsonify(error="该条目暂无可预览的平台稿件"),409
-            reviewed=json.loads(r["snapshot"])
+            reviewed=reviewed_snapshot(r)
             if "editions" in reviewed and not platform:
                 raise ValueError("此稿使用平台专属文末链接，请选择平台预览")
             view=reviewed["editions"][platform] if "editions" in reviewed else reviewed

@@ -4,6 +4,7 @@ from datetime import datetime
 from itertools import chain
 
 from . import rights
+from .reprint_approval import origin
 
 from .scheduling import available_slot
 from .store import BEIJING, booked_slot, compact, delivery_key, digest, ledger_path, reserved_peers, transaction
@@ -119,7 +120,9 @@ def frozen_binding(db, job):
     if (bound["row_id"],bound["platform"],bound["account"],bound["rev"],bound["planned"]) != (
             job["row_id"],job["platform"],job["account"],job["revision"],job["slot"]):
         raise ValueError("任务账号、版本或排期与冻结绑定不一致")
-    return bound
+    if bound["provider"]=="reprint":
+        return dict(bound,approval=origin(db,job["row_id"],job["platform"],bound["sha"],bound["rev"]))
+    return dict(bound,approval=None)
 
 
 def deliver(path, db, job, now):
@@ -152,7 +155,8 @@ def deliver(path, db, job, now):
 
 
 def details(path, db, job):
-    bound=db.execute("SELECT * FROM frozen_deliveries WHERE job=?",(job["id"],)).fetchone()
+    bound=db.execute("""SELECT f.*,d.provider,d.rev FROM frozen_deliveries f JOIN drafts d ON d.id=f.draft
+        WHERE f.job=?""",(job["id"],)).fetchone()
     if not bound:
         return None
     with transaction(ledger_path(path),False) as remote:
@@ -165,7 +169,13 @@ def details(path, db, job):
         received = {k:delivered[k] for k in ("draft","revision","platform","account","planned","sha")}
         received.update(id=delivered["remote_id"], time=delivered["submitted"],
                         matches=all(delivered[k]==v for k,v in expected.items()))
-    return {"draft_id":bound["draft"],"sha":bound["sha"],"planned":bound["planned"],
+    approval=None
+    if bound["provider"]=="reprint":
+        try:
+            approval=origin(db,job["row_id"],job["platform"],bound["sha"],bound["rev"])
+        except ValueError as exc:
+            approval={"error":str(exc)}
+    return {"draft_id":bound["draft"],"sha":bound["sha"],"planned":bound["planned"],"approval":approval,
             "snapshot":json.loads(bound["snapshot"]),
             "received":received, "reschedules":[dict(r) for r in db.execute(
                 "SELECT before_slot,after_slot,changed FROM delivery_reschedules WHERE job=? ORDER BY id",(job["id"],))]}

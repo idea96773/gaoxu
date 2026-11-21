@@ -22,7 +22,7 @@ def source(db,job,platform=None):
     bound=frozen_binding(db,row)
     if bound["provider"]!="reprint":
         raise ValueError("请选择已审核的原文转载稿")
-    return dict(row)|dict(draft=bound["draft"],sha=bound["sha"],snapshot=bound["snapshot"])
+    return dict(row)|dict(draft=bound["draft"],sha=bound["sha"],snapshot=bound["snapshot"],approval=bound["approval"])
 
 
 class BodyImages(HTMLParser):
@@ -94,7 +94,7 @@ def inspect(db,row):
             asset=checked_image(db,ref,position)
             distinct.add(ref)
             size+=len(asset["data"])
-    return dict(job=row["id"],draft=row["draft"],revision=row["revision"],sha=row["sha"],planned=row["slot"],
+    return dict(job=row["id"],draft=row["draft"],revision=row["revision"],sha=row["sha"],planned=row["slot"],approval=row["approval"],
                 platform=row["platform"],account=row["account"],title=title,html=markup,images=parser.refs,
                 unique_images=len(distinct),media_bytes=size,source_url=source_url,link_mode=mode,
                 reader_url=reader_url,destination=link.get("destination",""))

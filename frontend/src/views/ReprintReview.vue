@@ -45,6 +45,8 @@
     </el-table>
     <el-drawer v-model="opened" append-to-body :title="(names[previewPlatform] || '转载稿')+'审核预览'" size="min(820px, 96vw)">
       <template v-if="view"><p v-if="previewTask">{{previewTask.reused?'沿用冻结稿':'已冻结'}} · 任务 #{{previewTask.job}} · {{previewTask.account}}</p>
+        <ReprintApproval v-if="previewTask" :info="previewTask.approval" :date="date" />
+        <p v-else>本批送审稿 · 第 {{ previewRevision }} 版</p>
         <p>{{view.images.length}} 处配图 · {{view.link.mode==='omit'?'不追加延伸阅读':'读者链接　'+(view.link.short || view.link.destination)}}</p>
         <p v-if="view.link.mode==='short'">目标公众号文章　{{view.link.destination}}</p>
         <ReprintFrame v-if="view.html" title="审核版转载正文" :html="view.html" />
@@ -55,6 +57,7 @@
 <script setup>
 import {ref,computed,watch} from 'vue'
 import ReprintFrame from './ReprintFrame.vue'
+import ReprintApproval from './ReprintApproval.vue'
 import {ElMessageBox,ElMessage} from 'element-plus'
 const props=defineProps({batch:Object,api:Function,names:Object,label:Function,date:Function})
 const clock=m=>[Math.floor(m/60),m%60].map(n=>String(n).padStart(2,'0')).join(':')
@@ -70,7 +73,7 @@ const pool=computed(()=>Object.entries(props.names).flatMap(([p,label])=>{
   return accounts.length?[label+' · '+accounts.join('、')]:[]
 }).join('　/　'))
 function selectAll(e){ids.value=e.target.checked?pending.value.map(reviewKey):[]}
-const previewKey=ref(''),previewPlatform=ref(''),previewTask=ref(null)
+const previewKey=ref(''),previewPlatform=ref(''),previewTask=ref(null),previewRevision=ref(0)
 const previewPlatforms=computed(()=>[...new Set(props.batch.targets.map(t=>t.platform))])
 const rowPlatforms=row=>['pending','returned'].includes(row.state)?previewPlatforms.value:row.assignments.map(a=>a.platform)
 const boundJob=(row,p)=>(row.state==='pending'?row.prior_jobs:row.assignments)?.find(job=>job.platform===p)?.id ?? null
@@ -129,7 +132,7 @@ async function preview(r,platform){
       emit('refresh');throw Error('稿件或沿用任务已变化，请在刷新后重新核对')
     }
     previewKey.value=key;previewPlatform.value=platform;previewTask.value=result.job?result:null
-    view.value=result.snapshot;opened.value=true
+    previewRevision.value=result.revision;view.value=result.snapshot;opened.value=true
   }catch(e){if(seq===previewRequest)error.value=e.message}
 }
 async function approve(){

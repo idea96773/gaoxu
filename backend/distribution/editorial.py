@@ -7,6 +7,7 @@ import os
 import re
 import time
 import zipfile
+from .reprint_approval import origin
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -292,6 +293,7 @@ def register(api, path, read_body):
                     bound=db.execute("SELECT job FROM frozen_deliveries WHERE draft=?",(did,)).fetchone()
                     grant=rights.current(db,bound["job"] if bound else None)
                     sha=digest(d["frozen"])
+                    metadata["approval"]=origin(db,d["row_id"],d["platform"],sha,d["rev"])
                     allowed=rights.permits(grant,sha,grant["user_id"])
                     metadata["usage_rights"]=dict(scope="zhihu_draft" if allowed else "local",sha=sha,
                                                   user_id=grant["user_id"] if allowed else "",confirmed=grant["confirmed"])

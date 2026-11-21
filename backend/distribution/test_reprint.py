@@ -342,11 +342,13 @@ class Reprint(unittest.TestCase):
         original=self.batch(first)["reviews"][0]["assignments"][0]["id"]
         before=self.client.get(url).json
         self.assertEqual((before["job"],before["account"],before["reused"]),(original,"甲",True))
+        self.assertEqual(before["approval"]["batch"],first)
         self.assertEqual(before["snapshot"]["link"]["destination"],DESTINATION)
         self.assertEqual(confirm([item(row,{"zhihu":original})])[0]["state"],"approved")
         self.assertEqual(self.client.get(url).json,before)
         toutiao=self.client.get(url.replace("=zhihu","=toutiao")).json
         self.assertFalse(toutiao["reused"])
+        self.assertEqual((toutiao["approval"]["batch"],toutiao["approval"]["review_sha"]),(second,row["sha"]))
         self.assertEqual(toutiao["account"],"乙")
         self.assertEqual(toutiao["edition_sha"],self.client.get(BASE+"jobs/"+str(toutiao["job"])).json["delivery"]["sha"])
 
@@ -641,6 +643,15 @@ class Reprint(unittest.TestCase):
         self.assertEqual(self.client.get(BASE+"batches?summary=1").json["overview"]["returned_reprint"],0)
         self.assertEqual(self.approve(bid,[reopened])[0]["state"],"approved")
         self.assertEqual(len(self.batch(bid)["deliveries"]),4)
+        for assigned in self.batch(bid)["reviews"][0]["assignments"]:
+            job=self.client.get(BASE+"jobs/"+str(assigned["id"])).json
+            self.assertEqual(job["job"]["revision"],reopened["revision"])
+            approval=job["delivery"]["approval"]
+            self.assertEqual((approval["revision"],approval["review_sha"],approval["edition_sha"]),
+                             (reopened["revision"],reopened["sha"],job["delivery"]["sha"]))
+            self.assertIsInstance(approval["approved_at"],int)
+            with zipfile.ZipFile(io.BytesIO(self.client.get(BASE+f"editorial/{assigned['draft']}/export").data)) as archive:
+                self.assertEqual(json.loads(archive.read("metadata.json"))["approval"],approval)
 
     def test_reread_returned_source_keeps_reason_and_advances_revision(self):
         directory=self.source(63)

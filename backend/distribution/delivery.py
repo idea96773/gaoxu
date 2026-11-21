@@ -6,11 +6,7 @@ from itertools import chain
 from . import rights
 
 from .scheduling import available_slot
-from .store import BEIJING, EXECUTION_SLOT, booked_slot, compact, digest, ledger_path, transaction
-
-
-def delivery_key(job):
-    return digest(compact(["frozen-dry-run", job["canonical"], job["platform"], job["account"]]))
+from .store import BEIJING, booked_slot, compact, delivery_key, digest, ledger_path, reserved_peers, transaction
 
 
 def existing_deliveries(db, identities):
@@ -146,7 +142,7 @@ def deliver(path, db, job, now):
         if existing:
             return existing["remote_id"], existing["submitted"]
         stamp=max(job["slot"],job["due"],now)
-        confirmed=remote.execute("""SELECT row_id,draft,submitted mark,account FROM delivered_drafts
+        confirmed=remote.execute("""SELECT row_id,submitted mark,account FROM delivered_drafts
             WHERE platform=? AND submitted>=?""",(job["platform"],stamp-86400)).fetchall()
         ids=[r["row_id"] for r in confirmed]
         rule_rows=db.execute("""SELECT r.id,b.rules FROM rows r JOIN batches b ON b.id=r.batch
@@ -155,15 +151,8 @@ def deliver(path, db, job, now):
         if any(rid not in prior_rules for rid in ids):
             raise ValueError("模拟回执关联的批次缺失，请核对数据库与备份")
         accepted=(dict(r)|{"rules":prior_rules[r["row_id"]]} for r in confirmed)
-        # Preserve future reservations when missed slots are redistributed after downtime.
-        # At the exact same second, protect an on-time peer ahead of late or later-numbered jobs.
-        pending=db.execute(f"""SELECT {EXECUTION_SLOT} mark,j.account,b.rules,f.draft FROM jobs j
-            JOIN frozen_deliveries f ON f.job=j.id JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch
-            WHERE j.stage='deliver' AND j.platform=? AND j.id!=? AND j.state IN ('ready','running')
-            AND ({EXECUTION_SLOT}>? OR ({EXECUTION_SLOT}=? AND (?<? OR j.id<?)))""",
-            (job["platform"],job["id"],stamp,stamp,job["due"],stamp,job["id"]))
-        accepted_ids={r["draft"] for r in confirmed}
-        reservations=(r for r in pending if r["draft"] not in accepted_ids)
+        accepted_rows={(r["row_id"],r["account"]) for r in confirmed}
+        reservations=(r for r in reserved_peers(db,job,stamp) if (r["row_id"],r["account"]) not in accepted_rows)
         due=available_slot(stamp,job["platform"],job["account"],json.loads(job["rules"]),chain(accepted,reservations))
         if due>now:
             return None,due

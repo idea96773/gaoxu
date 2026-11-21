@@ -65,7 +65,7 @@
         <el-tab-pane v-if="!batch.reprint" label="模拟流程排期" name="tasks">
           <el-table :data="ordered" max-height="490" @row-click="r=>openJob(r.id)">
             <el-table-column prop="row_id" label="文章 ID" width="90"/><el-table-column label="平台 / 账号"><template #default="{row}">{{names[row.platform]}} · {{row.account}}</template></el-table-column>
-            <el-table-column label="计划时间" min-width="160"><template #default="{row}">{{date(row.slot)}}</template></el-table-column>
+            <el-table-column label="计划时间" min-width="160"><template #default="{row}">{{date(row.slot)}}<div v-if="row.due>row.slot">顺延至 {{date(row.due)}}</div></template></el-table-column>
             <el-table-column label="状态"><template #default="{row}">{{label(row.state)}}</template></el-table-column>
             <el-table-column label="模拟回执" min-width="170"><template #default="{row}">{{row.receipt||'—'}}</template></el-table-column>
           </el-table>

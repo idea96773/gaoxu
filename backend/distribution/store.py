@@ -8,6 +8,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime
+from itertools import chain
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 
@@ -80,6 +81,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (
  id INTEGER PRIMARY KEY, tool TEXT NOT NULL, started INTEGER NOT NULL, finished INTEGER,
  status_code INTEGER, subject TEXT NOT NULL, applied INTEGER, requested INTEGER);
 CREATE INDEX IF NOT EXISTS calendar ON jobs(stage,platform,slot);
+CREATE INDEX IF NOT EXISTS unsettled_sends ON jobs(stage,platform)
+ WHERE attempts>0 AND state IN ('ready','running','failed');
 CREATE TABLE IF NOT EXISTS attempts (
  id INTEGER PRIMARY KEY, job INTEGER NOT NULL REFERENCES jobs(id), seq INTEGER NOT NULL,
  started INTEGER NOT NULL, ended INTEGER, outcome TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '',
@@ -296,15 +299,59 @@ def import_batch(path, data, now=None, folders=None):
 EXECUTION_SLOT = "max(j.slot,j.due)"
 
 
-def booked_slot(db, stage, platform, account, now, rules, exclude=-1, actual_only=False):
-    predicate = "j.state='done'" if actual_only else "j.state!='cancelled'"
-    mark = "j.finished" if actual_only else f"coalesce(j.finished,{EXECUTION_SLOT})"
-    reservations = db.execute(f"""SELECT {mark} mark,j.account,b.rules FROM jobs j
+def reserved_peers(db, job, stamp):
+    """Protect later bookings and break ties in favor of an on-time, earlier job."""
+    return db.execute(f"""SELECT {EXECUTION_SLOT} mark,j.id,j.row_id,j.account,b.rules FROM jobs j
+        JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch
+        WHERE j.stage=? AND j.platform=? AND j.id!=? AND j.state IN ('ready','running')
+        AND ({EXECUTION_SLOT}>? OR ({EXECUTION_SLOT}=? AND (?<? OR j.id<?)))""",
+        (job["stage"],job["platform"],job["id"],stamp,stamp,job["due"],stamp,job["id"]))
+
+
+def operation_key(job):
+    return digest(compact(["dry-run",job["canonical"],job["platform"],job["account"]]))
+
+
+def delivery_key(job):
+    return digest(compact(["frozen-dry-run",job["canonical"],job["platform"],job["account"]]))
+
+
+def unrecorded_receipts(db, stage, platform, exclude):
+    """Find accepted sends that the worker has not yet committed to the main database."""
+    uncertain = db.execute("""SELECT j.id,j.platform,j.account,r.canonical,b.rules FROM jobs j
+        JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch
+        WHERE j.stage=? AND j.platform=? AND j.id!=? AND j.attempts>0
+        AND j.state IN ('ready','running','failed')""", (stage,platform,exclude))
+    if stage == "deliver":
+        key_for = delivery_key
+        table = "delivered_drafts"
+    else:
+        key_for = operation_key
+        table = "receipts"
+    candidates = {key_for(row):row for row in uncertain}
+    if not candidates:
+        return {}
+    path = db.execute("PRAGMA database_list").fetchone()["file"]
+    accepted = {}
+    with transaction(ledger_path(path),False) as remote:
+        query = f"SELECT key,submitted FROM {table} WHERE key IN (SELECT value FROM json_each(?))"
+        for key,submitted in remote.execute(query, (compact(list(candidates)),)):
+            row = candidates[key]
+            accepted[row["id"]] = dict(mark=submitted,account=row["account"],rules=row["rules"])
+    return accepted
+
+
+def booked_slot(db, stage, platform, account, now, rules, exclude=-1):
+    mark = f"coalesce(j.finished,{EXECUTION_SLOT})"
+    accepted = unrecorded_receipts(db,stage,platform,exclude)
+    reservations = db.execute(f"""SELECT {mark} mark,j.id,j.account,b.rules FROM jobs j
         JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch WHERE j.stage=?
-        AND j.platform=? AND j.id!=? AND {predicate} AND {mark}>=?""",(stage,platform,exclude,now-86400))
-    return available_slot(now,platform,account,rules,reservations,
+        AND j.platform=? AND j.id!=? AND j.state!='cancelled' AND {mark}>=?""",(stage,platform,exclude,now-86400))
+    bookings = chain((r for r in accepted.values() if r["mark"]>=now-86400),
+                     (r for r in reservations if r["id"] not in accepted))
+    return available_slot(now,platform,account,rules,bookings,
                           append=stage=="publish" and not rules.get("overrides"))
 
 
-def next_slot(db, platform, account, now, rules, exclude=-1, actual_only=False):
-    return booked_slot(db,"publish",platform,account,now,rules,exclude,actual_only)
+def next_slot(db, platform, account, now, rules, exclude=-1):
+    return booked_slot(db,"publish",platform,account,now,rules,exclude)

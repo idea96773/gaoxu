@@ -7,10 +7,12 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from itertools import chain
 
 from .delivery import deliver, receipt
+from .scheduling import available_slot
 from .store import (BEIJING, DEFAULT_DB, PLATFORMS, compact, digest, enqueue, initialize,
-                    ledger_path, next_slot, transaction)
+                    ledger_path, next_slot, operation_key, reserved_peers, transaction, unrecorded_receipts)
 
 STAGES = ("ingest","normalize","analyze","adapt","check","plan","publish")
 IMAGE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a0pQAAAAASUVORK5CYII="
@@ -56,8 +58,20 @@ def lookup_receipt(path, key):
     with transaction(ledger_path(path),False) as ledger:
         return ledger.execute("SELECT * FROM receipts WHERE key=?",(key,)).fetchone()
 
-def operation_key(j):
-    return digest(compact(["dry-run",j["canonical"],j["platform"],j["account"]]))
+def publish_time(db, job, now, rules):
+    stamp = max(now, job["slot"], job["due"])
+    # Every supported gap is at most one day, which also covers the current Beijing day.
+    since = stamp - 86400
+    platform = job["platform"]
+    settled = db.execute("""SELECT j.finished mark,j.account,b.rules FROM jobs j
+        JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch
+        WHERE j.stage='publish' AND j.platform=? AND j.state='done' AND j.finished>=?""", (platform,since))
+    # A worker can stop between receipt commit and main database commit. Its batch
+    # can also be paused before the expired lease is reclaimed by a worker.
+    accepted = unrecorded_receipts(db,"publish",platform,job["id"])
+    recent = (r for r in accepted.values() if r["mark"] >= since)
+    reservations = (r for r in reserved_peers(db,job,stamp) if r["id"] not in accepted)
+    return available_slot(stamp, platform, job["account"], rules, chain(settled,recent,reservations))
 
 def sample_document(j, now):
     label = digest(j["canonical"])[:8]
@@ -188,9 +202,8 @@ def execute(path, ticket, now, fault=None, after_send=None):
                 close_attempt(db,j,now,"done",received_at=stamp)
                 return
             elif st == "publish":
-                slot = next_slot(db,p,acct,now,rules,jid,actual_only=True)
+                slot = publish_time(db,j,now,rules)
                 if slot>now:
-                    db.execute("UPDATE jobs SET slot=? WHERE id=?",(slot,jid))
                     close_attempt(db,j,now,"ready","恢复后顺延至合法时隙",slot)
                     return
                 accepted = simulated_receipt(path,operation_key(j),now)

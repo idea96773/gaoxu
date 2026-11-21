@@ -12,8 +12,8 @@ from waitress import serve
 
 from . import delivery, reprint, search, platform_draft
 from .scheduling import effective_limits
-from .engine import close_attempt, lookup_receipt, operation_key
-from .store import DEFAULT_DB, PLATFORMS, import_batch, initialize, next_slot, transaction
+from .engine import close_attempt, lookup_receipt
+from .store import DEFAULT_DB, PLATFORMS, import_batch, initialize, next_slot, operation_key, transaction
 from .library import DEFAULT_LIBRARY, catalog, catalog_page, read_selected
 
 def outcome(row, jobs, target_count):
@@ -205,9 +205,15 @@ def job_action(path,jid,action,data,now):
                 return delivery.move_slot(path,db,j,data,now)
             if j["stage"]!="publish" or j["state"]!="ready":
                 raise ValueError("只能改期尚未领取的发布任务")
+            if j["attempts"] and lookup_receipt(path,operation_key(j)):
+                raise ValueError("模拟接收端已确认这份稿件，请刷新任务查看回执")
             stamp=data.get("time")
             if type(stamp) is not int or not now<=stamp<=now+366*86400:
                 raise ValueError("新时间应在未来一年内")
+            expected={"expected_slot":j["slot"], "expected_execution":max(j["slot"],j["due"])}
+            if any(key in data and (type(data[key]) is not int or data[key]!=value)
+                   for key,value in expected.items()):
+                raise ValueError("排期或顺延时间已变化，请刷新任务后改期")
             slot=next_slot(db,j["platform"],j["account"],stamp,json.loads(j["rules"]),jid)
             db.execute("UPDATE jobs SET slot=?,due=? WHERE id=?",(slot,slot,jid))
         else:

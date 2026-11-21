@@ -94,10 +94,17 @@ class FrozenDelivery(unittest.TestCase):
 
     def test_crash_before_and_after_acceptance(self):
         did,frozen=self.freeze(self.targets[0])
+        peer,_=self.freeze(self.targets[1])
         jid=self.schedule(did,self.slot)["id"]
         self.crash(self.slot,before_send=True)
         self.crash(self.slot+31)
         self.assertEqual(self.detail(jid)["job"]["state"],"running")
+        # The receiver accepted the first account 31 seconds late. Use that
+        # receipt when evaluating a reservation during the unexpired lease.
+        conflict=self.client.post(BASE+f"editorial/{peer}/schedule",json={"time":self.slot+32})
+        self.assertEqual(conflict.status_code,400)
+        self.assertIn(datetime.fromtimestamp(self.slot+36,BEIJING).strftime("%Y-%m-%d %H:%M:%S"),
+                      conflict.json["error"])
         self.assertEqual(self.schedule(did,self.slot)["id"],jid)
         code="from distribution.engine import tick; import sys; assert tick(sys.argv[1],int(sys.argv[2]))"
         subprocess.run([sys.executable,"-c",code,str(self.path),str(self.slot+62)],

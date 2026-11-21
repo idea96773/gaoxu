@@ -119,6 +119,47 @@ class Workflow(unittest.TestCase):
         run=subprocess.run([sys.executable,"-c",snippet,str(self.path),str(now)],cwd=Path(__file__).resolve().parents[1])
         self.assertEqual(run.returncode,37)
         drain(self.path,now+31);b=self.check(bid,1);self.assertEqual(b["publishes"][0]["attempts"],2)
+
+    def test_paused_unreconciled_receipt_protects_other_batches_after_downtime(self):
+        from .store import clean_rules, import_batch, next_slot
+
+        def prepare(account, when):
+            data = options(1, key=account, prefix=account, targets=[dict(platform="zhihu",account=account)])
+            data["rules"]["platform_cap"] = 1
+            bid = import_batch(self.path,data,when)
+            while not self.view(bid)["publishes"]:
+                self.assertTrue(tick(self.path,when))
+            return bid
+
+        then = T-2*86400
+        first = prepare("first",then)
+        control_batch(self.path,first,"pause",then)
+        second = prepare("second",then+1)
+        original = self.view(second)["publishes"][0]["slot"]
+        self.assertLess(original,T)
+        control_batch(self.path,first,"resume",T)
+        def stop_after_receipt():
+            raise RuntimeError("worker stopped")
+        with self.assertRaisesRegex(RuntimeError,"worker stopped"):
+            execute(self.path,claim(self.path,T),T,after_send=stop_after_receipt)
+        control_batch(self.path,first,"pause",T)
+        # T is 08:00 Beijing time. The previous batch's one-per-day platform
+        # limit also applies to a new account with more permissive settings.
+        tomorrow = T+16*3600
+        with transaction(self.path,False) as db:
+            self.assertEqual(next_slot(db,"zhihu","third",T+1,clean_rules({})),tomorrow)
+        self.assertTrue(tick(self.path,T+1))
+        waiting = self.view(second)["publishes"][0]
+        self.assertEqual((waiting["slot"],waiting["due"],waiting["state"]), (original,tomorrow,"ready"))
+        with transaction(ledger_path(self.path),False) as remote:
+            self.assertEqual(remote.execute("SELECT count(*) FROM receipts").fetchone()[0],1)
+        control_batch(self.path,first,"resume",tomorrow)
+        drain(self.path,tomorrow)
+        self.assertEqual(self.view(first)["publishes"][0]["finished"],T)
+        self.assertEqual(self.view(second)["publishes"][0]["finished"],tomorrow)
+        with transaction(ledger_path(self.path),False) as remote:
+            self.assertEqual(remote.execute("SELECT count(*) FROM receipts").fetchone()[0],2)
+
     def test_overlapping_imports(self):
         from .store import import_batch
         x=options(1);y=options(1,key="two");y["urls"][0]+="?scene=2"

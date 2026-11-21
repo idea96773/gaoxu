@@ -8,7 +8,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
-from .delivery import deliver
+from .delivery import deliver, receipt
 from .store import (BEIJING, DEFAULT_DB, PLATFORMS, compact, digest, enqueue, initialize,
                     ledger_path, next_slot, transaction)
 
@@ -93,8 +93,10 @@ def execute(path, ticket, now, fault=None, after_send=None):
         prep=db.execute("SELECT 1 FROM jobs WHERE id=? AND stage='reprint_prepare'",(jid,)).fetchone()
     if prep:
         from .reprint import prepare_one
-        return prepare_one(path,ticket,now)
+        return prepare_one(path,ticket,int(time.time()) if now is None else now)
     with transaction(path) as db:
+        if now is None:
+            now=int(time.time())
         j = db.execute("""SELECT j.*,r.url,r.canonical,b.control,b.targets,b.rules FROM jobs j
            JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch
            WHERE j.id=? AND j.token=? AND j.state='running'""",(jid,token)).fetchone()
@@ -102,8 +104,12 @@ def execute(path, ticket, now, fault=None, after_send=None):
             return
         st, rid, p, acct = j["stage"], j["row_id"], j["platform"], j["account"]
         # Look up a previously accepted send before gate checks or retries.
-        if st == "publish":
-            prior = lookup_receipt(path,operation_key(j))
+        if st == "publish" or (st=="deliver" and j["attempts"]>1):
+            try:
+                prior = lookup_receipt(path,operation_key(j)) if st=="publish" else receipt(path,db,j)
+            except ValueError as exc:
+                close_attempt(db,j,now,"failed",str(exc))
+                return
             if prior:
                 db.execute("UPDATE jobs SET receipt=? WHERE id=?",(prior["remote_id"],jid))
                 close_attempt(db,j,now,"done",received_at=prior["submitted"])
@@ -173,7 +179,8 @@ def execute(path, ticket, now, fault=None, after_send=None):
                 except ValueError as exc:
                     raise SimulatedFailure(str(exc)) from exc
                 if remote_id is None:
-                    close_attempt(db,j,now,"ready","到点后按实际交付频率顺延",stamp)
+                    when=datetime.fromtimestamp(stamp,BEIJING).strftime("%Y-%m-%d %H:%M:%S")
+                    close_attempt(db,j,now,"ready","按交付额度、时段和已有排期顺延至北京时间 "+when,stamp)
                     return
                 if after_send:
                     after_send()
@@ -200,10 +207,10 @@ def execute(path, ticket, now, fault=None, after_send=None):
             close_attempt(db,j,now,"ready" if budget<2 else "failed",reason,now+min(300,2**(budget+1)))
 
 def tick(path, now=None, *, preparation=None, **kwargs):
-    now = int(time.time()) if now is None else int(now)
-    ticket = claim(path,now,preparation=preparation)
+    claimed_at = int(time.time()) if now is None else int(now)
+    ticket = claim(path,claimed_at,preparation=preparation)
     if ticket:
-        execute(path,ticket,now,**kwargs)
+        execute(path,ticket,None if now is None else claimed_at,**kwargs)
     return bool(ticket)
 
 def worker(path, concurrency=1, preparation_concurrency=1):
@@ -219,7 +226,7 @@ def worker(path, concurrency=1, preparation_concurrency=1):
                     with transaction(path) as db:
                         db.execute("INSERT OR REPLACE INTO health VALUES('worker',?)",(now,))
                     last_beat = now
-                if not tick(path,now,preparation=preparation):
+                if not tick(path,preparation=preparation):
                     stopped.wait(0.4)
             except Exception:
                 logging.exception("分发工作进程异常")

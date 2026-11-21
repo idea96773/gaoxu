@@ -31,6 +31,7 @@ def health(path,details=False):
                 count(CASE WHEN j.state='ready' AND j.due<=? THEN 1 END) due,
                 min(CASE WHEN j.state='ready' AND j.due<=? THEN j.due END) oldest_due,
                 count(CASE WHEN j.state='running' THEN 1 END) running,
+                count(CASE WHEN j.stage='deliver' AND j.state='ready' AND j.due>j.slot THEN 1 END) deferred_deliveries,
                 count(CASE WHEN j.state='running' AND j.lease_until<=? THEN 1 END) expired,
                 count(CASE WHEN j.state='failed' THEN 1 END) failed,
                 min(CASE WHEN j.state='ready' AND j.due>? THEN j.due END) next_due

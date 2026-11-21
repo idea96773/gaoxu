@@ -265,9 +265,12 @@ def import_batch(path, data, now=None, folders=None):
                            (pool_key,(offsets[p]+article_index)%len(pools[p])))
     return bid
 
+EXECUTION_SLOT = "max(j.slot,j.due)"
+
+
 def booked_slot(db, stage, platform, account, now, rules, exclude=-1, actual_only=False):
     predicate = "j.state='done'" if actual_only else "j.state!='cancelled'"
-    mark = "j.finished" if actual_only else "coalesce(j.finished,j.slot)"
+    mark = "j.finished" if actual_only else f"coalesce(j.finished,{EXECUTION_SLOT})"
     reservations = db.execute(f"""SELECT {mark} mark,j.account,b.rules FROM jobs j
         JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch WHERE j.stage=?
         AND j.platform=? AND j.id!=? AND {predicate} AND {mark}>=?""",(stage,platform,exclude,now-86400))

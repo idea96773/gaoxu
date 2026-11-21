@@ -299,7 +299,7 @@ def overview(db,bid,platforms=()):
         coalesce(j.revision,1) revision,j.state AS prepare_state,j.attempts AS prepare_attempts FROM rows r
         JOIN reprint_reviews q ON r.id=q.row_id
         LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare' WHERE r.batch=? ORDER BY r.line""",(bid,)).fetchall()
-    assignments=db.execute("""SELECT a.row_id,a.platform,a.reused,j.account,j.slot,j.state,j.id,j.receipt,f.draft,
+    assignments=db.execute("""SELECT a.row_id,a.platform,a.reused,j.account,j.slot,j.due,j.state,j.id,j.receipt,f.draft,
         coalesce(pin.name,t.name) draft_recipient,coalesce(pin.user_id,t.user_id) draft_recipient_id
         FROM reprint_assignments a JOIN rows r ON r.id=a.row_id JOIN jobs j ON j.id=a.job
         JOIN frozen_deliveries f ON j.id=f.job LEFT JOIN zhihu_draft_recipients pin ON pin.job=j.id

@@ -4,7 +4,7 @@ from calendar import monthrange
 
 from flask import jsonify, request
 
-from .store import BEIJING, PLATFORMS, transaction
+from .store import BEIJING, EXECUTION_SLOT, PLATFORMS, transaction
 
 
 # row_targets was introduced with rotation. Older all-account imports use batches.targets.
@@ -26,6 +26,7 @@ articles AS MATERIALIZED (
 ),
 records AS (
     SELECT j.row_id, j.platform, j.account, j.stage, j.id AS job_id, j.state, j.slot,
+           """+EXECUTION_SLOT+""" AS execution_slot,
            CASE WHEN j.state='done' AND j.receipt IS NOT NULL THEN j.finished END AS received,
            coalesce(d.title,json_extract(v.payload,'$.title')) AS edition
     FROM jobs j LEFT JOIN frozen_deliveries f ON f.job=j.id LEFT JOIN drafts d ON d.id=f.draft
@@ -37,19 +38,19 @@ records AS (
                 WHEN EXISTS (SELECT 1 FROM jobs j WHERE j.row_id=t.row_id AND j.state='failed'
                     AND j.platform IN ('',t.platform) AND j.account IN ('',t.account))
                     THEN 'blocked'
-                ELSE 'unscheduled' END,NULL,NULL,NULL
+                ELSE 'unscheduled' END,NULL,NULL,NULL,NULL
     FROM targets t JOIN articles a ON a.row_id=t.row_id
     WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.row_id=t.row_id AND j.stage='publish'
                       AND j.platform=t.platform AND j.account=t.account)
     UNION ALL
     SELECT q.row_id,NULL,NULL,'review',NULL,
-           CASE WHEN a.control='cancelled' THEN 'cancelled' ELSE q.state END,NULL,NULL,NULL
+           CASE WHEN a.control='cancelled' THEN 'cancelled' ELSE q.state END,NULL,NULL,NULL,NULL
     FROM reprint_reviews q JOIN articles a ON a.row_id=q.row_id WHERE q.state IN ('preparing','pending','invalid')
 )
 SELECT a.row_id,a.batch,a.created,a.control,a.title,x.edition,x.stage,x.platform,x.account,
-       x.job_id,x.state,x.slot,x.received FROM records x JOIN articles a ON a.row_id=x.row_id
+       x.job_id,x.state,x.slot,x.execution_slot,x.received FROM records x JOIN articles a ON a.row_id=x.row_id
 """
-DATE_FIELDS = {"scheduled":"slot", "delivered":"received", "imported":"created"}
+DATE_FIELDS = {"scheduled":"slot", "execution":"execution_slot", "delivered":"received", "imported":"created"}
 PAGE_SIZE = 25
 
 
@@ -149,7 +150,11 @@ def register(api,path):
         start=day_start(month+"-01")
         first=date.fromisoformat(month+"-01")
         size=monthrange(first.year,first.month)[1]
-        filters=["stage IN ('deliver','publish')","slot>=?","slot<?"]
+        calendar_field=request.args.get("date_field","scheduled")
+        if calendar_field not in ("scheduled","execution"):
+            raise ValueError("日历仅支持计划排期日或预计执行日")
+        mark=EXECUTION_SLOT if calendar_field=="execution" else "j.slot"
+        filters=["stage IN ('deliver','publish')",mark+">=?",mark+"<?"]
         values=[start,start+size*86400]
         platform=request.args.get("platform","")
         if platform and platform not in PLATFORMS:
@@ -159,14 +164,14 @@ def register(api,path):
                 filters.append(field+"=?")
                 values.append(value)
         with transaction(path,False) as db:
-            counts=db.execute("""SELECT date(slot,'unixepoch','+8 hours') day,
+            counts=db.execute(f"""SELECT date({mark},'unixepoch','+8 hours') day,
                 CASE WHEN b.control='paused' AND j.state='ready' THEN 'paused' ELSE j.state END status,
                 count(*) n FROM jobs j JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch
                 WHERE """+" AND ".join(filters)+" GROUP BY day,status",values)
             days={}
             for row in counts:
                 days.setdefault(row["day"],{})[row["status"]]=row["n"]
-        return jsonify(month=month,today=today.isoformat(),size=size,weekday=first.weekday(),days=days)
+        return jsonify(month=month,date_field=calendar_field,today=today.isoformat(),size=size,weekday=first.weekday(),days=days)
 
     @api.get("/article-search")
     def search_articles():

@@ -131,7 +131,14 @@ def control_batch(path,bid,action,now):
             for j in affected:
                 prior=lookup_receipt(path,operation_key(j)) if j["stage"]=="publish" else None
                 if j["stage"] == "deliver":
-                    prior = delivery.receipt(path,j)
+                    try:
+                        prior = delivery.receipt(path,db,j)
+                    except ValueError as exc:
+                        if j["state"]=="running":
+                            close_attempt(db,j,now,"failed",str(exc))
+                        else:
+                            db.execute("UPDATE jobs SET state='failed',failure=? WHERE id=?",(str(exc),j["id"]))
+                        continue
                 if prior:
                     db.execute("UPDATE jobs SET receipt=? WHERE id=?",(prior["remote_id"],j["id"]))
                     close_attempt(db,j,now,"done",received_at=prior["submitted"])

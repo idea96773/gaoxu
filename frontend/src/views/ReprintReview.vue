@@ -31,6 +31,7 @@
         </template>
         <div v-for="a in row.assignments" :key="a.platform" class="assignment"><el-button link @click="$emit('job',a.id)">{{names[a.platform]}} · {{a.account}} · {{label(a.state)}} ›</el-button>
           <small>{{date(a.slot)}}　{{a.reused?'沿用原冻结稿及排期，本批跳过':''}}</small>
+          <small v-if="a.due>a.slot">顺延至 {{date(a.due)}}</small>
           <small v-if="a.draft_recipient_id">知乎草稿接收账号　{{a.draft_recipient}}（{{a.draft_recipient_id}}）</small>
           <a :href="'/api/distribution/editorial/'+a.draft+'/export'">下载冻结稿</a></div>
         <span v-if="!row.assignments.length && row.state!=='pending'">—</span></template></el-table-column>

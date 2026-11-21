@@ -7,10 +7,11 @@ import sys
 import tempfile
 import time
 import unittest
+from datetime import datetime
 
 from .api import create_app
 from .engine import tick
-from .store import compact, digest, ledger_path, transaction
+from .store import BEIJING, compact, digest, ledger_path, transaction
 from .test_workflow import drain, export_folder
 
 BASE = "/api/distribution/"
@@ -122,4 +123,61 @@ class FrozenDelivery(unittest.TestCase):
         self.post("batches/"+self.bid+"/cancel",{})
         self.assertTrue(self.detail(jid)["delivery"]["received"]["matches"])
         self.assertEqual(self.detail(jid)["job"]["state"],"done")
+
+    def test_resume_preserves_future_booking_and_displays_execution_day(self):
+        overdue,_=self.freeze(self.targets[0])
+        booked,_=self.freeze(self.targets[1])
+        first=self.schedule(overdue,self.slot)["id"]
+        tomorrow=self.slot+86400
+        second=self.schedule(booked,tomorrow)["id"]
+        tick(self.path,tomorrow-1)
+        delayed=self.detail(first)
+        self.assertEqual((delayed["job"]["slot"],delayed["job"]["due"]),(self.slot,tomorrow+5))
+        self.assertIsNone(delayed["delivery"]["received"])
+        self.assertEqual(self.client.post(BASE+f"jobs/{first}/reschedule",json={
+            "time":tomorrow+15,"expected_slot":self.slot,"expected_execution":self.slot}).status_code,400)
+        self.client=create_app(self.path).test_client()
+        day=datetime.fromtimestamp(tomorrow+5,BEIJING).date().isoformat()
+        query=dict(start=day,end=day,date_field="execution",platform="zhihu",account=self.targets[0]["account"])
+        matches=self.client.get(BASE+"article-search",query_string=query).json["items"]
+        self.assertTrue(any(r["job_id"]==first and r["execution_slot"]==tomorrow+5 for r in matches))
+        groups=self.client.get(BASE+"schedule-calendar",query_string=dict(month=day[:7],date_field="execution",
+                               platform="zhihu",account=self.targets[0]["account"])).json["days"]
+        self.assertGreaterEqual(groups[day]["ready"],1)
+        self.assertTrue(tick(self.path,tomorrow))
+        self.assertEqual(self.detail(second)["job"]["finished"],tomorrow)
+        self.assertFalse(tick(self.path,tomorrow+4))
+        self.assertTrue(tick(self.path,tomorrow+5))
+        self.assertEqual(self.detail(first)["delivery"]["received"]["planned"],self.slot)
+
+    def test_resume_honors_daily_cap_across_reserved_and_confirmed_jobs(self):
+        with transaction(self.path) as db:
+            rules=json.loads(db.execute("SELECT rules FROM batches WHERE id=?",(self.bid,)).fetchone()[0])
+            rules["platform_cap"]=1
+            db.execute("UPDATE batches SET rules=? WHERE id=?",(compact(rules),self.bid))
+        frozen,_=self.freeze(self.targets[0])
+        on_time,_=self.freeze(self.targets[1])
+        first=self.schedule(frozen,self.slot)["id"]
+        tomorrow=self.slot+86400
+        second=self.schedule(on_time,tomorrow)["id"]
+        self.assertTrue(tick(self.path,tomorrow))
+        next_time=self.detail(first)["job"]["due"]
+        self.assertGreater(datetime.fromtimestamp(next_time,BEIJING).date(),datetime.fromtimestamp(tomorrow,BEIJING).date())
+        self.assertTrue(tick(self.path,tomorrow))
+        self.assertEqual(self.detail(second)["job"]["finished"],tomorrow)
+        self.assertTrue(tick(self.path,next_time))
+        self.assertTrue(self.detail(first)["delivery"]["received"]["matches"])
+
+    def test_conflicting_receiver_record_does_not_confirm_on_cancel(self):
+        one,_=self.freeze(self.targets[0])
+        two,_=self.freeze(self.targets[1])
+        first=self.schedule(one,self.slot)["id"]
+        second=self.schedule(two,self.slot+5)["id"]
+        self.crash(self.slot)
+        with transaction(ledger_path(self.path)) as db:
+            db.execute("UPDATE delivered_drafts SET revision=revision+1 WHERE draft=?",(one,))
+        self.post("batches/"+self.bid+"/cancel",{})
+        self.assertEqual(self.detail(first)["job"]["state"],"failed")
+        self.assertIsNone(self.detail(first)["job"]["receipt"])
+        self.assertEqual(self.detail(second)["job"]["state"],"cancelled")
 

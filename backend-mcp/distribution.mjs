@@ -50,7 +50,7 @@ tool('reprint_preview','读取转载预览。使用平台专属文末链接时�
 })
 tool('article_search','按标题、平台、账号以及北京时间日期跨批次查询模拟记录',{
   title:z.string().optional(),platform:target.shape.platform.optional(),account:z.string().optional(),
-  date_field:z.enum(['scheduled','delivered','imported']).optional(),start:day.optional(),end:day.optional(),page:jobId.optional()
+  date_field:z.enum(['scheduled','execution','delivered','imported']).optional(),start:day.optional(),end:day.optional(),page:jobId.optional()
 },a=>api('article-search?'+new URLSearchParams(a)))
 tool('scheduler_status','读取服务心跳、活动批次积压、过期租约与待核对的草稿回执',{},()=>api('runtime-status'))
 tool('library_import','导入最多 100 个已列出的本地文章目录并开始模拟处理',{...admission,directories:z.array(z.string()).min(1).max(100)},a=>api('library',a))
@@ -67,8 +67,8 @@ tool('failed_jobs_retry','只将选中的失败尝试重新排队，可按返回
   items:z.array(z.object({id:jobId,batch:batchId,expected_attempt:z.number().int().nonnegative()})).min(1).max(100)
 },args=>api('failed-jobs/retry',args))
 tool('stage_retry','只重试选中的失败步骤',{id:jobId},a=>api('jobs/'+a.id+'/retry',{}))
-tool('publish_reschedule','重新安排未领取的模拟任务；冻结稿交付须传上次读取的 slot 作为 expected_slot',{
-  id:jobId,time:z.number().int(),expected_slot:z.number().int().optional()
+tool('publish_reschedule','调整排队任务。冻结稿传上次读取的 slot，可同时传 max(slot,due) 作为 expected_execution 核对后台顺延',{
+  id:jobId,time:z.number().int(),expected_slot:z.number().int().optional(),expected_execution:z.number().int().optional()
 },({id,...data})=>api('jobs/'+id+'/reschedule',data))
 tool('draft_list','查看分配到此文章的账号及成稿审核状态',{id:jobId},a=>api('articles/'+a.id+'/editorial'))
 tool('draft_submit','提交 Agent 已生成的平台成稿供人工审核；已存在未结稿时返回其 ID',{id:jobId,platform:z.enum(['zhihu','xiaohongshu','toutiao']),account:z.string(),title:z.string().min(1),body:z.string().min(1)},a=>api('articles/'+a.id+'/editorial',{...a,action:'agent'}))

@@ -1,9 +1,10 @@
 """Delivery of approved editorial snapshots to the local, persistent receiver."""
 import json
 from datetime import datetime
+from itertools import chain
 
 from .scheduling import available_slot
-from .store import BEIJING, booked_slot, compact, digest, ledger_path, transaction
+from .store import BEIJING, EXECUTION_SLOT, booked_slot, compact, digest, ledger_path, transaction
 
 
 def delivery_key(job):
@@ -81,12 +82,15 @@ def move_slot(path, db, job, data, now):
     stamp,previous=data.get("time"),data.get("expected_slot")
     if type(stamp) is not int or type(previous) is not int:
         raise ValueError("请刷新后选择新的北京时间")
-    if job["state"]!="ready" or receipt(path,job):
+    if job["state"]!="ready" or receipt(path,db,job):
         raise ValueError("只能调整尚未领取、没有接收回执的任务")
     if job["slot"]==stamp:
         return
     if job["slot"]!=previous:
         raise ValueError("排期已被其他操作修改，请刷新任务")
+    if "expected_execution" in data and (type(data["expected_execution"]) is not int or
+            data["expected_execution"]!=max(job["slot"],job["due"])):
+        raise ValueError("后台已调整预计执行时间，请刷新后确认改期")
     if not now<=stamp<=now+366*86400:
         raise ValueError("请选择未来一年内的北京时间")
     slot=free_slot(db,job["platform"],job["account"],stamp,json.loads(job["rules"]),job["id"])
@@ -102,10 +106,25 @@ def move_slot(path, db, job, data, now):
                (job["id"],previous,slot,now))
 
 
-def receipt(path, job):
+def confirmed_receipt(remote,db,job):
+    accepted=remote.execute("SELECT * FROM delivered_drafts WHERE key=?",(delivery_key(job),)).fetchone()
+    if not accepted:
+        return None
+    bound=db.execute("""SELECT f.draft,f.planned,f.sha,f.snapshot,d.frozen,d.state,d.rev,d.row_id,d.platform,d.account
+        FROM frozen_deliveries f JOIN drafts d ON d.id=f.draft WHERE f.job=?""",(job["id"],)).fetchone()
+    if (not bound or any(accepted[k]!=job[k] for k in ("row_id","platform","account","revision"))
+            or any(accepted[k]!=bound[k] for k in ("draft","planned","sha"))
+            or bound["state"]!="approved" or bound["rev"]!=job["revision"]
+            or any(bound[k]!=job[k] for k in ("row_id","platform","account"))
+            or not bound["frozen"]==bound["snapshot"]==accepted["snapshot"]
+            or job["slot"]!=bound["planned"] or digest(accepted["snapshot"])!=bound["sha"]):
+        raise ValueError("模拟回执与本任务的冻结稿、账号或排期不一致，请人工核对")
+    return accepted
+
+
+def receipt(path, db, job):
     with transaction(ledger_path(path),False) as remote:
-        return remote.execute("SELECT remote_id,submitted FROM delivered_drafts WHERE key=?",
-                              (delivery_key(job),)).fetchone()
+        return confirmed_receipt(remote,db,job)
 
 
 def deliver(path, db, job, now):
@@ -118,13 +137,11 @@ def deliver(path, db, job, now):
         raise ValueError("任务账号、版本或排期与冻结绑定不一致")
     key = delivery_key(job)
     with transaction(ledger_path(path)) as remote:
-        existing = remote.execute("SELECT * FROM delivered_drafts WHERE key=?",(key,)).fetchone()
+        existing = confirmed_receipt(remote,db,job)
         if existing:
-            if (existing["sha"],existing["draft"],existing["planned"]) != (bound["sha"],bound["draft"],bound["planned"]):
-                raise ValueError("模拟接收端记录与本次交付不一致")
             return existing["remote_id"], existing["submitted"]
-        stamp=max(job["slot"],now)
-        confirmed=remote.execute("""SELECT row_id,submitted mark,account FROM delivered_drafts
+        stamp=max(job["slot"],job["due"],now)
+        confirmed=remote.execute("""SELECT row_id,draft,submitted mark,account FROM delivered_drafts
             WHERE platform=? AND submitted>=?""",(job["platform"],stamp-86400)).fetchall()
         ids=[r["row_id"] for r in confirmed]
         rule_rows=db.execute("""SELECT r.id,b.rules FROM rows r JOIN batches b ON b.id=r.batch
@@ -132,8 +149,17 @@ def deliver(path, db, job, now):
         prior_rules=dict(rule_rows)
         if any(rid not in prior_rules for rid in ids):
             raise ValueError("模拟回执关联的批次缺失，请核对数据库与备份")
-        bookings=(dict(r)|{"rules":prior_rules[r["row_id"]]} for r in confirmed)
-        due=available_slot(stamp,job["platform"],job["account"],json.loads(job["rules"]),bookings)
+        accepted=(dict(r)|{"rules":prior_rules[r["row_id"]]} for r in confirmed)
+        # Preserve future reservations when missed slots are redistributed after downtime.
+        # At the exact same second, protect an on-time peer ahead of late or later-numbered jobs.
+        pending=db.execute(f"""SELECT {EXECUTION_SLOT} mark,j.account,b.rules,f.draft FROM jobs j
+            JOIN frozen_deliveries f ON f.job=j.id JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch
+            WHERE j.stage='deliver' AND j.platform=? AND j.id!=? AND j.state IN ('ready','running')
+            AND ({EXECUTION_SLOT}>? OR ({EXECUTION_SLOT}=? AND (?<? OR j.id<?)))""",
+            (job["platform"],job["id"],stamp,stamp,job["due"],stamp,job["id"]))
+        accepted_ids={r["draft"] for r in confirmed}
+        reservations=(r for r in pending if r["draft"] not in accepted_ids)
+        due=available_slot(stamp,job["platform"],job["account"],json.loads(job["rules"]),chain(accepted,reservations))
         if due>now:
             return None,due
         remote_id = "draft-sim-"+key[:24]

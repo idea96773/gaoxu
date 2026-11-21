@@ -7,7 +7,7 @@
       <label>账号<select v-model="form.account"><option value="">全部账号</option>
         <option v-for="a in accounts" :key="a">{{a}}</option></select></label>
       <div class="date-row">
-        <label>日期类型<select v-model="form.date_field"><option value="scheduled">排期日期</option><option value="delivered">实际交付日期</option><option value="imported">导入日期</option></select></label>
+        <label>日期类型<select v-model="form.date_field"><option value="scheduled">计划排期日</option><option value="execution">预计执行日</option><option value="delivered">实际交付日期</option><option value="imported">导入日期</option></select></label>
         <label>开始日期<input type="date" v-model="form.start"></label>
         <label>结束日期<input type="date" v-model="form.end"></label>
         <div class="commands"><el-button type="primary" native-type="submit">查询</el-button><el-button @click="reset">重置</el-button></div>
@@ -20,7 +20,8 @@
         <strong>{{row.title}}</strong><div v-if="row.edition && row.edition!==row.title" class="secondary">平台稿 · {{row.edition}}</div>
         <div class="secondary">{{kinds[row.stage]}} · 批次 {{row.batch.slice(0,8)}} · 导入 {{date(row.created)}}</div></template></el-table-column>
       <el-table-column label="平台 / 账号" min-width="105"><template #default="{row}">{{names[row.platform] || '—'}}<div class="secondary">{{row.account || '待分配'}}</div></template></el-table-column>
-      <el-table-column label="计划交付" min-width="137"><template #default="{row}">{{date(row.slot)}}</template></el-table-column>
+      <el-table-column label="计划交付" min-width="147"><template #default="{row}">{{date(row.slot)}}
+        <small v-if="row.execution_slot>row.slot" class="secondary">顺延至 {{date(row.execution_slot)}}</small></template></el-table-column>
       <el-table-column label="实际交付" min-width="137"><template #default="{row}">{{date(row.received)}}</template></el-table-column>
       <el-table-column label="交付状态" width="116"><template #default="{row}"><el-tag :type="colors[row.state] || 'info'">{{states[row.state] || label(row.state)}}</el-tag>
         <div v-if="row.control==='paused' && ['ready','unscheduled','pending'].includes(row.state)" class="secondary">批次已暂停</div>

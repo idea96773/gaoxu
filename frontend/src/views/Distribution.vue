@@ -46,7 +46,7 @@
           <el-table :data="batch.deliveries" empty-text="审核定稿后可从文章详情加入模拟交付" @row-click="r=>openJob(r.id)">
             <el-table-column label="成稿"><template #default="{row}">#{{row.draft_id}} · 第 {{row.revision}} 版</template></el-table-column>
             <el-table-column label="平台 / 账号"><template #default="{row}">{{names[row.platform]}} · {{row.account}}</template></el-table-column>
-            <el-table-column label="计划交付（北京时间）" min-width="155"><template #default="{row}">{{date(row.slot)}}</template></el-table-column>
+            <el-table-column label="计划交付（北京时间）" min-width="155"><template #default="{row}">{{date(row.slot)}}<div v-if="row.due>row.slot">顺延至 {{date(row.due)}}</div></template></el-table-column>
             <el-table-column label="状态"><template #default="{row}">{{label(row.state)}}</template></el-table-column>
             <el-table-column label="模拟回执" prop="receipt" min-width="185"/>
           </el-table>
@@ -127,6 +127,7 @@
         </div>
         <p>状态 {{label(job.job.state)}} · 执行 {{job.job.attempts}} 次</p>
         <p>计划 {{date(job.job.slot)}}　完成 {{date(job.job.finished)}}</p><p>模拟回执 {{job.job.receipt||'—'}}</p><p>{{job.job.failure}}</p>
+        <p v-if="job.job.slot && job.job.due>job.job.slot">顺延执行时间　{{date(job.job.due)}}</p>
         <div v-if="['publish','deliver'].includes(job.job.stage) && job.job.state==='ready'"><label>改期（北京时间） <input v-model="newTime" type="datetime-local"></label> <el-button @click="reschedule">保存改期</el-button></div>
         <el-button v-if="job.job.state==='failed'" @click="retry(job.job.id,job.job.attempts)">仅重试此项</el-button>
         <div v-for="h in job.history" :key="h.seq" class="record"><span>#{{h.seq}}　{{date(h.started)}}</span><span>{{label(h.outcome)}} {{h.reason}}</span></div>
@@ -158,6 +159,7 @@ function openCalendar(){
   const query={view:'calendar'}
   for(const k of ['batch','platform','account'])if(route.query[k])query[k]=route.query[k]
   if(searching.value && route.query.start)query.month=String(route.query.start).slice(0,7)
+  if(searching.value && ['scheduled','execution'].includes(route.query.date_field))query.date_field=route.query.date_field
   router.push({query})
 }
 async function leaveSearch(){await router.push({query:bid.value?{batch:bid.value}:{}});await refresh()}
@@ -235,7 +237,7 @@ async function cancelBatch(){try{await ElMessageBox.confirm('取消本批次未�
 async function openArticle(id){await action(async()=>{article.value=await api('articles/'+id);articleOpen.value=true})}
 async function openJob(id){await action(async()=>{job.value=await api('jobs/'+id);newTime.value='';jobOpen.value=true})}
 async function retry(id,attempt){await action(async()=>{await api('jobs/'+id+'/retry',attempt===undefined?{}:{expected_attempt:attempt});retryVersion.value++;if(jobOpen.value)job.value=await api('jobs/'+id);ElMessage.success('已重新排队')})}
-async function reschedule(){await action(async()=>{const t=Date.parse(newTime.value+':00+08:00')/1000;if(!Number.isFinite(t))throw Error('请选择北京时间');await api('jobs/'+job.value.job.id+'/reschedule',{time:t,expected_slot:job.value.job.slot});job.value=await api('jobs/'+job.value.job.id)})}
+async function reschedule(){await action(async()=>{const t=Date.parse(newTime.value+':00+08:00')/1000;if(!Number.isFinite(t))throw Error('请选择北京时间');const j=job.value.job;await api('jobs/'+j.id+'/reschedule',{time:t,expected_slot:j.slot,expected_execution:Math.max(j.slot,j.due)});job.value=await api('jobs/'+j.id)})}
 let timer,closed=false
 async function poll(){await refresh();if(!closed)timer=setTimeout(poll,3000)}
 onMounted(poll)

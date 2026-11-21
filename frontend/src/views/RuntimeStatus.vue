@@ -7,6 +7,7 @@
       <el-descriptions-item label="最后心跳">{{date(status.worker_seen)}}</el-descriptions-item>
       <el-descriptions-item label="最近领取任务">{{date(status.last_claim)}}</el-descriptions-item>
       <el-descriptions-item label="已到期 / 执行中">{{status.queue.due}} / {{status.queue.running}}</el-descriptions-item>
+      <el-descriptions-item label="晚于原排期的待交付稿">{{status.queue.deferred_deliveries}}</el-descriptions-item>
       <el-descriptions-item label="最早待处理时间">{{date(status.queue.oldest_due)}}</el-descriptions-item>
       <el-descriptions-item label="下一项排期或重试">{{date(status.queue.next_due)}}</el-descriptions-item>
       <el-descriptions-item label="失败步骤 / 租约到期">{{status.queue.failed}} / {{status.queue.expired}}</el-descriptions-item>

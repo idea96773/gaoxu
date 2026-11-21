@@ -22,17 +22,20 @@
 
 如需改变固定目录，启动前设置 DIST_LIBRARY（对已经启动的 Web 进程需重启）。调度器支持 -Concurrency 1 至 8，默认 1；模拟的发送临界区按事务串行。每个批次的北京时间间隔、日上限可在表单指定；API 另支持起止小时、仅工作日、holidays/workdays 日期表。每条发布记录保留计划时间、实际模拟确认时间、账号、目标、回执和尝试次数。
 
-在另一台 Windows 电脑重建时，先在项目根执行以下命令（需 Git 快照、uv/Python 3.12、Node/npm）。当前机器已经构建并验证。
+在另一台 Windows 电脑重建时，安装 uv、Node.js（含 npm），下载本仓库后双击根目录的 **启动稿序.bat**。首次启动会按需创建 Python 3.12 隔离环境，按项目版本清单安装后端依赖，并按前端锁文件构建管理台。请预留网络连接。已准备好的电脑可直接复用本机构建和依赖。已有实例通过健康检查后会打开同一管理台。
+
+在项目根目录也可以使用以下命令，各行按需单独执行。
 
 ```powershell
-uv venv --python 3.12 .dist-venv
-uv pip install --python .dist-venv/Scripts/python.exe Flask==3.1.1 waitress==3.0.2 markdown-it-py==4.0.0
-Push-Location frontend
-npm.cmd ci
-npm.cmd run build -- --mode distribution
-Pop-Location
-.\scripts\start-distribution.ps1
+# 检查当前配置的文章目录、Python 依赖和稿序网页构建
+.\scripts\launch-gaoxu.ps1 -CheckOnly
+# 启动或复用服务，仅在终端显示地址
+.\scripts\launch-gaoxu.ps1 -NoBrowser
+# 拉取了包含前端改动的新版后，在维护时段重新构建并启动
+.\scripts\launch-gaoxu.ps1 -Rebuild
 ```
+
+如果改了 Easy WeChat 保存位置，在 Windows 的「用户环境变量」里把 `DIST_LIBRARY` 设置为新的绝对路径。重新登录 Windows，让管理台和登录自启动任务读到同一个用户环境。若使用开机计划任务，请给运行该任务的身份配置同一路径及读取权限。目录暂时离线时可以查看历史任务。
 
 调度器将任务、尝试、计划、快照和本地图片保存在 dry-run.sqlite，模拟远端账本在 dry-run.sqlite.simulator。租约失效可重新领取，发送前先查同一业务键对应的模拟回执。临时异常有上限退避；明确失败保留给人工重试。排期系统使用真实墙钟，自动测试使用虚拟时间跳过等待。电脑关机期间不能执行；重新启动脚本后继续处理，发送之前重新检查实际日额与间隔。可通过下列脚本配置 Windows 自启动。
 

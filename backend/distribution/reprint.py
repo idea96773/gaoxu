@@ -124,16 +124,23 @@ def create(path,root,data):
     key=data.get("request_id")
     if not isinstance(key,str) or not 1<=len(key)<=128:
         raise ValueError("缺少请求编号")
-    settings=validated_settings(data)
-    targets,destination,rules=settings["targets"],settings["destination"],settings["rules"]
-    pools=pools_for(targets)
     dirs=data.get("directories")
     validate_directories(dirs)
     selections=data.get("selections")
-    identity=["reprint",dirs,pools,rules,destination]
+    settings=None
+    revision=data.get("saved_revision")
+    if "saved_revision" in data:
+        if type(revision) is not int or revision<1:
+            raise ValueError("请先在管理台保存常用转载设置，再读取它的版本号")
+        if any(k in data for k in ("targets","rules","destination","links")):
+            raise ValueError("使用常用设置版本时，账号、排期和文末链接由该版本提供")
+        identity=["reprint/saved",dirs,revision]
+    else:
+        settings=validated_settings(data)
+        identity=["reprint",dirs,pools_for(settings["targets"]),settings["rules"],settings["destination"]]
     if "expected_root" in data:
         identity.append({"expected_root":data["expected_root"]})
-    if "links" in settings:
+    if settings and "links" in settings:
         identity.append(settings["links"])
     if selections is not None:
         if not isinstance(selections,dict) or selections.keys()!=set(dirs):
@@ -156,10 +163,18 @@ def create(path,root,data):
         if old:
             return old
         check_library_root(root,data)
+        if settings is None:
+            saved=db.execute("SELECT revision,payload FROM reprint_defaults WHERE singleton=1").fetchone()
+            if not saved or saved["revision"]!=revision:
+                raise ValueError("常用转载设置版本已变化或尚未保存，请重新读取并核对账号、排期和文末链接")
+            settings=json.loads(saved["payload"])
+        targets,destination,rules=settings["targets"],settings["destination"],settings["rules"]
         bid=uuid.uuid4().hex
         db.execute("INSERT INTO batches VALUES(?,?,?,?,?,?,?)",
                    (bid,key,fingerprint,int(time.time()),"active",compact(targets),compact(rules)))
         db.execute("INSERT INTO reprint_batches VALUES(?,?)",(bid,destination))
+        if revision is not None:
+            db.execute("INSERT INTO reprint_settings_used(batch,revision) VALUES(?,?)",(bid,revision))
         if "links" in settings:
             db.execute("INSERT INTO reprint_link_rules VALUES(?,?)",(bid,compact(settings["links"])))
         owners={}

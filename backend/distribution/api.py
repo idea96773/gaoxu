@@ -115,7 +115,9 @@ def batch_view(db, bid, detail=True):
             FROM jobs j JOIN frozen_deliveries f ON f.job=j.id JOIN rows r ON r.id=j.row_id
             WHERE r.batch=? ORDER BY j.slot,j.id""",(bid,))]
         result.update(rows=items,failures=failures,publishes=tasks)
-    spec=db.execute("SELECT rb.destination,lr.payload FROM reprint_batches rb LEFT JOIN reprint_link_rules lr ON lr.batch=rb.batch WHERE rb.batch=?",(bid,)).fetchone()
+    spec=db.execute("""SELECT rb.destination,lr.payload,s.revision FROM reprint_batches rb
+        LEFT JOIN reprint_link_rules lr ON lr.batch=rb.batch
+        LEFT JOIN reprint_settings_used s ON s.batch=rb.batch WHERE rb.batch=?""",(bid,)).fetchone()
     if spec:
         reviews=reprint.overview(db,bid,sorted({t["platform"] for t in targets}) if detail else ())
         counts=Counter()
@@ -135,7 +137,7 @@ def batch_view(db, bid, detail=True):
                 state="reading"
             review["progress"]=state
             counts[state]+=1
-        result.update(reprint=True,destination=spec[0],counts=counts,platforms=platforms,
+        result.update(reprint=True,destination=spec["destination"],saved_revision=spec["revision"],counts=counts,platforms=platforms,
                       delivery_coverage=delivery_coverage(reviews,bid,detail),
                       unique=len(reviews)-counts["duplicate"]-counts["invalid"],
                       simulated=sum(c["done"] for c in platforms.values()),

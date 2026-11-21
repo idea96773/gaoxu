@@ -2,6 +2,7 @@
   <section>
     <p>{{pool}}</p>
     <details><summary>查看各账号排期规则（北京时间）</summary>
+      <p v-if="batch.saved_revision">本批采用常用设置第 {{batch.saved_revision}} 版</p>
       <p v-for="r in batch.target_limits" :key="r.platform+'-'+r.account">
         {{names[r.platform]}} · {{r.account}}　{{clock(r.start)}}–{{clock(r.end)}}　平台每日 {{r.platform_cap}} 篇，间隔 {{r.platform_gap}} 秒；
         本账号每日最多 {{Math.min(r.platform_cap,r.account_cap)}} 篇，间隔至少 {{Math.max(r.platform_gap,r.account_gap)}} 秒

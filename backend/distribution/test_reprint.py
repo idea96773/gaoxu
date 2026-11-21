@@ -54,6 +54,37 @@ class Reprint(unittest.TestCase):
             self.assertEqual(result.status_code, 200)
             return result.json["items"]
 
+    def test_saved_settings_are_bound_once_and_replay_survives_rule_change(self):
+        directory=self.source(14)
+        catalog=self.client.get(BASE+"library").json
+        article,=catalog["items"]
+        data=dict(request_id="saved",directories=[directory],saved_revision=1,expected_root=catalog["root"],
+                  selections={directory:dict(key=article["selection_key"],title=article["title"])})
+        def submit(payload):
+            return self.client.post(BASE+"reprints",json=payload,headers={"X-Gaoxu-MCP-Tool":"reprint_prepare_saved"})
+        self.assertEqual(submit(data).status_code,400)
+        config=dict(revision=0,targets=self.targets,links={"toutiao":{"mode":"omit"}},rules={"gap":61,"account_cap":2})
+        saved=self.client.post(BASE+"reprint-settings",json=config).json
+        self.assertEqual(saved["revision"],1)
+        self.assertEqual(submit(data|dict(targets=self.targets)).status_code,400)
+        result=submit(data)
+        self.assertEqual(result.status_code,201,result.json)
+        bid=result.json["id"]
+        changed=self.client.post(BASE+"reprint-settings",json=config|dict(revision=1,rules={"gap":180},links={}))
+        self.assertEqual(changed.json["revision"],2)
+        self.assertEqual(submit(data).json["id"],bid)
+        self.assertEqual(submit(data|dict(saved_revision=2)).status_code,400)
+        self.assertEqual(submit(data|dict(request_id="new")).status_code,400)
+        batch=self.batch(bid)
+        self.assertEqual(batch["saved_revision"],1)
+        for field in ("rules","targets","links","destination"):
+            self.assertEqual(batch[field],saved["settings"][field])
+        self.prepare()
+        self.assertEqual(self.batch(bid)["reviews"][0]["state"],"pending")
+        self.assertEqual(self.batch(bid)["deliveries"],[])
+        runs=self.client.get(BASE+"agent-runs").json["items"]
+        self.assertTrue(any(r["tool"]=="reprint_prepare_saved" and r["subject"]=="批次 "+bid for r in runs))
+
     def test_overview_drills_down_to_active_rows_and_beijing_day_receipts(self):
         bid = self.create([self.source(1), self.source(2)])
         self.prepare()

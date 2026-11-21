@@ -10,6 +10,8 @@ const admission = {account_routing:z.enum(["rotate","all"]).optional(),request_i
 const batchId = z.string().regex(/^[a-f0-9]{32}$/)
 const jobId = z.number().int().positive()
 const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+const selectionKey = z.string().regex(/^(url|file)-[a-f0-9]{64}$/)
+const selectionTitle = z.string().min(1).max(8192)
 const reprintRule = z.object({
   gap:z.number().int().min(1).max(86400), account_cap:z.number().int().min(1).max(1000),
   platform_cap:z.number().int().min(1).max(10000), start_hour:z.number().int().min(0).max(23),
@@ -43,7 +45,7 @@ tool('reprint_settings','读取管理台保存的常用转载账号、文末链�
 tool('reprint_prepare','按选定目录创建转载批次并返回批次编号。将 library_list 的 title 与 selection_key 按目录传入 selections，可核对后台实际读取的文章来源。batch_status 查询进度，request_id 用于去重',{
   request_id:admission.request_id,directories:z.array(z.string()).min(1).max(100),
   expected_root:z.string().optional().describe('上次 library_list 返回的 root，用于核对选稿目录'),
-  selections:z.record(z.string(),z.object({key:z.string().regex(/^(url|file)-[a-f0-9]{64}$/),title:z.string().min(1).max(8192)})).optional(),
+  selections:z.record(z.string(),z.object({key:selectionKey,title:selectionTitle})).optional(),
   targets:z.array(z.object({platform:z.enum(['zhihu','toutiao']),account:target.shape.account})).min(1).max(28),
   destination:z.string().url(),rules:reprintRule,
   links:z.object(Object.fromEntries(['zhihu','toutiao'].map(p=>[p,z.discriminatedUnion('mode',[
@@ -51,6 +53,23 @@ tool('reprint_prepare','按选定目录创建转载批次并返回批次编号�
     z.object({mode:z.literal('short'),short:z.string().url(),verified:z.literal(true)})
   ]).optional()]))).optional()
 },a=>api('reprints',a))
+tool('reprint_prepare_saved','按管理台已保存的常用设置生成本地待审转载批次。先从 reprint_settings 取得 revision，从 library_list 取得 root 并选择 items。请求超时后用相同 request_id 和相同参数重试可找回原批次。返回管理台审核入口。',{
+  request_id:admission.request_id,saved_revision:jobId,
+  root:z.string().min(1),items:z.array(z.object({
+    directory:z.string().min(1),title:selectionTitle,selection_key:selectionKey
+  })).min(1).max(100)
+},async ({request_id,saved_revision,root,items})=>{
+  const selected=new Map()
+  for(const item of items){
+    const earlier=selected.get(item.directory)
+    if(earlier && (earlier.key!==item.selection_key || earlier.title!==item.title))
+      throw new Error('同一目录含有不同版本的选稿记录，请重新读取目录并选稿')
+    selected.set(item.directory,{title:item.title,key:item.selection_key})
+  }
+  const result=await api('reprints',{request_id,saved_revision,expected_root:root,
+    directories:items.map(item=>item.directory),selections:Object.fromEntries(selected)})
+  return {...result,saved_revision,review_url:'http://127.0.0.1:5419/#/distribution?batch='+result.id}
+})
 tool('reprint_preview','按平台读取转载待审稿或已有任务绑定的冻结稿；job、account、reused 标明原任务和接收账号，edition_sha 可用于核对版本。存在沿用任务或专属文末链接时须指定平台',{batch:batchId,row:jobId,platform:z.enum(['zhihu','toutiao']).optional()},async a=>{
   const {sha,snapshot,revision,edition_sha,job,account,reused}=await api('reprints/'+a.batch+'/'+a.row+(a.platform?'?platform='+a.platform:''))
   if(!snapshot)throw new Error('该条目的原始资料异常，请先查看批次详情')
@@ -58,9 +77,10 @@ tool('reprint_preview','按平台读取转载待审稿或已有任务绑定的�
 })
 tool('article_search','按标题、平台、账号以及北京时间日期跨批次查询模拟记录',{
   title:z.string().optional(),platform:target.shape.platform.optional(),account:z.string().optional(),
-  draft_review:z.enum(['awaiting','issue','verified']).optional(),
+  draft_recipient:z.string().optional().describe('已锁定的知乎接收账号昵称或完整 ID'),
+  draft_review:z.enum(['waiting','saving','failed','awaiting','uncertain','issue','verified','cancelled']).optional(),
   work:z.enum(['pending_reprint','returned_reprint','queued_delivery','confirmed_delivery']).optional(),
-  date_field:z.enum(['scheduled','execution','delivered','imported']).optional(),start:day.optional(),end:day.optional(),page:jobId.optional()
+  date_field:z.enum(['scheduled','execution','delivered','imported','draft_updated']).optional(),start:day.optional(),end:day.optional(),page:jobId.optional()
 },a=>api('article-search?'+new URLSearchParams(a)))
 tool('scheduler_status','读取服务心跳、活动批次积压、过期租约与待核对的草稿回执',{},()=>api('runtime-status'))
 tool('account_list','按平台列出已有分稿目标的账号别名',{},()=>api('article-search/accounts'))

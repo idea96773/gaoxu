@@ -74,6 +74,8 @@
 
 Agent 可先用 `account_list` 查分稿账号，再用 `schedule_calendar` 按年月、平台和账号看每日任务数，用 `article_search` 查明细。使用 `agent_runs` 可读取与管理台相同的调用记录，传回 `next` 作为 `before` 可读取更早一页。
 
+要让 Agent 沿用管理台的分稿规则，先在「批量转载」保存常用设置。Agent 通过 `reprint_settings` 读取版本号并核对账号、文末链接和发布节奏，从 `library_list` 取得目录和所选文章，再调用 `reprint_prepare_saved`。参数包括提交编号 `request_id`、设置版本 `saved_revision`、保存目录 `root` 和最多 100 条选稿 `items`。每条保留目录列表中的 `directory`、`title` 和 `selection_key`。尚未建批时如设置已更新，需重新核对版本。若上次提交响应中断，用原编号和相同参数重试即可找回已受理的批次。打开返回的审核链接，可在「查看各账号排期规则」核对本批采用的版本。新稿经人工审核后进入模拟排期。
+
 可选的 backend-mcp/distribution.mjs 使用 QianFan 的 MCP SDK，通过 stdio 暴露本地分发与编辑工具。使用前在 backend-mcp 下 npm.cmd ci，启动命令为 node 后接该文件的绝对路径。library_list 可列固定目录，library_import 只接受清单中的相对目录。此阶段没有修改任何现用 DSH Profile，也没有启用 QianFan 的真实发布 MCP。
 
 ```powershell

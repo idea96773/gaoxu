@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS reprint_defaults (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision INTEGER NOT NULL, payload TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS reprint_batches (
  batch TEXT PRIMARY KEY REFERENCES batches(id), destination TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS reprint_settings_used (
+ batch TEXT PRIMARY KEY REFERENCES reprint_batches(batch), revision INTEGER NOT NULL CHECK(revision>0));
 CREATE TABLE IF NOT EXISTS reprint_link_rules (
  batch TEXT PRIMARY KEY REFERENCES reprint_batches(batch), payload TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS reprint_sources (

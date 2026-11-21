@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from .markdown_media import replace_media_urls
+from .draft_bridge import heartbeat, listener
 from .platform_draft import claim, edit_url, payload, require_rights, transition
 from .runtime import instance_lock
 from .store import DEFAULT_DB, initialize, transaction
@@ -128,45 +129,45 @@ def run_task(path,task,bridge):
         raise
 
 
-def heartbeat(path,uid=None,name=""):
-    with transaction(path) as db:
-        if uid is None:
-            db.execute("DELETE FROM draft_bridge WHERE singleton=1")
-            return
-        db.execute("INSERT OR REPLACE INTO draft_bridge VALUES(1,?,?,?)",(uid,name,int(time.time())))
-
-
-def serve_bridge(path,port,extension_id,token):
+def serve_bridge(path,port,extension_id,token,check_only=False):
     from websockets.sync.server import serve
     gate=threading.Lock()
+    session=uuid.uuid4().hex
     def handle(socket):
         if not gate.acquire(blocking=False):
             socket.close(1008,"已有扩展连接")
             return
+        confirmed=False
         try:
+            heartbeat(path,session=session,phase="checking")
             bridge=Bridge(socket,token)
             while True:
                 uid,name=bridge.identity()
-                heartbeat(path,uid,name)
-                task=claim(path,uid) if uid else None
+                confirmed=True
+                heartbeat(path,uid,name,session=session)
+                task=claim(path,uid) if uid and not check_only else None
                 if task:
+                    heartbeat(path,uid,name,session=session,phase="working")
                     run_task(path,task,bridge)
                 else:
                     time.sleep(5)
         except Exception:
             print("草稿扩展连接已结束；已领取任务的结果记在管理台。",flush=True)
         finally:
-            heartbeat(path)
-            gate.release()
+            try:
+                heartbeat(path,session=session,phase="disconnected" if confirmed else "unconfirmed")
+            finally:
+                gate.release()
     initialize(path)
     with instance_lock(str(path)+".draft-worker.lock"), serve(handle,"127.0.0.1",port,origins=["chrome-extension://"+extension_id]) as server:
-        with transaction(path) as db:
-            now=int(time.time())
-            db.execute("UPDATE platform_drafts SET state='failed',reason='准备过程中断，可重试',updated=? WHERE state='preparing'",(now,))
-            db.execute("UPDATE platform_drafts SET state='unknown',reason='保存期间中断，请核对草稿箱',updated=? WHERE state='sending'",(now,))
-        heartbeat(path)
-        print(f"稿序草稿桥已启动 ws://127.0.0.1:{port}",flush=True)
-        server.serve_forever()
+        if not check_only:
+            with transaction(path) as db:
+                now=int(time.time())
+                db.execute("UPDATE platform_drafts SET state='failed',reason='准备过程中断，可重试',updated=? WHERE state='preparing'",(now,))
+                db.execute("UPDATE platform_drafts SET state='unknown',reason='保存期间中断，请核对草稿箱',updated=? WHERE state='sending'",(now,))
+        with listener(path,port,check_only,session):
+            print(f"稿序草稿桥已启动 ws://127.0.0.1:{port}（{'仅核对连接' if check_only else '草稿交付'}）",flush=True)
+            server.serve_forever()
 
 
 if __name__=="__main__":
@@ -174,10 +175,11 @@ if __name__=="__main__":
     parser.add_argument("--db",type=Path,default=Path(os.getenv("DIST_DB",str(DEFAULT_DB))))
     parser.add_argument("--port",type=int,default=9537)
     parser.add_argument("--extension-id",required=True)
+    parser.add_argument("--check-only",action="store_true")
     args=parser.parse_args()
     if not re.fullmatch(r"[a-p]{32}",args.extension_id):
         parser.error("请输入 Chrome 扩展管理页显示的扩展 ID")
     secret=os.environ.get("WECHATSYNC_TOKEN") or getpass.getpass("请输入在扩展中设置的连接 Token（隐藏输入）: ")
     if not secret:
         parser.error("需要扩展连接 Token")
-    serve_bridge(args.db,args.port,args.extension_id,secret)
+    serve_bridge(args.db,args.port,args.extension_id,secret,args.check_only)

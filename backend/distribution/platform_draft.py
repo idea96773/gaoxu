@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from flask import jsonify, request
 
 from . import rights
+from .draft_bridge import status as bridge_status
 from .store import compact, digest, transaction
 
 
@@ -62,11 +63,6 @@ def source(db, job):
     if not row or row["approval"]!="approved" or row["snapshot"]!=row["frozen"] or digest(row["snapshot"])!=row["sha"]:
         raise ValueError("需要已审核、内容校验通过的知乎转载冻结稿")
     return row
-
-
-def bridge_status(db):
-    row=db.execute("SELECT user_id,name FROM draft_bridge WHERE singleton=1 AND seen>=?",(int(time.time())-45,)).fetchone()
-    return dict(connected=bool(row),account=dict(row) if row and row["user_id"] else None)
 
 
 def recipient(db,job,alias,existing):
@@ -185,7 +181,10 @@ def register(api,path,body):
                 row=source(db,job)
                 if row["control"]!="active" or row["state"]=="cancelled":
                     raise ValueError("批次暂停或已取消")
-                account=bridge_status(db)["account"]
+                connection=bridge_status(db)
+                if connection["bridge"]["check_only"]:
+                    raise ValueError("当前仅核对连接。保存草稿前请切换草稿桥到交付模式")
+                account=connection["account"]
                 if (not account or account["user_id"]!=data.get("user_id") or data.get("sha")!=row["sha"]
                         or data.get("consent") is not True):
                     raise ValueError("请核对当前知乎账号与冻结版本，确认允许发送正文和图片")

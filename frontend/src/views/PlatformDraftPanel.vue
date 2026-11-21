@@ -4,7 +4,7 @@
     <p>分稿别名　{{job.job.account}}　<el-button link @click="$emit('accounts',job.job.account)">管理知乎账号</el-button></p>
     <p>{{recipientSource==='binding'?'本次保存将锁定账号':'本稿指定账号'}}　{{recipient?.name || '待绑定'}}
       <small v-if="recipient">账号 ID　{{recipient.user_id}}</small></p>
-    <p>当前连接账号　{{account?.name || (connected?'扩展已连接，请登录知乎':'草稿桥未连接')}}<small v-if="account">账号 ID　{{account.user_id}}</small></p>
+    <BridgeConnection :bridge="bridge" :account="account" :target="recipient"/>
     <div v-if="grant" class="scope">
       <p>转载授权　<strong>{{grant.scope==='local'?'仅本地试稿':'可用于指定知乎账号的草稿箱'}}</strong>
         <small v-if="grant.scope==='zhihu_draft'">获准账号 ID　{{grant.user_id}}</small></p>
@@ -19,9 +19,6 @@
     </p>
     <p v-if="record?.reason">{{record.reason}}</p>
     <p v-if="!record && !recipient">在「管理知乎账号」中将分稿别名与指定登录账号绑定。</p>
-    <p v-else-if="recipient && (!record || ['failed','queued','cancelled'].includes(record.state)) && recipient.user_id!==account?.user_id">
-      请在草稿桥使用的浏览器配置中登录「{{recipient.name}}」，并核对账号 ID。
-    </p>
     <el-button v-if="canSend" type="primary" :loading="busy" @click="enqueue">保存到 {{account.name}} 的草稿箱</el-button>
     <el-button v-if="record && ['queued','preparing'].includes(record.state)" :disabled="busy" @click="change({action:'cancel'})">取消草稿任务</el-button>
     <DraftInspection v-if="record && ['saved','unknown','needs_review','verified'].includes(record.state)"
@@ -34,21 +31,22 @@
 import {ref,computed,onMounted,onBeforeUnmount,watch} from 'vue'
 import {ElMessageBox} from 'element-plus'
 import DraftInspection from './DraftInspection.vue'
+import BridgeConnection from './BridgeConnection.vue'
 const props=defineProps({api:Function,job:Object,bindingsVersion:Number,date:Function})
 defineEmits(['accounts','inspected'])
 const recipient=ref(null),recipientSource=ref(''),control=ref('')
 const grant=ref(null),history=ref([]),permitted=ref(false)
-const connected=ref(false),account=ref(null),record=ref(null),inspections=ref([]),busy=ref(false),error=ref('')
+const bridge=ref(null),account=ref(null),record=ref(null),inspections=ref([]),busy=ref(false),error=ref('')
 const labels={queued:'等待保存',preparing:'准备配图',sending:'正在请求保存',saved:'已找到草稿，待核对',verified:'已人工核对',needs_review:'核对发现问题',unknown:'回执不确定，需核对草稿箱',failed:'准备失败',cancelled:'已取消'}
 const path='jobs/'+props.job.job.id+'/platform-draft'
-const canSend=computed(()=>permitted.value && recipient.value && account.value && control.value==='active' && recipient.value.user_id===account.value.user_id && props.job.job.state!=='cancelled' && (!record.value ||
+const canSend=computed(()=>!bridge.value?.check_only && permitted.value && recipient.value && account.value && control.value==='active' && recipient.value.user_id===account.value.user_id && props.job.job.state!=='cancelled' && (!record.value ||
     (['failed','cancelled'].includes(record.value.state) && record.value.user_id===account.value.user_id)))
 let stopped=false,timer,sequence=0
 async function load(){
   const n=++sequence
-  try{const info=await props.api(path);if(!stopped && n===sequence){connected.value=info.connected;account.value=info.account;record.value=info.record;recipient.value=info.recipient;recipientSource.value=info.recipient_source;control.value=info.control
+  try{const info=await props.api(path);if(!stopped && n===sequence){bridge.value=info.bridge;account.value=info.account;record.value=info.record;recipient.value=info.recipient;recipientSource.value=info.recipient_source;control.value=info.control
     grant.value=info.rights;permitted.value=info.permitted;history.value=info.rights_history;inspections.value=info.inspections || []}}
-  catch(e){if(!stopped && n===sequence){connected.value=false;account.value=null;grant.value=null;permitted.value=false;error.value=e.message}}
+  catch(e){if(!stopped && n===sequence){bridge.value=null;account.value=null;grant.value=null;permitted.value=false;error.value=e.message}}
 }
 async function poll(){await load();if(!stopped)timer=setTimeout(poll,4000)}
 async function change(data){

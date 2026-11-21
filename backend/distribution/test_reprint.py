@@ -236,6 +236,34 @@ class Reprint(unittest.TestCase):
         self.assertTrue(all(job["reused"] for job in shared))
         self.assertEqual(batch["expected"],2)
 
+    def test_probe_mode_distinguishes_login_and_blocks_draft_queue(self):
+        from .draft_bridge import heartbeat, listener, status
+        from .store import transaction
+        bid=self.create([self.source(64)])
+        self.prepare()
+        self.approve(bid,self.batch(bid)["reviews"])
+        job=next(j for j in self.batch(bid)["deliveries"] if j["platform"]=="zhihu")
+        url=BASE+f"jobs/{job['id']}/platform-draft"
+        accounts=BASE+"zhihu-draft-accounts"
+        with listener(self.path,9541,True,"current"):
+            heartbeat(self.path,"ignored","旧账号",session="earlier")
+            self.assertEqual(self.client.get(accounts).json["bridge"]["phase"],"listening")
+            heartbeat(self.path,"","",session="current")
+            info=self.client.get(accounts).json
+            self.assertTrue(info["connected"])
+            self.assertIsNone(info["account"])
+            heartbeat(self.path,"fixture","测试账号",session="current")
+            info=self.client.get(url).json
+            self.assertEqual(info["account"]["user_id"],"fixture")
+            self.assertTrue(info["bridge"]["check_only"])
+            rejected=self.client.post(url,json=dict(action="queue",sha=job["sha"],user_id="fixture",consent=True))
+            self.assertIn("仅核对连接",rejected.json["error"])
+            self.assertIsNone(self.client.get(url).json["record"])
+            with transaction(self.path) as db:
+                db.execute("UPDATE zhihu_bridge_runtime SET seen=0")
+                self.assertFalse(status(db)["connected"])
+        self.assertEqual(self.client.get(accounts).json["bridge"]["phase"],"offline")
+
     def test_zhihu_draft_recipient_follows_frozen_identity(self):
         # All identities and heartbeats are fixtures in this test's temporary database.
         from .zhihu_draft_worker import heartbeat

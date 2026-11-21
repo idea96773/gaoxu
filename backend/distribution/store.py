@@ -90,6 +90,9 @@ CREATE TABLE IF NOT EXISTS publish_cancellations (
  scope TEXT NOT NULL CHECK(scope IN ('task','batch')));
 CREATE TABLE IF NOT EXISTS draft_bridge (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), user_id TEXT NOT NULL, name TEXT NOT NULL, seen INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS zhihu_bridge_runtime (
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), session TEXT NOT NULL, port INTEGER NOT NULL,
+ check_only INTEGER NOT NULL, phase TEXT NOT NULL, seen INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS zhihu_draft_bindings (
  alias TEXT PRIMARY KEY, user_id TEXT UNIQUE, name TEXT NOT NULL, revision INTEGER NOT NULL,
  updated INTEGER NOT NULL);

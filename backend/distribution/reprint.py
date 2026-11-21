@@ -10,7 +10,7 @@ from flask import jsonify, request
 
 from .delivery import existing_deliveries, schedule_in
 from .editorial import checked_link
-from .library import read_folder, selected_header, selection_key, validate_directories
+from .library import check_library_root, read_folder, selected_header, selection_key, validate_directories
 from .markdown_media import MARKDOWN, inline_tokens, local_path
 from .store import canonicalize, clean_rules, compact, digest, enqueue, transaction
 
@@ -131,6 +131,8 @@ def create(path,root,data):
     validate_directories(dirs)
     selections=data.get("selections")
     identity=["reprint",dirs,pools,rules,destination]
+    if "expected_root" in data:
+        identity.append({"expected_root":data["expected_root"]})
     if "links" in settings:
         identity.append(settings["links"])
     if selections is not None:
@@ -153,6 +155,7 @@ def create(path,root,data):
         old=previous(db)
         if old:
             return old
+        check_library_root(root,data)
         bid=uuid.uuid4().hex
         db.execute("INSERT INTO batches VALUES(?,?,?,?,?,?,?)",
                    (bid,key,fingerprint,int(time.time()),"active",compact(targets),compact(rules)))
@@ -367,7 +370,7 @@ def overview(db,bid,platforms=()):
     return result
 
 
-def register(api,path,root,body):
+def register(api,path,current_root,body):
     @api.get("/reprint-settings")
     def read_defaults():
         with transaction(path,False) as db:
@@ -394,7 +397,7 @@ def register(api,path,root,body):
 
     @api.post("/reprints")
     def new_reprints():
-        return jsonify(id=create(path,root,body())),201
+        return jsonify(id=create(path,current_root(),body())),201
 
     @api.post("/reprints/<bid>/<int:rid>/reread")
     def reread_reprint(bid,rid):

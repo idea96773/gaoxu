@@ -69,9 +69,10 @@ from distribution import api, engine
 import json
 import os
 from pathlib import Path
-from distribution.library import DEFAULT_LIBRARY
+from distribution.library import library_settings
+from distribution.store import DEFAULT_DB
 
-root = Path(os.environ.get('DIST_LIBRARY') or DEFAULT_LIBRARY)
+root = Path(library_settings(os.environ.get('DIST_DB') or DEFAULT_DB, os.environ.get('DIST_LIBRARY'))['root'])
 print(json.dumps({'path': str(root)}, ensure_ascii=True))
 try:
     with os.scandir(root) as entries:
@@ -88,7 +89,7 @@ except OSError:
     } else {
         Write-Warning "文章目录不可读取 | $libraryPath"
         if ($CheckOnly) { throw '请核对 Easy WeChat 保存位置、DIST_LIBRARY 和目录的读取权限。' }
-        Write-Warning '仍可打开管理台查看已有任务。'
+        Write-Warning '可打开管理台，在「批量转载 → 保存目录设置」中指定 Easy WeChat 保存位置。'
     }
 } finally { Pop-Location }
 

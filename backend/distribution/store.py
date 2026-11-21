@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS documents (
  row_id INTEGER PRIMARY KEY REFERENCES rows(id), payload TEXT NOT NULL, analysis TEXT);
 CREATE TABLE IF NOT EXISTS local_inputs (row_id INTEGER PRIMARY KEY REFERENCES rows(id), payload TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS library_imports (rel TEXT PRIMARY KEY, row_id INTEGER NOT NULL REFERENCES rows(id));
+CREATE TABLE IF NOT EXISTS library_settings (
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), root TEXT NOT NULL, revision INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS media (sha TEXT PRIMARY KEY, mime TEXT NOT NULL, data BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS variants (
  row_id INTEGER REFERENCES rows(id), platform TEXT NOT NULL, revision INTEGER NOT NULL,
@@ -249,7 +251,12 @@ def import_batch(path, data, now=None, folders=None):
     pools = {}
     for target in selected:
         pools.setdefault(target["platform"], []).append(target)
-    fingerprint = digest(compact([lines, selected, rules, manifest] + (["rotate"] if routing == "rotate" else [])))
+    identity=[lines,selected,rules,manifest]
+    if routing=="rotate":
+        identity.append("rotate")
+    if folders is not None and "expected_root" in data:
+        identity.append({"expected_root":data["expected_root"]})
+    fingerprint=digest(compact(identity))
     with transaction(path) as db:
         old = db.execute("SELECT id,digest FROM batches WHERE request_key=?", (key,)).fetchone()
         if old:

@@ -42,6 +42,7 @@ tool('library_list','查看下载目录、原文标识与各平台已有任务�
 tool('reprint_settings','读取管理台保存的常用转载账号、文末链接和排期规则',{},()=>api('reprint-settings'))
 tool('reprint_prepare','按选定目录创建转载批次并返回批次编号。将 library_list 的 title 与 selection_key 按目录传入 selections，可核对后台实际读取的文章来源。batch_status 查询进度，request_id 用于去重',{
   request_id:admission.request_id,directories:z.array(z.string()).min(1).max(100),
+  expected_root:z.string().optional().describe('上次 library_list 返回的 root，用于核对选稿目录'),
   selections:z.record(z.string(),z.object({key:z.string().regex(/^(url|file)-[a-f0-9]{64}$/),title:z.string().min(1).max(8192)})).optional(),
   targets:z.array(z.object({platform:z.enum(['zhihu','toutiao']),account:target.shape.account})).min(1).max(28),
   destination:z.string().url(),rules:reprintRule,
@@ -70,7 +71,10 @@ tool('schedule_calendar','按北京时间月份查看每天的任务状态及数
 tool('agent_runs','查看最近到达管理台的 Agent 调用记录，使用 next 向前翻页',{
   before:jobId.optional()
 },args=>api('agent-runs?'+new URLSearchParams(args)))
-tool('library_import','导入最多 100 个已列出的本地文章目录并开始模拟处理',{...admission,directories:z.array(z.string()).min(1).max(100)},a=>api('library',a))
+tool('library_import','导入最多 100 个已列出的本地文章目录并开始模拟处理',{
+  ...admission,directories:z.array(z.string()).min(1).max(100),
+  expected_root:z.string().optional().describe('上次 library_list 返回的 root')
+},a=>api('library',a))
 tool('article_batch_import','以模拟正文处理手工提交的微信链接',{...admission,urls:z.array(z.string()).min(1).max(1000)},a=>api('batches',a))
 tool('dashboard_summary','模拟批次、全局待审转载数、待交付数、今日冻结稿回执数、失败步骤及调度器心跳。compact 可只取汇总和批次索引',{compact:z.boolean().optional()},a=>api(a.compact?'batches?summary=1':'batches'))
 tool('batch_status','查询三级任务进度及独立失败项',{id:batchId},a=>api('batches/'+a.id))

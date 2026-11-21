@@ -94,6 +94,7 @@
     <el-dialog v-model="showImport" title="导入文章" width="min(660px, 94vw)" :close-on-click-modal="false">
       <el-radio-group v-model="source"><el-radio-button value="library">固定保存目录</el-radio-button><el-radio-button value="folder">另选文件夹</el-radio-button><el-radio-button value="url">链接模拟</el-radio-button></el-radio-group>
       <div v-if="source==='library'" class="input-block"><p>{{libraryRoot || 'Easy WeChat 保存目录'}}</p>
+        <LibrarySettings :api="api" :disabled="scanning || submitting" @saved="scan" />
         <el-button @click="scan" :loading="scanning">读取新文章</el-button>
         <small v-if="scanned">共 {{libraryItems.length}} 个文章目录，{{libraryItems.filter(x=>!x.known).length}} 个未入库。已选 {{selectedDirs.length}} 个。</small>
         <el-select v-if="scanned" v-model="selectedDirs" multiple filterable collapse-tags :multiple-limit="100" placeholder="选择要导入的文章" style="width:100%;margin-top:10px">
@@ -162,6 +163,7 @@ import FailedJobs from "./FailedJobs.vue"
 import RuntimeStatus from "./RuntimeStatus.vue"
 import AgentRuns from "./AgentRuns.vue"
 import ReprintCreate from "./ReprintCreate.vue"
+import LibrarySettings from "./LibrarySettings.vue"
 import ReprintReview from "./ReprintReview.vue"
 import EditorialPanel from "./EditorialPanel.vue"
 import { useRoute, useRouter } from 'vue-router'
@@ -202,7 +204,15 @@ function targetsForImport(){
   })
 }
 const libraryRoot=ref(''),libraryItems=ref([]),selectedDirs=ref([]),scanning=ref(false),scanned=ref(false)
-async function scan(){scanning.value=true;formError.value='';try{const info=await api('library');libraryRoot.value=info.root;libraryItems.value=info.items;selectedDirs.value=info.items.filter(x=>!x.known).slice(0,100).map(x=>x.directory);scanned.value=true}catch(e){formError.value=e.message}finally{scanning.value=false}}
+async function scan(){
+  scanning.value=true;scanned.value=false;formError.value='';selectedDirs.value=[];libraryItems.value=[]
+  try{
+    const info=await api('library')
+    libraryRoot.value=info.root;libraryItems.value=info.items
+    selectedDirs.value=info.items.filter(x=>!x.known).slice(0,100).map(x=>x.directory)
+    scanned.value=true
+  }catch(e){formError.value=e.message}finally{scanning.value=false}
+}
 const formError=ref(''),submitting=ref(false),article=ref(null),articleOpen=ref(false),job=ref(null),jobOpen=ref(false),newTime=ref('')
 const labels={preparing:'等待读取',reading:'正在读取',reprint_prepare:'读取转载资料',done:'已完成',ready:'排队中',active:'运行中',paused:'已暂停',cancelled:'已取消',processing:'处理中',partial:'部分成功',failed:'失败',invalid:'无效',duplicate:'重复',running:'执行中',interrupted:'已中断',ingest:'导入正文',normalize:'标准化',analyze:'模拟分析',adapt:'平台适配',check:'质量检查',plan:'生成排期',publish:'模拟发布',deliver:'冻结稿模拟交付'}
 const label=x=>labels[x]||x
@@ -270,6 +280,7 @@ async function submit(){
     const input=source.value==='library'?selectedDirs.value:source.value==='folder'?files.value.map(f=>[f.webkitRelativePath,f.size,f.lastModified]):urls.value.trim()
     if(!platforms.value.length||!input.length)throw Error('请选择文章和至少一个模拟平台')
     const options={targets:targetsForImport(),account_routing:routing.value,rules:{gap:gap.value,account_cap:cap.value,platform_cap:platformCap.value}}
+    if(source.value==='library')options.expected_root=libraryRoot.value
     const sig=JSON.stringify([source.value,options,input])
     if(sig!==lastSignature){lastSignature=sig;requestId=crypto.randomUUID()} options.request_id=requestId
     let result

@@ -99,6 +99,54 @@ class Reprint(unittest.TestCase):
         self.assertEqual(pinned[:-1], recent)
         self.assertEqual((pinned[-1]["id"], pinned[-1]["rows_total"]), (bid, 1))
 
+    def test_library_switch_preserves_submitted_sources_and_rejects_stale_selection(self):
+        from .library import library_settings
+        old=self.root/"old"
+        new=self.root/"new"
+        rel=export_folder(old,1).relative_to(old).as_posix()
+        replacement=export_folder(new,1)/"正文.md"
+        replacement.write_text(replacement.read_text(encoding="utf-8").replace("test-export-1","different"),
+                               encoding="utf-8")
+        with patch.dict("os.environ",{"DIST_LIBRARY":""}):
+            ui=create_app(self.path).test_client()
+            set_path=BASE+"library-settings"
+            self.assertFalse(self.client.get(set_path).json["editable"])
+            self.assertEqual(ui.post(set_path,json=dict(root=str(old),revision=0)).json["revision"],1)
+            item=ui.get(BASE+"library").json["items"][0]
+            data=dict(directories=[rel],expected_root=str(old),request_id="old-root",targets=self.targets,
+                      selections={rel:dict(title=item["title"],key=item["selection_key"])})
+            response=ui.post(BASE+"reprints",json=data)
+            self.assertEqual(response.status_code,201,response.json)
+            bid=response.json["id"]
+            self.assertEqual(ui.post(set_path,json=dict(root=str(new),revision=1)).json["revision"],2)
+            self.assertEqual(ui.post(set_path,json=dict(root=str(old),revision=1)).status_code,400)
+            self.assertEqual(ui.post(BASE+"reprints",json=data).json["id"],bid)
+            stale=data|dict(request_id="other")
+            for endpoint in ("reprints","library"):
+                self.assertEqual(ui.post(BASE+endpoint,json=stale).status_code,400)
+            self.assertEqual(ui.get(BASE+"library").json["items"][0]["source"],"https://mp.weixin.qq.com/s/different")
+            self.assertEqual(library_settings(self.path)["root"],str(new))
+            self.assertEqual(create_app(self.path).test_client().get(set_path).json["root"],str(new))
+        self.prepare()
+        row=self.batch(bid)["reviews"][0]
+        self.assertEqual(row["state"],"pending")
+        with transaction(self.path,False) as db:
+            self.assertEqual(db.execute("SELECT canonical FROM rows WHERE id=?",(row["id"],)).fetchone()[0],
+                             "folder:https://mp.weixin.qq.com/s/test-export-1")
+
+    def test_catalog_same_relative_directory_does_not_hide_a_different_unsourced_article(self):
+        directory=self.source(7)
+        md=self.root/directory/"正文.md"
+        md.write_text("文章甲\n\n正文甲",encoding="utf-8")
+        response=self.client.post(BASE+"library",json=dict(request_id="unsourced",directories=[directory],
+                                                           targets=self.targets))
+        self.assertEqual(response.status_code,201,response.json)
+        self.assertTrue(self.client.get(BASE+"library").json["items"][0]["known"])
+        other=self.root/"别的保存目录"
+        export_folder(other,7).joinpath("正文.md").write_text("文章乙\n\n正文乙",encoding="utf-8")
+        other_ui=create_app(self.path,other).test_client()
+        self.assertFalse(other_ui.get(BASE+"library").json["items"][0]["known"])
+
     def test_review_snapshot_isolation_export_and_duplicate(self):
         dirs = [self.source(i) for i in range(3)]
         md = self.root / dirs[0] / "正文.md"

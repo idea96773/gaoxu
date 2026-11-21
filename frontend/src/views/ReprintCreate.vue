@@ -2,6 +2,7 @@
   <el-button type="primary" @click="open">批量转载</el-button>
   <el-dialog v-model="visible" append-to-body title="从固定目录选择转载文章" width="min(780px, 95vw)" :close-on-click-modal="false">
     <small>{{root}}</small>
+    <LibrarySettings :api="api" :disabled="loading || busy" @saved="reloadLibrary" />
     <p><el-input v-model="filter" placeholder="搜索文章标题或目录" clearable /></p>
     <div class="coverage-tools">
       <label>来源公众号 <select v-model="sourceName"><option value="">全部公众号</option>
@@ -86,6 +87,7 @@
 <script setup>
 import {ref, computed, reactive, watch} from 'vue'
 import ScopeSchedule from './ScopeSchedule.vue'
+import LibrarySettings from './LibrarySettings.vue'
 const props=defineProps({api:Function})
 const emit=defineEmits(['created','job'])
 const visible=ref(false),busy=ref(false),loading=ref(false),error=ref(''),root=ref(''),items=ref([]),dirs=ref([]),filter=ref('')
@@ -216,6 +218,22 @@ async function saveDefaults(){
   finally{saving.value=false}
 }
 let openRequest=0
+function applyLibrary(data){
+  if(root.value && root.value!==data.root && dirs.value.length){
+    dirs.value=[];notice.value='保存目录已更换，请从当前目录重新选稿'
+  }
+  root.value=data.root;items.value=data.items
+}
+async function reloadLibrary(folder){
+  const request=++openRequest
+  if(folder!==root.value)dirs.value=[]
+  items.value=[];loading.value=true;error.value=''
+  try{
+    const data=await props.api('library')
+    if(request===openRequest)applyLibrary(data)
+  }catch(e){if(request===openRequest)error.value=e.message}
+  finally{if(request===openRequest)loading.value=false}
+}
 async function open(){
   const request=++openRequest
   visible.value=true;loading.value=true;error.value='';notice.value=''
@@ -225,12 +243,7 @@ async function open(){
     const available=bound.value.items.filter(a=>a.user_id && valid(a.alias)).map(a=>a.alias)
     aliases.zhihu=[...new Set([...aliases.zhihu,...available])]
   }
-  if(library.status==='fulfilled'){
-    if(root.value && root.value!==library.value.root && dirs.value.length){
-      dirs.value=[];notice.value='保存根目录已更换，请从当前目录重新选稿'
-    }
-    root.value=library.value.root;items.value=library.value.items
-  }
+  if(library.status==='fulfilled')applyLibrary(library.value)
   else{items.value=[];error.value=library.reason.message}
   if(saved.status==='fulfilled')applyDefaults(saved.value)
   else error.value=saved.reason.message
@@ -242,7 +255,7 @@ async function submit(){
   try{
     if(unavailable.value)throw Error('选稿与当前目录不一致，请重新核对')
     const selections=Object.fromEntries(selection.value.map(item=>[item.directory,{key:item.key,title:item.title}]))
-    const data={directories:[...dirs.value],selections,...options()}
+    const data={directories:[...dirs.value],expected_root:root.value,selections,...options()}
     const current=JSON.stringify(data)
     if(current!==signature){signature=current;key=crypto.randomUUID()}
     const result=await props.api('reprints',{...data,request_id:key})

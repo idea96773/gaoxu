@@ -2,15 +2,66 @@
 import os
 import stat
 import hashlib
+import sqlite3
 from contextlib import ExitStack
 from pathlib import Path
 
 from .delivery import existing_deliveries
-from .folders import MAX_FILE_BYTES, MEDIA, SOURCE_LINK, export_metadata, parse_folders
+from .folders import MAX_FILE_BYTES, MEDIA, SOURCE_LINK, export_metadata, markdown_fields, parse_folders
 from .search import day_start
 from .store import canonicalize, compact, digest, transaction
 
 DEFAULT_LIBRARY = Path("E:/新公众号文章下载EasyWechatDownload/10个账号文章筛选")
+
+def library_settings(path, fixed=None):
+    if fixed:
+        return dict(root=str(Path(fixed).absolute()),revision=0,editable=False)
+    # The Windows launcher's read-only startup check also runs before the first
+    # database has been created, and before migrations on an older installation.
+    saved=None
+    if Path(path).is_file():
+        db=sqlite3.connect(Path(path).absolute().as_uri()+"?mode=ro",uri=True)
+        try:
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='library_settings' AND type='table'").fetchone():
+                saved=db.execute("SELECT root,revision FROM library_settings WHERE singleton=1").fetchone()
+        finally:
+            db.close()
+    return dict(root=saved[0] if saved else str(DEFAULT_LIBRARY),revision=saved[1] if saved else 0,editable=True)
+
+
+def configure_library(path,fixed,data):
+    if fixed:
+        raise ValueError("文章目录由启动配置指定，请在启动配置中更改")
+    value=data.get("root")
+    if not isinstance(value,str) or not value.strip() or "\x00" in value:
+        raise ValueError("请粘贴 Easy WeChat 保存目录的完整路径")
+    folder=Path(value.strip())
+    if not folder.is_absolute() or ".." in folder.parts or (os.name=="nt" and not (
+            len(folder.drive)==2 and folder.drive[0].isalpha() and folder.drive[1]==":")):
+        raise ValueError("请选择本机磁盘上的绝对目录")
+    try:
+        if not folder.is_dir() or not all(safe_entry(p) for p in (folder,*folder.parents)):
+            raise ValueError("请选择可读取的本机文件夹，目录路径中不能含有符号链接或联接")
+        with os.scandir(folder) as entries:
+            next(entries,None)
+    except OSError as exc:
+        raise ValueError("后台无法读取该文件夹，请核对路径和权限") from exc
+    with transaction(path) as db:
+        row=db.execute("SELECT root,revision FROM library_settings WHERE singleton=1").fetchone()
+        revision=row["revision"] if row else 0
+        current=Path(row["root"]) if row else DEFAULT_LIBRARY
+        if folder!=current:
+            if type(data.get("revision")) is not int or data["revision"]!=revision:
+                raise ValueError("另一窗口已更换目录，请重新读取设置后保存")
+            revision+=1
+            db.execute("INSERT OR REPLACE INTO library_settings VALUES(1,?,?)",(str(folder),revision))
+    return dict(root=str(folder),revision=revision,editable=True)
+
+
+def check_library_root(root,data):
+    if "expected_root" in data and data["expected_root"]!=str(root):
+        raise ValueError("文章保存目录已更换，请重新读取目录并选稿")
+
 
 def selection_key(root,directory,kind,value):
     location=os.path.normcase(os.path.abspath(root))
@@ -33,21 +84,20 @@ def article_header(folder,bodies):
         url=match[1] if match else None
         source=canonicalize(url) if url else None
         markdown_sha=None
+        identity=source
         if not source:
             size=os.fstat(stream.fileno()).st_size
             if len(sample)<=size<=MAX_FILE_BYTES:
-                stamp=hashlib.sha256(sample)
-                size_read=len(sample)
-                while size_read<=size:
-                    chunk=stream.read(min(65536,size+1-size_read))
-                    if not chunk:
-                        break
-                    stamp.update(chunk)
-                    size_read+=len(chunk)
-                if size_read==size:
-                    markdown_sha=stamp.hexdigest()
+                raw=sample+stream.read(size-len(sample)+1)
+                if len(raw)==size:
+                    markdown_sha=hashlib.sha256(raw).hexdigest()
+                    try:
+                        md=raw.decode("utf-8-sig").replace("\r\n","\n").strip()
+                        _,_,identity,_=markdown_fields(md,folder.name)
+                    except ValueError:
+                        pass
     meta=export_metadata(header)
-    return dict(title=title,url=url,source=source,markdown_sha=markdown_sha,
+    return dict(title=title,url=url,source=source,markdown_sha=markdown_sha,identity=identity,
                 source_name=meta["source_name"],publish_time=meta["publish_time"])
 
 
@@ -89,11 +139,11 @@ def discover(root):
 def catalog_records(path,entries):
     with transaction(path,False) as db:
         seen={r[0] for r in db.execute("SELECT canonical FROM rows WHERE kind='article' AND canonical LIKE 'folder:%'")}
-        imported={r[0] for r in db.execute("SELECT rel FROM library_imports")}
         history=existing_deliveries(db,("folder:"+item["source"] for item in entries if item["source"]))
     for item in entries:
         key="folder:"+item["source"] if item["source"] else None
-        item.update(known=key in seen if key else item["directory"] in imported,deliveries=history.get(key,{}))
+        identity=item.pop("identity",None)
+        item.update(known=bool(identity and "folder:"+identity in seen),deliveries=history.get(key,{}))
     return entries
 
 

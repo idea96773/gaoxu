@@ -14,7 +14,7 @@ from . import delivery, reprint, search, platform_draft
 from .scheduling import effective_limits
 from .engine import close_attempt, lookup_receipt
 from .store import DEFAULT_DB, PLATFORMS, import_batch, initialize, next_slot, operation_key, transaction
-from .library import DEFAULT_LIBRARY, catalog, catalog_page, read_selected
+from .library import catalog, catalog_page, check_library_root, configure_library, library_settings, read_selected
 
 def outcome(row, jobs, target_count):
     if row["kind"] != "article":
@@ -219,7 +219,7 @@ def job_action(path,jid,action,data,now):
         else:
             raise ValueError("未知操作")
 
-def make_blueprint(path,root):
+def make_blueprint(path,fixed_root):
     api=Blueprint("distribution",__name__,url_prefix="/api/distribution")
     @api.errorhandler(ValueError)
     def invalid(exc):
@@ -280,14 +280,28 @@ def make_blueprint(path,root):
             raise ValueError("导入设置无效")
         options["urls"]=[f["url"] for f in inputs]
         return jsonify(id=import_batch(path,options,folders=inputs)),201
+    @api.get("/library-settings")
+    def read_library_settings():
+        return jsonify(library_settings(path,fixed_root))
+
+    @api.post("/library-settings")
+    def update_library_settings():
+        return jsonify(configure_library(path,fixed_root,body()))
+
+    def current_root():
+        return Path(library_settings(path,fixed_root)["root"])
+
     @api.get("/library")
     def library():
+        root=current_root()
         if any(k in request.args for k in ("source_name","keyword","start","end","order","page","page_size")):
             return jsonify(root=str(root),**catalog_page(path,root,request.args))
         return jsonify(root=str(root),items=catalog(path,root))
     @api.post("/library")
     def import_library():
         options=body()
+        root=current_root()
+        check_library_root(root,options)
         inputs=read_selected(root,options.get("directories"))
         options["urls"]=[f["url"] for f in inputs]
         return jsonify(id=import_batch(path,options,folders=inputs)),201
@@ -360,7 +374,7 @@ def make_blueprint(path,root):
         return jsonify(ok=True,**(result or {}))
     from .editorial import register
     register(api,path,body)
-    reprint.register(api,path,root,body)
+    reprint.register(api,path,current_root,body)
     search.register(api,path)
     from . import agent_runs
     agent_runs.register(api,path)
@@ -371,7 +385,7 @@ def create_app(path=DEFAULT_DB,library_root=None):
     initialize(path)
     app=Flask(__name__,static_folder=None)
     app.config.update(MAX_CONTENT_LENGTH=260*1024*1024,MAX_FORM_PARTS=12000)
-    app.register_blueprint(make_blueprint(path,Path(library_root or os.getenv("DIST_LIBRARY") or DEFAULT_LIBRARY)))
+    app.register_blueprint(make_blueprint(path,library_root or os.getenv("DIST_LIBRARY")))
     root=Path(__file__).resolve().parents[2]/"frontend"/"dist"
     @app.get("/")
     def home():

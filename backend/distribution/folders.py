@@ -51,6 +51,22 @@ class Images(HTMLParser):
             if ref:
                 self.refs.append(ref)
 
+def markdown_fields(md,label):
+    lines=md.splitlines()
+    if not lines:
+        raise ValueError("Markdown 为空")
+    title=lines[0].strip("# ").strip() or label
+    source=SOURCE_LINK.search(md)
+    url=source[1] if source else ""
+    canonical=canonicalize(url) if url else None
+    if url and not canonical:
+        raise ValueError("原文链接无效")
+    body=md[source.end():].removeprefix(")").lstrip("\n") if source else "\n".join(lines[1:]).lstrip("= \n")
+    if not body.strip():
+        raise ValueError("缺少正文")
+    return title,url,canonical or "local:"+digest(compact([title,body])),body
+
+
 def parse_folders(parts):
     files={}
     total=0
@@ -85,18 +101,7 @@ def parse_folders(parts):
                 raise ValueError("每篇需一个 Markdown，最多一个 HTML")
             md=files[group[".md"][0]].decode("utf-8-sig").replace("\r\n","\n").strip()
             html=files[group[".html"][0]].decode("utf-8-sig") if group.get(".html") else ""
-            lines=md.splitlines()
-            if not lines:
-                raise ValueError("Markdown 为空")
-            title=lines[0].strip("# ").strip() or label
-            source=SOURCE_LINK.search(md)
-            url=source[1] if source else ""
-            canonical=canonicalize(url) if url else None
-            if url and not canonical:
-                raise ValueError("原文链接无效")
-            body=md[source.end():].removeprefix(")").lstrip("\n") if source else "\n".join(lines[1:]).lstrip("= \n")
-            if not body.strip():
-                raise ValueError("缺少正文")
+            title,url,canonical,body=markdown_fields(md,label)
             tags=Images(); tags.feed(html)
             md_refs=[token.attrGet("src") or "" for token in inline_tokens(MARKDOWN.parse(body)) if token.type=="image"]
             refs=list(dict.fromkeys(md_refs+tags.refs))
@@ -120,7 +125,7 @@ def parse_folders(parts):
                      markdown_content=body,images=list(dict.fromkeys(images)),cover=images[0] if images else None,
                      media_map={k:"/api/distribution/media/"+v[0] for k,v in assets.items()},
                      missing_images=missing,copyright_status="unknown",mode="local-dry-run")
-            items.append(dict(label=label,url=url or label,canonical=canonical or "local:"+digest(compact([title,body])),
+            items.append(dict(label=label,url=url or label,canonical=canonical,
                               markdown_sha=hashlib.sha256(files[group[".md"][0]]).hexdigest(),
                               doc=doc,assets=assets,error=""))
         except (UnicodeError,ValueError) as exc:

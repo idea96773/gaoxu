@@ -12,7 +12,8 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from flask import jsonify, send_file
 
-from .store import canonicalize, compact, transaction
+from . import rights
+from .store import canonicalize, compact, digest, transaction
 
 FORMATS = {"zhihu": "知乎长文", "xiaohongshu": "小红书图文笔记", "toutiao": "头条文章"}
 DEFAULT_LINK = dict(mode="omit", label="延伸阅读", destination="", short="", verified=False)
@@ -279,8 +280,16 @@ def register(api, path, read_body):
                         markup.append(f'<img src="{name}" alt="配图 {idx}">')
                     pack.writestr("article.md","\n\n".join(md))
                     pack.writestr("article.html","\n".join(markup))
-                pack.writestr("metadata.json",compact(dict(platform=d["platform"],account=d["account"],revision=d["rev"],
-                           source_url=view["source_url"],link=view["link"])))
+                metadata=dict(platform=d["platform"],account=d["account"],revision=d["rev"],
+                              source_url=view["source_url"],link=view["link"])
+                if view.get("kind")=="reprint":
+                    bound=db.execute("SELECT job FROM frozen_deliveries WHERE draft=?",(did,)).fetchone()
+                    grant=rights.current(db,bound["job"] if bound else None)
+                    sha=digest(d["frozen"])
+                    allowed=rights.permits(grant,sha,grant["user_id"])
+                    metadata["usage_rights"]=dict(scope="zhihu_draft" if allowed else "local",sha=sha,
+                                                  user_id=grant["user_id"] if allowed else "",confirmed=grant["confirmed"])
+                pack.writestr("metadata.json",compact(metadata))
         stream.seek(0)
         return send_file(stream,mimetype="application/zip",as_attachment=True,download_name=f"{d['platform']}-{did}-v{d['rev']}.zip")
 

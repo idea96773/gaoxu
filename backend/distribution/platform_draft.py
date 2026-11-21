@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 
 from flask import jsonify, request
 
+from . import rights
 from .store import digest, transaction
 
 
@@ -97,12 +98,17 @@ def register(api,path,body):
         require_local()
         with transaction(path,False) as db:
             record=db.execute("SELECT * FROM platform_drafts WHERE job=?",(job,)).fetchone()
-            row=db.execute("""SELECT j.account,b.control FROM jobs j JOIN rows r ON r.id=j.row_id
+            row=db.execute("""SELECT j.account,b.control,f.sha FROM jobs j JOIN frozen_deliveries f ON f.job=j.id JOIN rows r ON r.id=j.row_id
                 JOIN batches b ON b.id=r.batch WHERE j.id=? AND j.platform='zhihu'""",(job,)).fetchone()
             if not row:
                 raise KeyError("找不到知乎任务")
             target,via=recipient(db,job,row["account"],record)
+            grant=rights.current(db,job)
+            changes=db.execute("""SELECT scope,user_id,confirmed FROM reprint_rights WHERE job=?
+                ORDER BY id DESC LIMIT 10""",(job,))
             return jsonify(**bridge_status(db),recipient=target,recipient_source=via,control=row["control"],
+                           rights=grant,permitted=bool(target and rights.permits(grant,row["sha"],target["user_id"])),
+                           rights_history=[dict(event) for event in changes],
                            record=dict(record) if record else None)
 
     @api.post("/jobs/<int:job>/platform-draft")
@@ -113,7 +119,29 @@ def register(api,path,body):
         with transaction(path) as db:
             now=int(time.time())
             existing=db.execute("SELECT * FROM platform_drafts WHERE job=?",(job,)).fetchone()
-            if action=="queue":
+            if action=="scope":
+                row=source(db,job)
+                grant=rights.current(db,job)
+                if (row["sha"]!=data.get("sha") or type(data.get("scope_revision")) is not int
+                        or data["scope_revision"]!=grant["revision"]):
+                    return jsonify(error="稿件或授权记录已更新，请刷新后核对"),409
+                scope=data.get("scope")
+                uid=""
+                if scope=="zhihu_draft":
+                    target,_=recipient(db,job,row["account"],existing)
+                    if (not target or target["user_id"]!=data.get("user_id") or data.get("rights_confirmed") is not True
+                            or row["control"]=="cancelled" or row["state"]=="cancelled"):
+                        raise ValueError("请核对接收账号，并确认正文和配图已获准用于该知乎草稿箱")
+                    uid=target["user_id"]
+                elif scope=="local":
+                    if existing and existing["state"] in ("queued","preparing"):
+                        db.execute("""UPDATE platform_drafts SET state='cancelled',reason='授权已改为仅本地',
+                            updated=? WHERE job=?""",(now,job))
+                else:
+                    raise ValueError("未知的转载授权范围")
+                if (grant["scope"],grant["user_id"],grant["sha"])!=(scope,uid,row["sha"]):
+                    rights.record(db,job,row["sha"],scope,uid,now)
+            elif action=="queue":
                 row=source(db,job)
                 if row["control"]!="active" or row["state"]=="cancelled":
                     raise ValueError("批次暂停或已取消")
@@ -124,6 +152,10 @@ def register(api,path,body):
                 target,_=recipient(db,job,row["account"],existing)
                 if not target or target["user_id"]!=account["user_id"]:
                     raise ValueError("当前登录与此稿的目标账号不一致，请核对分稿别名和知乎账号 ID")
+                grant=rights.current(db,job)
+                if (not rights.permits(grant,row["sha"],account["user_id"]) or type(data.get("scope_revision")) is not int
+                        or data["scope_revision"]!=grant["revision"]):
+                    raise ValueError("请先核对本份冻结稿及其配图对目标账号的草稿授权")
                 if existing:
                     if existing["user_id"]!=account["user_id"] or existing["sha"]!=row["sha"]:
                         raise ValueError("此稿已有其他账号或版本的保存记录")
@@ -158,6 +190,10 @@ def claim(path,user_id):
              AND j.state!='cancelled' ORDER BY t.id LIMIT 1""",(user_id,)).fetchone()
         if not row:
             return None
+        if not rights.permits(rights.current(db,row["job"]),row["sha"],row["user_id"]):
+            db.execute("""UPDATE platform_drafts SET state='failed',reason='请在管理台确认此稿的知乎草稿授权',
+                updated=? WHERE id=?""",(int(time.time()),row["id"]))
+            return None
         db.execute("UPDATE platform_drafts SET state='preparing',updated=? WHERE id=?",(int(time.time()),row["id"]))
         return dict(row)
 
@@ -170,12 +206,19 @@ def payload(path,task):
             raise ValueError("草稿任务与冻结时锁定的知乎账号不一致")
         if row["sha"]!=task["sha"]:
             raise ValueError("审核版本已变化")
+        require_rights(db,task)
         return json.loads(row["snapshot"])
+
+
+def require_rights(db,task):
+    if not rights.permits(rights.current(db,task["job"]),task["sha"],task["user_id"]):
+        raise ValueError("此份稿件向该账号发送正文与配图的授权已失效")
 
 
 def transition(path,task,old,new,reason="",url=""):
     with transaction(path) as db:
         if new=="sending":
+            require_rights(db,task)
             row=source(db,task["job"])
             if row["sha"]!=task["sha"] or row["control"]!="active" or row["state"]=="cancelled":
                 raise ValueError("批次或冻结稿状态已变化")

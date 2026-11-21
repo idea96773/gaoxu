@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .platform_draft import claim, edit_url, payload, transition
+from .platform_draft import claim, edit_url, payload, require_rights, transition
 from .runtime import instance_lock
 from .store import DEFAULT_DB, initialize, transaction
 
@@ -42,8 +42,9 @@ class Bridge:
             raise ValueError("扩展未返回可核对的知乎账号")
         return uid,str(data["username"])
 
-    def upload(self,blob,mime):
+    def upload(self,blob,mime,check_task):
         encoded=base64.b64encode(blob).decode("ascii")
+        check_task()
         if len(encoded)<=CHUNK:
             result=self.request("uploadImage",dict(platform="zhihu",mimeType=mime,imageData=encoded),180)
         else:
@@ -51,7 +52,9 @@ class Bridge:
             self.request("uploadImage:start",dict(uploadId=upload,totalChunks=(len(encoded)+CHUNK-1)//CHUNK,
                                                  mimeType=mime,platform="zhihu"))
             for index,offset in enumerate(range(0,len(encoded),CHUNK)):
+                check_task()
                 self.request("uploadImage:chunk",dict(uploadId=upload,chunkIndex=index,data=encoded[offset:offset+CHUNK]))
+            check_task()
             result=self.request("uploadImage:complete",dict(uploadId=upload),180)
         url=result.get("url","")
         parsed=urlsplit(url)
@@ -77,20 +80,23 @@ def prepare_content(path,task,bridge):
         dest=html.escape(url,quote=True)
         if not url or not re.search(r'<a href="'+re.escape(dest)+r'">[^<]*</a></p>\s*$',markup):
             raise ValueError("冻结稿文末链接校验失败")
+    def check_task():
+        with transaction(path,False) as db:
+            require_rights(db,task)
+            status=db.execute("""SELECT t.state,b.control FROM platform_drafts t JOIN jobs j ON j.id=t.job
+                JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch WHERE t.id=?""",(task["id"],)).fetchone()
+        if not status or status["state"]!="preparing" or status["control"]!="active":
+            raise ValueError("任务状态已变化")
     for ref in dict.fromkeys(refs):
         if not re.fullmatch(r"/api/distribution/media/[0-9a-f]{64}",ref):
             raise ValueError("冻结稿含未归档的图片")
         with transaction(path,False) as db:
             media=db.execute("SELECT mime,data FROM media WHERE sha=?",(ref.rsplit("/",1)[1],)).fetchone()
-            status=db.execute("""SELECT t.state,b.control FROM platform_drafts t JOIN jobs j ON j.id=t.job
-                JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch WHERE t.id=?""",(task["id"],)).fetchone()
-        if status["state"]!="preparing" or status["control"]!="active":
-            raise ValueError("任务状态已变化")
         if not media or hashlib.sha256(media["data"]).hexdigest()!=ref.rsplit("/",1)[1]:
             raise ValueError("本地图片校验失败")
         if bridge.identity()[0]!=task["user_id"]:
             raise ValueError("账号已切换")
-        url=bridge.upload(media["data"],media["mime"])
+        url=bridge.upload(media["data"],media["mime"],check_task)
         markup=markup.replace('src="'+ref+'"','src="'+html.escape(url,quote=True)+'"')
     return {"title":view["title"],"content":markup}
 

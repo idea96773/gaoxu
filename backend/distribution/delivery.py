@@ -3,6 +3,8 @@ import json
 from datetime import datetime
 from itertools import chain
 
+from . import rights
+
 from .scheduling import available_slot
 from .store import BEIJING, EXECUTION_SLOT, booked_slot, compact, digest, ledger_path, transaction
 
@@ -65,8 +67,11 @@ def schedule_in(db, draft_id, data, now):
     job = db.execute("""INSERT INTO jobs(row_id,stage,platform,account,revision,due,slot)
         VALUES(?,'deliver',?,?,?,?,?)""", (*target,draft["rev"],slot,slot)).lastrowid
     payload = draft["frozen"]
+    sha=digest(payload)
     db.execute("INSERT INTO frozen_deliveries VALUES(?,?,?,?,?,?)",
-               (job,draft_id,requested,slot,payload,digest(payload)))
+               (job,draft_id,requested,slot,payload,sha))
+    if draft["provider"]=="reprint":
+        rights.record(db,job,sha,"local","",now)
     if draft["provider"]=="reprint" and draft["platform"]=="zhihu":
         db.execute("""INSERT INTO zhihu_draft_recipients(job,user_id,name)
             SELECT ?,user_id,name FROM zhihu_draft_bindings WHERE alias=? AND user_id IS NOT NULL""",

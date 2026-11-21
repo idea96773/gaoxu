@@ -33,6 +33,7 @@
           <small>{{date(a.slot)}}　{{a.reused?'沿用原冻结稿及排期，本批跳过':''}}</small>
           <small v-if="a.due>a.slot">顺延至 {{date(a.due)}}</small>
           <small v-if="a.draft_recipient_id">知乎草稿接收账号　{{a.draft_recipient}}（{{a.draft_recipient_id}}）</small>
+          <small>授权范围　{{a.usage_scope==='zhihu_draft'?'指定知乎账号草稿箱':'仅本地试稿'}}</small>
           <a :href="'/api/distribution/editorial/'+a.draft+'/export'">下载冻结稿</a></div>
         <span v-if="!row.assignments.length && row.state!=='pending'">—</span></template></el-table-column>
     </el-table>
@@ -88,7 +89,7 @@ async function preview(r,platform=''){
 }
 async function approve(){
   const items=checked.value.map(row=>({id:row.id,sha:row.sha,revision:row.revision,expected_prior:priorIds(row)})),bid=props.batch.id
-  try{await ElMessageBox.confirm('确认已审核这 '+items.length+' 篇原文、配图和文末链接，可按本批账号与规则模拟交付？','确认转载审核',{confirmButtonText:'确认模拟排期',cancelButtonText:'返回'})}catch{return}
+  try{await ElMessageBox.confirm('确认已审核这 '+items.length+' 篇原文、配图和文末链接，可在本地试稿并按规则模拟交付？新冻结稿的授权范围为「仅本地试稿」。','确认转载审核',{confirmButtonText:'确认模拟排期',cancelButtonText:'返回'})}catch{return}
   busy.value=true;error.value=''
   try{const result=await props.api('reprints/'+bid+'/approve',{approved:true,items})
     const failed=new Set(result.items.filter(x=>x.error).map(x=>x.id))

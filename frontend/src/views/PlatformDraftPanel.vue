@@ -5,6 +5,15 @@
     <p>{{recipientSource==='binding'?'本次保存将锁定账号':'本稿指定账号'}}　{{recipient?.name || '待绑定'}}
       <small v-if="recipient">账号 ID　{{recipient.user_id}}</small></p>
     <p>当前连接账号　{{account?.name || (connected?'扩展已连接，请登录知乎':'草稿桥未连接')}}<small v-if="account">账号 ID　{{account.user_id}}</small></p>
+    <div v-if="grant" class="scope">
+      <p>转载授权　<strong>{{grant.scope==='local'?'仅本地试稿':'可用于指定知乎账号的草稿箱'}}</strong>
+        <small v-if="grant.scope==='zhihu_draft'">获准账号 ID　{{grant.user_id}}</small></p>
+      <el-button v-if="recipient && !permitted && control!=='cancelled' && job.job.state!=='cancelled'" link type="primary" :disabled="busy" @click="setScope('zhihu_draft')">记录此账号的草稿授权</el-button>
+      <el-button v-if="grant.scope==='zhihu_draft'" link :disabled="busy" @click="setScope('local')">改为仅本地试稿</el-button>
+      <details v-if="history.length"><summary>近期授权记录</summary>
+        <small v-for="(event,index) in history" :key="index">{{date(event.confirmed)}}　{{event.scope==='local'?'仅本地试稿':'知乎草稿 · '+event.user_id}}</small>
+      </details>
+    </div>
     <p v-if="record">目标账号　{{record.name}}　·　{{labels[record.state]}}
       <a v-if="record.url" :href="record.url" target="_blank" rel="noopener noreferrer">打开知乎草稿</a>
     </p>
@@ -26,19 +35,21 @@
 <script setup>
 import {ref,computed,onMounted,onBeforeUnmount,watch} from 'vue'
 import {ElMessageBox} from 'element-plus'
-const props=defineProps({api:Function,job:Object,bindingsVersion:Number})
+const props=defineProps({api:Function,job:Object,bindingsVersion:Number,date:Function})
 defineEmits(['accounts'])
 const recipient=ref(null),recipientSource=ref(''),control=ref('')
+const grant=ref(null),history=ref([]),permitted=ref(false)
 const connected=ref(false),account=ref(null),record=ref(null),busy=ref(false),error=ref(''),checked=ref(false),found=ref('')
 const labels={queued:'等待保存',preparing:'准备配图',sending:'正在请求保存',saved:'平台已返回草稿，待核对',verified:'已人工核对',unknown:'回执不确定，需核对草稿箱',failed:'准备失败',cancelled:'已取消'}
 const path='jobs/'+props.job.job.id+'/platform-draft'
-const canSend=computed(()=>recipient.value && account.value && control.value==='active' && recipient.value.user_id===account.value.user_id && props.job.job.state!=='cancelled' && (!record.value ||
+const canSend=computed(()=>permitted.value && recipient.value && account.value && control.value==='active' && recipient.value.user_id===account.value.user_id && props.job.job.state!=='cancelled' && (!record.value ||
     (['failed','cancelled'].includes(record.value.state) && record.value.user_id===account.value.user_id)))
 let stopped=false,timer,sequence=0
 async function load(){
   const n=++sequence
-  try{const info=await props.api(path);if(!stopped && n===sequence){connected.value=info.connected;account.value=info.account;record.value=info.record;recipient.value=info.recipient;recipientSource.value=info.recipient_source;control.value=info.control}}
-  catch(e){if(!stopped && n===sequence){connected.value=false;account.value=null;error.value=e.message}}
+  try{const info=await props.api(path);if(!stopped && n===sequence){connected.value=info.connected;account.value=info.account;record.value=info.record;recipient.value=info.recipient;recipientSource.value=info.recipient_source;control.value=info.control
+    grant.value=info.rights;permitted.value=info.permitted;history.value=info.rights_history}}
+  catch(e){if(!stopped && n===sequence){connected.value=false;account.value=null;grant.value=null;permitted.value=false;error.value=e.message}}
 }
 async function poll(){await load();if(!stopped)timer=setTimeout(poll,4000)}
 async function change(data){
@@ -47,9 +58,20 @@ async function change(data){
   finally{await load();busy.value=false}
 }
 async function enqueue(){
-  const target=account.value
+  const target=account.value,revision=grant.value.revision
   try{await ElMessageBox.confirm('将已冻结的《'+props.job.delivery.snapshot.title+'》及其配图发送至知乎账号「'+target.name+'」（'+target.user_id+'）的草稿箱。','确认保存平台草稿',{confirmButtonText:'仅保存草稿',cancelButtonText:'返回'})}catch{return}
-  await change({action:'queue',consent:true,user_id:target.user_id,sha:props.job.delivery.sha})
+  await change({action:'queue',consent:true,user_id:target.user_id,sha:props.job.delivery.sha,scope_revision:revision})
+}
+async function setScope(scope){
+  const target=recipient.value
+  const data={action:'scope',scope,sha:props.job.delivery.sha,scope_revision:grant.value.revision}
+  let prompt='改为仅本地后，排队或准备中的草稿任务将取消。已发出的请求和已保存的草稿仍需在平台核对。'
+  if(scope==='zhihu_draft'){
+    data.user_id=target.user_id;data.rights_confirmed=true
+    prompt='确认《'+props.job.delivery.snapshot.title+'》的正文和配图已获准保存到知乎账号「'+target.name+'」（'+target.user_id+'）的草稿箱？记录授权后，可另行选择保存草稿。'
+  }
+  try{await ElMessageBox.confirm(prompt,'核对转载授权',{confirmButtonText:'确认授权范围',cancelButtonText:'返回'})}catch{return}
+  await change(data)
 }
 watch(()=>props.bindingsVersion,load)
 onMounted(poll)

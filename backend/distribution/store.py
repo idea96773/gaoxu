@@ -87,6 +87,10 @@ CREATE TABLE IF NOT EXISTS zhihu_draft_bindings (
  updated INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS zhihu_draft_recipients (
  job INTEGER PRIMARY KEY REFERENCES frozen_deliveries(job), user_id TEXT NOT NULL, name TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS reprint_rights (
+ id INTEGER PRIMARY KEY, job INTEGER NOT NULL REFERENCES frozen_deliveries(job), sha TEXT NOT NULL,
+ scope TEXT NOT NULL CHECK(scope IN ('local','zhihu_draft')), user_id TEXT NOT NULL, confirmed INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS reprint_rights_job ON reprint_rights(job,id);
 CREATE TABLE IF NOT EXISTS platform_drafts (
  id INTEGER PRIMARY KEY, job INTEGER NOT NULL REFERENCES frozen_deliveries(job), canonical TEXT NOT NULL,
  sha TEXT NOT NULL, user_id TEXT NOT NULL, name TEXT NOT NULL, state TEXT NOT NULL,

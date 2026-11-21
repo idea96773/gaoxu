@@ -182,14 +182,22 @@ class Reprint(unittest.TestCase):
             self.approve(bid,self.batch(bid)["reviews"])
             row=self.batch(bid)["reviews"][0]
             return BASE+f"jobs/{row['assignments'][0]['id']}/platform-draft",row["sha"]
+        def grant(url,sha,uid):
+            info=self.client.get(url).json
+            return self.client.post(url,json=dict(action="scope",scope="zhihu_draft",rights_confirmed=True,
+                sha=sha,user_id=uid,scope_revision=info["rights"]["revision"]))
         def queue(url,sha,uid):
-            return self.client.post(url,json=dict(action="queue",consent=True,sha=sha,user_id=uid))
+            revision=self.client.get(url).json["rights"]["revision"]
+            return self.client.post(url,json=dict(action="queue",consent=True,sha=sha,user_id=uid,scope_revision=revision))
 
         early,early_sha=freeze(1)
         heartbeat(self.path,"fixture-a","相同昵称")
         self.assertEqual(queue(early,early_sha,"fixture-a").status_code,400)
         self.assertEqual(bind("fixture-a",0).status_code,200)
         self.assertEqual(bind("fixture-a",0,"其他别名").status_code,400)
+        self.assertEqual(self.client.get(early).json["rights"]["scope"],"local")
+        self.assertEqual(queue(early,early_sha,"fixture-a").status_code,400)
+        self.assertEqual(grant(early,early_sha,"fixture-a").status_code,200)
         self.assertEqual(queue(early,early_sha,"fixture-a").status_code,200)
         frozen,sha=freeze(2)
         self.assertEqual(self.client.get(frozen).json["recipient"]["user_id"],"fixture-a")
@@ -200,10 +208,49 @@ class Reprint(unittest.TestCase):
         self.assertEqual(self.client.get(early).json["record"]["user_id"],"fixture-a")
         later,later_sha=freeze(3)
         self.assertEqual(self.client.get(later).json["recipient"]["user_id"],"fixture-b")
+        self.assertEqual(grant(later,later_sha,"fixture-b").status_code,200)
         self.assertEqual(queue(later,later_sha,"fixture-b").status_code,200)
         heartbeat(self.path,"fixture-a","改名后的昵称")
+        self.assertEqual(grant(frozen,sha,"fixture-a").status_code,200)
         self.assertEqual(queue(frozen,sha,"fixture-a").status_code,200)
         self.assertEqual(self.client.get(frozen).json["record"]["user_id"],"fixture-a")
+
+    def test_withdraw_recipient_rights_before_send(self):
+        from . import platform_draft
+        from .zhihu_draft_worker import heartbeat
+        self.targets=[dict(platform="zhihu",account="试稿")]
+        bid=self.create([self.source(1)])
+        self.prepare()
+        row=self.batch(bid)["reviews"][0]
+        self.approve(bid,[row])
+        a=self.batch(bid)["reviews"][0]["assignments"][0]
+        url=BASE+f"jobs/{a['id']}/platform-draft"
+        uid="fixture-only"
+        heartbeat(self.path,uid,"测试账号")
+        self.client.post(BASE+"zhihu-draft-accounts",json=dict(action="bind",alias="试稿",revision=0,user_id=uid))
+        initial=self.client.get(url).json["rights"]["revision"]
+        decision=dict(action="scope",sha=row["sha"],user_id=uid,scope_revision=initial,scope="zhihu_draft",rights_confirmed=True)
+        self.assertEqual(self.client.post(url,json=decision).status_code,200)
+        info=self.client.get(url).json
+        self.assertIsNone(info["record"])
+        granted=info["rights"]["revision"]
+        queued=dict(action="queue",consent=True,user_id=uid,scope_revision=granted,sha=row["sha"])
+        self.assertEqual(self.client.post(url,json=queued).status_code,200)
+        task=platform_draft.claim(self.path,uid)
+        self.assertEqual(task["job"],a["id"])
+        self.assertEqual(self.client.post(url,json=decision|dict(scope_revision=granted,scope="local")).status_code,200)
+        info=self.client.get(url).json
+        self.assertEqual((info["record"]["state"],info["rights"]["scope"]),("cancelled","local"))
+        self.assertEqual(self.client.post(url,json=decision).status_code,409)
+        self.assertEqual(self.client.post(url,json=queued).status_code,400)
+        with self.assertRaises(ValueError):
+            platform_draft.payload(self.path,task)
+        with self.assertRaises(ValueError):
+            platform_draft.transition(self.path,task,"preparing","sending")
+        export=self.client.get(BASE+f"editorial/{a['draft']}/export")
+        with zipfile.ZipFile(io.BytesIO(export.data)) as pack:
+            meta=json.loads(pack.read("metadata.json"))
+        self.assertEqual((meta["usage_rights"]["scope"],meta["usage_rights"]["sha"]),("local",row["sha"]))
 
     def test_platform_footer_review_and_export(self):
         short_url="https://example.invalid/read?ref=case&via=console"

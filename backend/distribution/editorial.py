@@ -1,4 +1,5 @@
 """Local editorial review. Frozen exports never enter a platform publisher."""
+import hashlib
 import html
 import io
 import json
@@ -7,16 +8,25 @@ import re
 import time
 import zipfile
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from flask import jsonify, send_file
 
 from . import rights
+from .markdown_media import replace_media_urls
 from .store import canonicalize, compact, digest, transaction
 
 FORMATS = {"zhihu": "知乎长文", "xiaohongshu": "小红书图文笔记", "toutiao": "头条文章"}
 DEFAULT_LINK = dict(mode="omit", label="延伸阅读", destination="", short="", verified=False)
+
+
+def export_image(db,ref):
+    sha=ref.rsplit("/",1)[-1]
+    asset=db.execute("SELECT mime,data FROM media WHERE sha=?",(sha,)).fetchone()
+    if not asset or hashlib.sha256(asset["data"]).hexdigest()!=sha:
+        raise ValueError("冻结稿配图缺失或校验失败，请检查本机文章库")
+    return asset
 
 
 def document(db, rid):
@@ -249,14 +259,12 @@ def register(api, path, read_body):
             view=json.loads(d["frozen"])
             with zipfile.ZipFile(stream,"w",zipfile.ZIP_DEFLATED) as pack:
                 if view.get("kind")=="reprint":
-                    from urllib.parse import quote
-                    markup=view["html"]
+                    relative_urls={}
                     for name,ref in view["files"].items():
-                        asset=db.execute("SELECT data FROM media WHERE sha=?",(ref.rsplit("/",1)[-1],)).fetchone()
-                        if not asset:
-                            raise ValueError("本地配图缺失，请检查文章库")
+                        asset=export_image(db,ref)
                         pack.writestr(name,asset["data"])
-                        markup=markup.replace('src="'+ref+'"','src="'+html.escape(quote(name),quote=True)+'"')
+                        relative_urls.setdefault(ref,quote(name))
+                    markup=replace_media_urls(view["html"],relative_urls)
                     pack.writestr("article.md",view["markdown"])
                     pack.writestr("article.html",'<!doctype html><meta charset="utf-8"><style>img{max-width:100%}</style>'+markup)
                 else:
@@ -271,9 +279,7 @@ def register(api, path, read_body):
                             md[1]=view["text"].removesuffix(part)+"["+view["link"]["label"]+"]("+url+")"
                         markup.append("<p>"+paragraph+"</p>")
                     for idx, ref in enumerate(view["images"],1):
-                        asset=db.execute("SELECT mime,data FROM media WHERE sha=?",(ref.rsplit("/",1)[-1],)).fetchone()
-                        if not asset:
-                            raise ValueError("本地配图缺失，请检查文章库")
+                        asset=export_image(db,ref)
                         name=f"images/{idx}.{asset['mime'].split('/')[-1]}"
                         pack.writestr(name,asset["data"])
                         md.append(f"![配图 {idx}]({name})")

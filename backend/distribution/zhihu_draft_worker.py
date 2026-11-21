@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from .markdown_media import replace_media_urls
 from .platform_draft import claim, edit_url, payload, require_rights, transition
 from .runtime import instance_lock
 from .store import DEFAULT_DB, initialize, transaction
@@ -87,6 +88,7 @@ def prepare_content(path,task,bridge):
                 JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch WHERE t.id=?""",(task["id"],)).fetchone()
         if not status or status["state"]!="preparing" or status["control"]!="active":
             raise ValueError("任务状态已变化")
+    uploaded={}
     for ref in dict.fromkeys(refs):
         if not re.fullmatch(r"/api/distribution/media/[0-9a-f]{64}",ref):
             raise ValueError("冻结稿含未归档的图片")
@@ -96,9 +98,8 @@ def prepare_content(path,task,bridge):
             raise ValueError("本地图片校验失败")
         if bridge.identity()[0]!=task["user_id"]:
             raise ValueError("账号已切换")
-        url=bridge.upload(media["data"],media["mime"],check_task)
-        markup=markup.replace('src="'+ref+'"','src="'+html.escape(url,quote=True)+'"')
-    return {"title":view["title"],"content":markup}
+        uploaded[ref]=bridge.upload(media["data"],media["mime"],check_task)
+    return {"title":view["title"],"content":replace_media_urls(markup,uploaded)}
 
 
 def run_task(path,task,bridge):

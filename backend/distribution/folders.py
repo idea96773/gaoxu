@@ -6,7 +6,7 @@ from collections import defaultdict
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import PurePosixPath
-from urllib.parse import unquote, urlsplit
+from .markdown_media import MARKDOWN, inline_tokens, local_path
 from .store import canonicalize, compact, digest
 
 SOURCE_LINK = re.compile(r"(?m)^原文地址[：:]\s*.*?(https://mp\.weixin\.qq\.com/[^\s)<>]+)")
@@ -45,7 +45,9 @@ class Images(HTMLParser):
     def handle_starttag(self, tag, attrs):
         if tag=="img":
             a=dict(attrs)
-            ref=a.get("src") or a.get("data-src")
+            src=a.get("src")
+            lazy=a.get("data-src")
+            ref=lazy if lazy and local_path(lazy) and not local_path(src or "") else src or lazy
             if ref:
                 self.refs.append(ref)
 
@@ -96,16 +98,13 @@ def parse_folders(parts):
             if not body.strip():
                 raise ValueError("缺少正文")
             tags=Images(); tags.feed(html)
-            md_refs = re.findall(r"!\[[^\]]*\]\(([^)]+)\)",body)
-            # Easy WeChat may append a quoted Markdown title after the image path.
-            md_refs = [re.split(r"""\s+["']""", ref, maxsplit=1)[0].strip("<> ") for ref in md_refs]
+            md_refs=[token.attrGet("src") or "" for token in inline_tokens(MARKDOWN.parse(body)) if token.type=="image"]
             refs=list(dict.fromkeys(md_refs+tags.refs))
             assets={}
             missing=[]
             for ref in refs:
-                u=urlsplit(ref)
-                relative=unquote(u.path).replace("\\","/")
-                if u.scheme or u.netloc or relative.startswith("/") or ".." in relative.split("/"):
+                relative=local_path(ref)
+                if relative is None:
                     missing.append(ref)
                     continue
                 target=posixpath.normpath(posixpath.join(folder,relative))

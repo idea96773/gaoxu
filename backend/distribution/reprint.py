@@ -5,19 +5,17 @@ import re
 import time
 import uuid
 from pathlib import Path, PurePosixPath
-from urllib.parse import unquote
 
 from flask import jsonify, request
-from markdown_it import MarkdownIt
 
 from .delivery import existing_deliveries, schedule_in
 from .editorial import checked_link
 from .library import read_folder, selected_header, selection_key, validate_directories
+from .markdown_media import MARKDOWN, inline_tokens, local_path
 from .store import canonicalize, clean_rules, compact, digest, enqueue, transaction
 
 DESTINATION = "https://mp.weixin.qq.com/s/YFkz4nZBTLm-GHtqz_5lUw"
 CHANNELS = ("zhihu", "toutiao")
-MD = MarkdownIt("commonmark", {"html": False, "breaks": True}).enable("table")
 
 
 def pools_for(targets):
@@ -45,20 +43,26 @@ def review_snapshot(doc, destination, platforms, links):
     if not canonicalize(doc["source_url"] or ""):
         raise ValueError("Markdown 缺少有效的公众号原文地址，请检查导出设置并补全资料")
     body=doc["markdown_content"]
-    tokens=MD.parse(body)
+    tokens=MARKDOWN.parse(body)
     images,files=[],{}
-    for block in tokens:
-        for token in block.children or []:
-            if token.type!="image":
-                continue
-            ref=unquote(token.attrGet("src") or "")
-            asset=doc["media_map"].get(ref) or doc["media_map"].get(token.attrGet("src"))
-            name=PurePosixPath(ref)
-            if not asset or name.is_absolute() or ".." in name.parts or len(name.parts)<2 or name.parts[0]!="img" or re.search(r'[:\\\x00]',ref):
-                raise ValueError("正文含无法本地打包的配图")
-            images.append(asset)
-            files[str(name)]=asset
-            token.attrSet("src",asset)
+    media=doc["media_map"]
+    by_name={local_path(ref):asset for ref,asset in media.items()}
+    for token in inline_tokens(tokens):
+        if token.type!="image":
+            continue
+        ref=token.attrGet("src") or ""
+        name=local_path(ref)
+        asset=media.get(ref) or by_name.get(name)
+        if not asset or not name or not name.startswith("img/") or re.search(r'[<>:"|?*\x00-\x1f]',name):
+            raise ValueError("正文含无法本地打包的配图")
+        images.append(asset)
+        files[name]=asset
+        token.attrSet("src",asset)
+    for token in inline_tokens(tokens):
+        if token.type=="link_open":
+            asset=files.get(local_path(token.attrGet("href") or ""))
+            if asset:
+                token.attrSet("href",asset)
     if set(images)!=set(doc["images"]):
         raise ValueError("HTML 与 Markdown 配图不一致，请检查下载文件")
     title=doc["title"]
@@ -66,7 +70,7 @@ def review_snapshot(doc, destination, platforms, links):
     credit="转载"+(" · "+source if source else "")
     source_url=doc["source_url"]
     header=f'<h1>{html.escape(title)}</h1><p>{html.escape(credit)}　<a href="{html.escape(source_url,quote=True)}">原文地址</a></p>'
-    raw=MD.renderer.render(tokens,MD.options,{})
+    raw=MARKDOWN.renderer.render(tokens,MARKDOWN.options,{})
     heading=f"# {title}\n\n{credit}　[原文地址]({source_url})\n\n"
 
     def edition(rule):

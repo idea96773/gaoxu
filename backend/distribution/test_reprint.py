@@ -136,6 +136,41 @@ class Reprint(unittest.TestCase):
         self.client.post(BASE+f"batches/{original}/cancel",json={})
         self.assertEqual(set(catalog_item()["deliveries"]),{"toutiao"})
 
+    def test_linked_reference_images_remain_portable_and_code_examples_stay_text(self):
+        from urllib.parse import quote
+        directory=self.source(49)
+        folder=self.root/directory
+        filename="图 (1).png"
+        (folder/"img/0.png").rename(folder/"img"/filename)
+        name="img/"+filename
+        href=quote(name)
+        md=folder/"正文.md"
+        body=md.read_text(encoding="utf-8").replace("![配图](img/0.png)",
+            f'[![查看原图][pic]](<{name}>)\n\n![第二处][pic]\n\n[pic]: <{name}?v=1> "原文配图"'
+            '\n\n`![只是示例](img/并不存在.png)`\n')
+        md.write_text(body,encoding="utf-8")
+        (folder/"正文.html").write_text(f'<img src="data:image/gif;base64,AA" data-src="{href}">',encoding="utf-8")
+        bid=self.create([directory])
+        self.prepare()
+        row=self.batch(bid)["reviews"][0]
+        self.assertEqual(row["state"],"pending")
+        url=BASE+f"reprints/{bid}/{row['id']}?platform=zhihu"
+        view=self.client.get(url).json["snapshot"]
+        ref=view["images"][0]
+        self.assertEqual(view["images"],[ref,ref])
+        self.assertEqual(view["files"],{name:ref})
+        self.assertIn(f'<a href="{ref}"><img',view["html"])
+        self.assertIn('img/并不存在.png',view["html"])
+        self.approve(bid,[row])
+        draft=self.batch(bid)["reviews"][0]["assignments"][0]["draft"]
+        with zipfile.ZipFile(io.BytesIO(self.client.get(BASE+f"editorial/{draft}/export").data)) as archive:
+            self.assertEqual(archive.namelist().count(name),1)
+            markup=archive.read("article.html").decode()
+            self.assertIn(f'<a href="{href}"><img',markup)
+            self.assertEqual(markup.count(f'src="{href}"'),2)
+            self.assertIn(DESTINATION,markup)
+            self.assertEqual(archive.read("article.md").decode(),view["markdown"])
+
     def test_approval_detects_cancelled_prior_job(self):
         directory=self.source(32)
         self.targets=[dict(platform="zhihu",account="甲")]

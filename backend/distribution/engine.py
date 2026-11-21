@@ -228,13 +228,16 @@ def tick(path, now=None, *, preparation=None, **kwargs):
 
 def worker(path, concurrency=1, preparation_concurrency=1):
     from threading import Event
+    from .editorial import provider_ready
     from .runtime import reload_request
     import logging
     stopped = Event()
     marker=reload_request()
     with transaction(path) as db:
         db.execute("INSERT OR REPLACE INTO worker_build VALUES(1,?,?)",(os.environ.get("GAOXU_BUILD"),os.getpid()))
-        db.execute("DELETE FROM health WHERE name='worker'")
+        db.execute("DELETE FROM health WHERE name IN ('worker','model_configured','model_unconfigured')")
+        db.execute("INSERT INTO health VALUES(?,?)",
+                   ("model_configured" if provider_ready() else "model_unconfigured",int(time.time())))
     def loop(preparation):
         last_beat = 0
         while not stopped.is_set():

@@ -69,8 +69,15 @@ def health(path,details=False):
         result.update(api_build=os.environ.get("GAOXU_BUILD"),worker_build=worker["build"] if worker else None,
                       worker_pid=worker["pid"] if worker else None)
         if details:
+            from .editorial import model_retry_at
             from .daily_backup import status as backup_status
             result["backup"]=backup_status(db,path)
+            config=db.execute("SELECT name FROM health WHERE name IN ('model_configured','model_unconfigured')").fetchone()
+            model_jobs=db.execute("""SELECT d.state,count(*) FROM drafts d JOIN rows r ON r.id=d.row_id
+                JOIN batches b ON b.id=r.batch WHERE b.control='active' AND d.state IN ('queued','generating')
+                GROUP BY d.state""")
+            result["model_queue"]=dict(counts=dict(model_jobs),retry_at=model_retry_at(db,now),
+                                       configured=config[0]=="model_configured" if config else None)
             queue=db.execute("""SELECT
                 count(CASE WHEN j.state='ready' AND j.due<=? THEN 1 END) due,
                 min(CASE WHEN j.state='ready' AND j.due<=? THEN j.due END) oldest_due,

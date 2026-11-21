@@ -8,8 +8,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from .api import create_app
+from . import editorial
 from .editorial import tick_editorial
-from .store import BEIJING
+from .store import BEIJING, transaction
 from .test_workflow import drain, export_folder, options
 
 BASE="/api/distribution/"
@@ -97,4 +98,32 @@ class EditorialTest(unittest.TestCase):
             self.assertFalse(tick_editorial(self.db))
             self.assertEqual(g.call_count,6)
         self.assertEqual(self.client.get(BASE+"batches/"+bid).json["editorial"],{"failed":1,"editing":5})
+
+    @patch.dict("os.environ",{"DEEPSEEK_API_KEY":"test-only","DIST_AI_MODEL":"original-model"})
+    def test_model_rate_limit_survives_restart_and_keeps_authorized_model(self):
+        bid=self.local(1)
+        self.post("batches/"+bid+"/editorial",{"authorized":True})
+        now=2000000000
+        drain(self.db,now)
+        with patch.dict("os.environ",{"DEEPSEEK_API_KEY":""}):
+            self.assertFalse(tick_editorial(self.db))
+        responses=[editorial.ModelRateLimited("90"),editorial.ModelRateLimited(None),
+                   editorial.ModelRateLimited(None),("标题","正文")]
+        with patch.object(editorial,"generate",side_effect=responses) as generate, \
+                patch.dict("os.environ",{"DIST_AI_MODEL":"later-default"}),patch.object(editorial.time,"time") as clock:
+            for attempt,delay in enumerate((90,60,120),1):
+                clock.return_value=now
+                self.assertTrue(tick_editorial(self.db))
+                self.client=create_app(self.db,self.root).test_client()
+                with transaction(self.db,False) as db:
+                    row=db.execute("SELECT rejections,retry_at FROM model_backoff").fetchone()
+                    self.assertEqual(tuple(row),(attempt,now+delay))
+                clock.return_value=now+delay-1
+                self.assertFalse(tick_editorial(self.db))
+                self.assertEqual(generate.call_count,attempt)
+                now+=delay
+            clock.return_value=now
+            self.assertTrue(tick_editorial(self.db))
+            self.assertEqual([call.args[2] for call in generate.call_args_list],["original-model"]*4)
+        self.assertEqual(self.client.get(BASE+"batches/"+bid).json["editorial"],{"failed":1,"editing":1})
 

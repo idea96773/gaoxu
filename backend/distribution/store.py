@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS drafts (
  UNIQUE(row_id,platform,account,rev));
 CREATE TABLE IF NOT EXISTS documents (
  row_id INTEGER PRIMARY KEY REFERENCES rows(id), payload TEXT NOT NULL, analysis TEXT);
+CREATE TABLE IF NOT EXISTS model_backoff (
+ draft INTEGER PRIMARY KEY REFERENCES drafts(id), rejections INTEGER NOT NULL, retry_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS model_backoff_until ON model_backoff(retry_at);
 CREATE TABLE IF NOT EXISTS local_inputs (row_id INTEGER PRIMARY KEY REFERENCES rows(id), payload TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS library_imports (rel TEXT PRIMARY KEY, row_id INTEGER NOT NULL REFERENCES rows(id));
 CREATE TABLE IF NOT EXISTS library_settings (

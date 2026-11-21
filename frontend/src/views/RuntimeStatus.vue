@@ -15,6 +15,11 @@
       <el-descriptions-item label="最早待处理时间">{{date(status.queue.oldest_due)}}</el-descriptions-item>
       <el-descriptions-item label="下一项排期或重试">{{date(status.queue.next_due)}}</el-descriptions-item>
       <el-descriptions-item label="失败步骤 / 租约到期">{{status.queue.failed}} / {{status.queue.expired}}</el-descriptions-item>
+      <el-descriptions-item v-if="status.model_queue" label="模型成稿队列">
+        等待 {{status.model_queue.counts.queued || 0}} 份 · 生成中 {{status.model_queue.counts.generating || 0}} 份
+        <small v-if="status.model_queue.retry_at">模型服务限流，最早重试时间 {{date(status.model_queue.retry_at)}}（北京时间）</small>
+        <small v-if="status.model_queue.configured===false">调度器启动时缺少模型配置。配置密钥和模型后重启调度器，已入队稿件可继续生成。</small>
+      </el-descriptions-item>
       <el-descriptions-item label="待核对的平台草稿回执">{{status.unknown_drafts}}</el-descriptions-item>
     </el-descriptions>
     <span v-else-if="!problem">正在读取服务状态…</span>
@@ -73,4 +78,5 @@ onBeforeUnmount(()=>{stopped=true;clearTimeout(timer)})
 </script>
 <style scoped>
 .backup{margin-top:16px;overflow-wrap:anywhere}.backup label{display:inline-block;margin:4px 14px 4px 0}
+.el-descriptions small { display:block }
 </style>

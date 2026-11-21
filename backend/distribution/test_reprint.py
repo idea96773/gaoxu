@@ -243,6 +243,58 @@ class Reprint(unittest.TestCase):
             self.assertEqual(update.call_args.args[2:4],("preparing","failed"))
         self.assertEqual(bridge.mock_calls,[])
 
+    def test_resume_image_preparation_uses_only_confirmed_objects_for_current_grant(self):
+        from . import draft_images, rights
+        from .zhihu_draft_worker import DraftDeferred, prepare_content
+        self.targets=[dict(platform="zhihu",account="模拟")]
+        directory=self.source(73)
+        folder=self.root/directory
+        (folder/"img/last.gif").write_bytes(bytes.fromhex(
+            "47494638396101000100800000000000ffffff2c00000000010001000002024401003b"))
+        with (folder/"正文.md").open("a",encoding="utf-8") as stream:
+            stream.write("\n\n![重复](img/0.png)\n\n![末图](img/last.gif)")
+        bid=self.create([directory])
+        self.prepare()
+        self.approve(bid,self.batch(bid)["reviews"])
+        job,=self.batch(bid)["deliveries"]
+        uid="fixture"
+        with transaction(self.path) as db:
+            rights.record(db,job["id"],job["sha"],"zhihu_draft",uid,int(time.time()))
+            db.execute("""INSERT INTO platform_drafts(job,canonical,sha,user_id,name,state,updated)
+                SELECT ?,canonical,?,?,'测试账号','preparing',0 FROM rows WHERE id=?""",
+                (job["id"],job["sha"],uid,job["row_id"]))
+            task=dict(db.execute("SELECT * FROM platform_drafts WHERE job=?",(job["id"],)).fetchone())
+
+        bridge=Mock()
+        bridge.identity.return_value=(uid,"测试账号")
+        cdn="https://pic1.zhimg.com/v2-"+("a"*32)+".png"
+        temporary="https://pic1.zhimg.com/v2-"+("b"*32)+".gif?size=original"
+        bridge.upload.side_effect=[cdn,TimeoutError()]
+        with self.assertRaises(TimeoutError):
+            prepare_content(self.path,task,bridge)
+        info=self.client.get(BASE+f"jobs/{job['id']}/platform-draft").json
+        self.assertEqual(info["reusable_images"],1)
+        bridge.upload.reset_mock()
+        bridge.upload.side_effect=[temporary]
+        edition=prepare_content(self.path,task,bridge)
+        self.assertEqual(bridge.upload.call_count,1)
+        self.assertEqual(edition["content"].count(cdn),2)
+        self.assertIn(temporary,edition["content"])
+        self.assertIn(DESTINATION,edition["content"])
+        with transaction(self.path) as db:
+            grant=rights.current(db,job["id"])["revision"]
+            self.assertEqual(list(draft_images.confirmed(db,task["id"],grant).values()),[cdn])
+            db.execute("UPDATE zhihu_draft_images SET confirmed=0")
+            self.assertFalse(draft_images.confirmed(db,task["id"],grant))
+            db.execute("UPDATE zhihu_draft_images SET confirmed=?",(int(time.time()),))
+            rights.record(db,job["id"],job["sha"],"local","",int(time.time()))
+            rights.record(db,job["id"],job["sha"],"zhihu_draft",uid,int(time.time()))
+        bridge.identity.return_value=("different-user","测试账号")
+        bridge.upload.side_effect=[cdn]
+        with self.assertRaises(DraftDeferred):
+            prepare_content(self.path,task,bridge)
+        self.assertEqual(self.client.get(BASE+f"jobs/{job['id']}/platform-draft").json["reusable_images"],0)
+
     def test_chunked_upload_checks_account_before_remote_transfer(self):
         from . import zhihu_draft_worker as worker
         bridge=worker.Bridge(None,"simulated")

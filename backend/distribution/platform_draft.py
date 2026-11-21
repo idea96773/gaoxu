@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 from flask import jsonify, request
 
-from . import frozen_reprint, rights
+from . import draft_images, frozen_reprint, rights
 from .draft_bridge import status as bridge_status
 from .store import compact, transaction
 
@@ -143,6 +143,7 @@ def register(api,path,body):
             return jsonify(**bridge_status(db),recipient=target,recipient_source=via,control=row["control"],
                            rights=grant,permitted=bool(target and rights.permits(grant,row["sha"],target["user_id"])),
                            rights_history=[dict(event) for event in changes],
+                           reusable_images=len(draft_images.confirmed(db,record["id"],grant["revision"])) if record else 0,
                            record=dict(record) if record else None,inspections=inspections)
 
     @api.post("/jobs/<int:job>/platform-draft")
@@ -182,6 +183,8 @@ def register(api,path,body):
                 else:
                     raise ValueError("未知的转载授权范围")
                 if (grant["scope"],grant["user_id"],grant["sha"])!=(scope,uid,row["sha"]):
+                    if existing:
+                        db.execute("DELETE FROM zhihu_draft_images WHERE outbox=?",(existing["id"],))
                     rights.record(db,job,row["sha"],scope,uid,now)
             elif action=="queue":
                 row=source(db,job)
@@ -265,8 +268,10 @@ def payload(path,task):
 
 
 def require_rights(db,task):
-    if not rights.permits(rights.current(db,task["job"]),task["sha"],task["user_id"]):
+    grant=rights.current(db,task["job"])
+    if not rights.permits(grant,task["sha"],task["user_id"]):
         raise ValueError("此份稿件向该账号发送正文与配图的授权已失效")
+    return grant["revision"]
 
 
 def transition(path,task,old,new,reason="",url=""):
@@ -286,4 +291,6 @@ def transition(path,task,old,new,reason="",url=""):
                 raise ValueError("批次或冻结稿状态已变化")
         updated=db.execute("""UPDATE platform_drafts SET state=?,reason=?,url=?,updated=?
              WHERE id=? AND state=?""",(new,reason,url,int(time.time()),task["id"],old))
+        if updated.rowcount and new=="sending":
+            db.execute("DELETE FROM zhihu_draft_images WHERE outbox=?",(task["id"],))
         return updated.rowcount==1

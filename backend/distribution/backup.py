@@ -195,6 +195,8 @@ def restore(bundle,destination):
                 db.execute("DELETE FROM zhihu_bridge_runtime")
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='zhihu_bridge_scope'").fetchone():
                 db.execute("DELETE FROM zhihu_bridge_scope")
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='zhihu_draft_images'").fetchone():
+                db.execute("DELETE FROM zhihu_draft_images")
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='platform_drafts'").fetchone():
                 db.execute("BEGIN IMMEDIATE")
                 db.execute("""UPDATE platform_drafts SET state='unknown',reason='从备份恢复，请先核对知乎草稿箱'

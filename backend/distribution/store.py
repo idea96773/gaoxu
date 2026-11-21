@@ -129,6 +129,9 @@ CREATE TABLE IF NOT EXISTS platform_drafts (
  UNIQUE(canonical,user_id));
 CREATE UNIQUE INDEX IF NOT EXISTS platform_drafts_job ON platform_drafts(job);
 CREATE INDEX IF NOT EXISTS platform_drafts_queue ON platform_drafts(state,user_id,id);
+CREATE TABLE IF NOT EXISTS zhihu_draft_images (
+ outbox INTEGER NOT NULL REFERENCES platform_drafts(id), grant_id INTEGER NOT NULL REFERENCES reprint_rights(id),
+ media_ref TEXT NOT NULL, url TEXT NOT NULL, confirmed INTEGER NOT NULL, PRIMARY KEY(outbox,media_ref));
 CREATE TABLE IF NOT EXISTS draft_inspections (
  id INTEGER PRIMARY KEY, outbox INTEGER NOT NULL REFERENCES platform_drafts(id),
  sha TEXT NOT NULL, user_id TEXT NOT NULL, url TEXT NOT NULL,

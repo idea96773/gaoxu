@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 from .markdown_media import replace_media_urls
 from .draft_bridge import heartbeat, listener
-from . import frozen_reprint
+from . import draft_images, frozen_reprint
 from .platform_draft import authorized_source, claim, edit_url, require_rights, transition
 from .runtime import instance_lock
 from .store import DEFAULT_DB, initialize, transaction
@@ -85,22 +85,28 @@ def prepare_content(path,task,bridge):
     with transaction(path,False) as db:
         try:
             report=frozen_reprint.inspect(db,authorized_source(db,task))
+            revision=require_rights(db,task)
+            reusable=draft_images.confirmed(db,task["id"],revision)
         except frozen_reprint.ContentError:
             raise
         except ValueError as exc:
             raise PreparationStopped("冻结稿、接收账号或使用授权校验失败，请核对任务详情") from exc
-    def check_task():
-        with transaction(path,False) as db:
-            try:
-                require_rights(db,task)
-            except ValueError as exc:
-                raise PreparationStopped("此稿发送到指定账号的授权已失效") from exc
-            status=db.execute("""SELECT t.state,b.control,j.state AS job_state FROM platform_drafts t JOIN jobs j ON j.id=t.job
-                JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch WHERE t.id=?""",(task["id"],)).fetchone()
+    def check_preparing(db):
+        try:
+            current=require_rights(db,task)
+        except ValueError as exc:
+            raise PreparationStopped("此稿发送到指定账号的授权已失效") from exc
+        if current!=revision:
+            raise PreparationStopped("配图准备期间授权已变更，请重新核对")
+        status=db.execute("""SELECT t.state,b.control,j.state AS job_state FROM platform_drafts t JOIN jobs j ON j.id=t.job
+            JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch WHERE t.id=?""",(task["id"],)).fetchone()
         if not status or status["state"]!="preparing" or status["job_state"]=="cancelled" or status["control"]=="cancelled":
             raise PreparationStopped("草稿任务已撤出队列")
         if status["control"]=="paused":
             raise DraftDeferred("批次已暂停，继续批次后按原授权保存草稿")
+    def check_task():
+        with transaction(path,False) as db:
+            check_preparing(db)
     def check_transfer():
         check_account(bridge,task)
         check_task()
@@ -108,9 +114,17 @@ def prepare_content(path,task,bridge):
     for position,ref in enumerate(report["images"],1):
         if ref in uploaded:
             continue
+        if ref in reusable:
+            uploaded[ref]=reusable[ref]
+            continue
         with transaction(path,False) as db:
             media=frozen_reprint.checked_image(db,ref,position)
-        uploaded[ref]=bridge.upload(media["data"],media["mime"],check_task,check_transfer)
+        url=bridge.upload(media["data"],media["mime"],check_task,check_transfer)
+        check_account(bridge,task)
+        with transaction(path) as db:
+            check_preparing(db)
+            draft_images.remember(db,task["id"],revision,ref,url)
+        uploaded[ref]=url
     return {"title":report["title"],"content":replace_media_urls(report["html"],uploaded)}
 
 

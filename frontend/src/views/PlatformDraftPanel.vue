@@ -18,6 +18,9 @@
       <a v-if="record.url" :href="record.url" target="_blank" rel="noopener noreferrer">打开知乎草稿</a>
     </p>
     <p v-if="record?.reason">{{record.reason}}</p>
+    <p v-if="reusableImages && ['queued','preparing','failed','cancelled'].includes(record?.state)">
+      本稿可沿用 {{reusableImages}} 张已转存配图，共 {{uniqueImages}} 张不同配图。
+    </p>
     <p v-if="!record && !recipient">在「管理知乎账号」中将分稿别名与指定登录账号绑定。</p>
     <el-button v-if="canSend" type="primary" :loading="busy" @click="enqueue">保存到 {{account.name}} 的草稿箱</el-button>
     <el-button v-if="record && ['queued','preparing'].includes(record.state)" :disabled="busy" @click="change({action:'cancel'})">取消草稿任务</el-button>
@@ -36,6 +39,8 @@ const props=defineProps({api:Function,job:Object,bindingsVersion:Number,date:Fun
 defineEmits(['accounts','inspected'])
 const recipient=ref(null),recipientSource=ref(''),control=ref('')
 const grant=ref(null),history=ref([]),permitted=ref(false)
+const reusableImages=ref(0)
+const uniqueImages=computed(()=>new Set(props.job.delivery.snapshot.images).size)
 const bridge=ref(null),account=ref(null),record=ref(null),inspections=ref([]),busy=ref(false),error=ref('')
 const labels={queued:'等待保存',preparing:'准备配图',sending:'正在请求保存',saved:'已找到草稿，待核对',verified:'已人工核对',needs_review:'核对发现问题',unknown:'回执不确定，需核对草稿箱',failed:'准备失败',cancelled:'已取消'}
 const path='jobs/'+props.job.job.id+'/platform-draft'
@@ -46,8 +51,8 @@ let stopped=false,timer,sequence=0
 async function load(){
   const n=++sequence
   try{const info=await props.api(path);if(!stopped && n===sequence){bridge.value=info.bridge;account.value=info.account;record.value=info.record;recipient.value=info.recipient;recipientSource.value=info.recipient_source;control.value=info.control
-    grant.value=info.rights;permitted.value=info.permitted;history.value=info.rights_history;inspections.value=info.inspections || []}}
-  catch(e){if(!stopped && n===sequence){bridge.value=null;account.value=null;grant.value=null;permitted.value=false;error.value=e.message}}
+    grant.value=info.rights;permitted.value=info.permitted;history.value=info.rights_history;inspections.value=info.inspections || [];reusableImages.value=info.reusable_images || 0}}
+  catch(e){if(!stopped && n===sequence){bridge.value=null;account.value=null;grant.value=null;permitted.value=false;reusableImages.value=0;error.value=e.message}}
 }
 async function poll(){await load();if(!stopped)timer=setTimeout(poll,4000)}
 async function change(data){

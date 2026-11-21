@@ -150,12 +150,20 @@ def register(api,path,body):
             now=int(time.time())
             existing=db.execute("SELECT * FROM platform_drafts WHERE job=?",(job,)).fetchone()
             if action=="scope":
-                row=source(db,job)
+                scope=data.get("scope")
+                if scope=="local":
+                    # Withdrawing a grant must also work if its source or media needs repair.
+                    row=db.execute("""SELECT f.sha FROM frozen_deliveries f JOIN jobs j ON j.id=f.job
+                        JOIN drafts d ON d.id=f.draft WHERE f.job=? AND j.platform='zhihu' AND d.provider='reprint'""",
+                        (job,)).fetchone()
+                    if not row:
+                        raise ValueError("找不到对应的知乎转载任务")
+                else:
+                    row=source(db,job)
                 grant=rights.current(db,job)
                 if (row["sha"]!=data.get("sha") or type(data.get("scope_revision")) is not int
                         or data["scope_revision"]!=grant["revision"]):
                     return jsonify(error="稿件或授权记录已更新，请刷新后核对"),409
-                scope=data.get("scope")
                 uid=""
                 if scope=="zhihu_draft":
                     target,_=recipient(db,job,row["account"],existing)
@@ -229,7 +237,7 @@ def claim(path,user_id):
             db.execute("""UPDATE platform_drafts SET state='failed',reason='请在管理台确认此稿的知乎草稿授权',
                 updated=? WHERE id=?""",(int(time.time()),row["id"]))
             return None
-        db.execute("UPDATE platform_drafts SET state='preparing',updated=? WHERE id=?",(int(time.time()),row["id"]))
+        db.execute("UPDATE platform_drafts SET state='preparing',reason='',updated=? WHERE id=?",(int(time.time()),row["id"]))
         return dict(row)
 
 
@@ -262,9 +270,12 @@ def transition(path,task,old,new,reason="",url=""):
                 return False
             url=checked_url(db,record,url)
         if new=="sending":
-            require_rights(db,task)
-            row=source(db,task["job"])
-            if row["sha"]!=task["sha"] or row["control"]!="active" or row["state"]=="cancelled":
+            row=authorized_source(db,task)
+            if row["control"]=="paused":
+                db.execute("""UPDATE platform_drafts SET state='queued',reason='批次已暂停，继续批次后保存草稿',updated=?
+                    WHERE id=? AND state=?""",(int(time.time()),task["id"],old))
+                return False
+            if row["control"]!="active" or row["state"]=="cancelled":
                 raise ValueError("批次或冻结稿状态已变化")
         updated=db.execute("""UPDATE platform_drafts SET state=?,reason=?,url=?,updated=?
              WHERE id=? AND state=?""",(new,reason,url,int(time.time()),task["id"],old))

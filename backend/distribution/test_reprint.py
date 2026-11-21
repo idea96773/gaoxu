@@ -233,6 +233,23 @@ class Reprint(unittest.TestCase):
             prepare_content(self.path,task,bridge)
         self.assertEqual(bridge.mock_calls,[])
 
+        # A local failure ends just this task; the listener can use the same connection for the next one.
+        from . import zhihu_draft_worker as worker
+        with patch.object(worker,"transition") as update:
+            worker.run_task(self.path,task,bridge)
+            self.assertEqual(update.call_args.args[2:4],("preparing","failed"))
+        self.assertEqual(bridge.mock_calls,[])
+
+    def test_chunked_upload_checks_account_before_remote_transfer(self):
+        from . import zhihu_draft_worker as worker
+        bridge=worker.Bridge(None,"simulated")
+        bridge.request=Mock(return_value={"success":True})
+        transfer=Mock(side_effect=[None,worker.DraftDeferred("账号已切换")])
+        with patch.object(worker,"CHUNK",4), self.assertRaises(worker.DraftDeferred):
+            bridge.upload(b"abcdef","image/png",Mock(),transfer)
+        self.assertEqual([call.args[0] for call in bridge.request.call_args_list],
+                         ["uploadImage:start","uploadImage:chunk","uploadImage:chunk"])
+
     def test_catalog_partial_coverage_and_fast_duplicate(self):
         path=self.source(31)
         self.targets=[dict(platform="zhihu",account="甲")]
@@ -464,7 +481,16 @@ class Reprint(unittest.TestCase):
         self.assertEqual(self.client.post(url,json=queued).status_code,200)
         task=platform_draft.claim(self.path,uid)
         self.assertEqual(task["job"],a["id"])
+        self.client.post(BASE+f"batches/{bid}/pause",json={})
+        self.assertFalse(platform_draft.transition(self.path,task,"preparing","sending"))
+        self.assertIsNone(platform_draft.claim(self.path,uid))
+        self.client.post(BASE+f"batches/{bid}/resume",json={})
+        self.assertEqual(platform_draft.claim(self.path,uid)["id"],task["id"])
+        with transaction(self.path) as db:
+            db.execute("UPDATE reprint_reviews SET sha='damaged' WHERE row_id=?",(row["id"],))
         self.assertEqual(self.client.post(url,json=decision|dict(scope_revision=granted,scope="local")).status_code,200)
+        with transaction(self.path) as db:
+            db.execute("UPDATE reprint_reviews SET sha=? WHERE row_id=?",(row["sha"],row["id"]))
         info=self.client.get(url).json
         self.assertEqual((info["record"]["state"],info["rights"]["scope"]),("cancelled","local"))
         self.assertEqual(self.client.post(url,json=decision).status_code,409)

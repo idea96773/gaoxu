@@ -21,6 +21,19 @@ from .store import DEFAULT_DB, initialize, transaction
 CHUNK = 512 * 1024
 
 
+class PreparationStopped(ValueError):
+    """A local task decision; the extension connection is still usable."""
+
+
+class DraftDeferred(PreparationStopped):
+    """Keep the confirmed task queued until its batch and account are ready."""
+
+
+def check_account(bridge,task):
+    if bridge.identity()[0]!=task["user_id"]:
+        raise DraftDeferred("请在指定知乎账号登录后继续保存草稿")
+
+
 class Bridge:
     def __init__(self,socket,token):
         self.socket=socket
@@ -43,9 +56,9 @@ class Bridge:
             raise ValueError("扩展未返回可核对的知乎账号")
         return uid,str(data["username"])
 
-    def upload(self,blob,mime,check_task):
+    def upload(self,blob,mime,check_task,check_transfer):
         encoded=base64.b64encode(blob).decode("ascii")
-        check_task()
+        check_transfer()
         if len(encoded)<=CHUNK:
             result=self.request("uploadImage",dict(platform="zhihu",mimeType=mime,imageData=encoded),180)
         else:
@@ -55,7 +68,9 @@ class Bridge:
             for index,offset in enumerate(range(0,len(encoded),CHUNK)):
                 check_task()
                 self.request("uploadImage:chunk",dict(uploadId=upload,chunkIndex=index,data=encoded[offset:offset+CHUNK]))
-            check_task()
+            # Chunks are buffered in the extension; complete performs the actual
+            # platform upload with whichever browser account is logged in now.
+            check_transfer()
             result=self.request("uploadImage:complete",dict(uploadId=upload),180)
         url=result.get("url","")
         parsed=urlsplit(url)
@@ -68,35 +83,56 @@ class Bridge:
 
 def prepare_content(path,task,bridge):
     with transaction(path,False) as db:
-        report=frozen_reprint.inspect(db,authorized_source(db,task))
+        try:
+            report=frozen_reprint.inspect(db,authorized_source(db,task))
+        except frozen_reprint.ContentError:
+            raise
+        except ValueError as exc:
+            raise PreparationStopped("冻结稿、接收账号或使用授权校验失败，请核对任务详情") from exc
     def check_task():
         with transaction(path,False) as db:
-            require_rights(db,task)
-            status=db.execute("""SELECT t.state,b.control FROM platform_drafts t JOIN jobs j ON j.id=t.job
+            try:
+                require_rights(db,task)
+            except ValueError as exc:
+                raise PreparationStopped("此稿发送到指定账号的授权已失效") from exc
+            status=db.execute("""SELECT t.state,b.control,j.state AS job_state FROM platform_drafts t JOIN jobs j ON j.id=t.job
                 JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch WHERE t.id=?""",(task["id"],)).fetchone()
-        if not status or status["state"]!="preparing" or status["control"]!="active":
-            raise ValueError("任务状态已变化")
+        if not status or status["state"]!="preparing" or status["job_state"]=="cancelled" or status["control"]=="cancelled":
+            raise PreparationStopped("草稿任务已撤出队列")
+        if status["control"]=="paused":
+            raise DraftDeferred("批次已暂停，继续批次后按原授权保存草稿")
+    def check_transfer():
+        check_account(bridge,task)
+        check_task()
     uploaded={}
     for position,ref in enumerate(report["images"],1):
         if ref in uploaded:
             continue
         with transaction(path,False) as db:
             media=frozen_reprint.checked_image(db,ref,position)
-        if bridge.identity()[0]!=task["user_id"]:
-            raise ValueError("账号已切换")
-        uploaded[ref]=bridge.upload(media["data"],media["mime"],check_task)
+        uploaded[ref]=bridge.upload(media["data"],media["mime"],check_task,check_transfer)
     return {"title":report["title"],"content":replace_media_urls(report["html"],uploaded)}
 
 
 def run_task(path,task,bridge):
-    stage="preparing"
     try:
         article=prepare_content(path,task,bridge)
-        if bridge.identity()[0]!=task["user_id"]:
-            raise ValueError("账号已切换")
-        if not transition(path,task,stage,"sending"):
+        check_account(bridge,task)
+        try:
+            sending=transition(path,task,"preparing","sending")
+        except ValueError as exc:
+            raise PreparationStopped("冻结稿、批次或使用授权已变化，请核对任务详情") from exc
+        if not sending:
             return
-        stage="sending"
+    except (PreparationStopped,frozen_reprint.ContentError) as exc:
+        state="queued" if isinstance(exc,DraftDeferred) else "failed"
+        transition(path,task,"preparing",state,str(exc))
+        return
+    except Exception:
+        transition(path,task,"preparing","failed","准备失败，请检查扩展连接、登录账号、冻结稿和配图后重试")
+        raise
+
+    try:
         response=bridge.request("syncArticle",dict(platforms=["zhihu"],article=article),360)
         results=response.get("results",[])
         if len(results)!=1 or results[0].get("platform")!="zhihu" or results[0].get("draftOnly") is not True or results[0].get("success") is not True:
@@ -104,14 +140,9 @@ def run_task(path,task,bridge):
         url=edit_url(results[0].get("postUrl"))
         if bridge.identity()[0]!=task["user_id"]:
             raise ValueError("回执所属账号需要核对")
-        transition(path,task,stage,"saved",url=url)
-    except Exception as exc:
-        if stage=="sending":
-            transition(path,task,stage,"unknown","草稿请求已发出，请到指定账号的知乎草稿箱核对")
-        else:
-            reason=str(exc) if isinstance(exc,frozen_reprint.ContentError) else "准备失败，请检查扩展连接、登录账号、冻结稿和配图后重试"
-            transition(path,task,stage,"failed",reason)
-        # A late reply after a timeout must never be consumed as the next command.
+        transition(path,task,"sending","saved",url=url)
+    except Exception:
+        transition(path,task,"sending","unknown","草稿请求已发出，请到指定账号的知乎草稿箱核对")
         raise
 
 

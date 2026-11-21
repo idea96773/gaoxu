@@ -2,6 +2,7 @@
 import html
 import json
 import re
+import sqlite3
 import time
 import uuid
 from pathlib import Path, PurePosixPath
@@ -376,55 +377,124 @@ def plan_selection(db,bid,items,now):
 
 def approve_one(path,bid,rid,sha,now,revision=1,expected_prior=None,expected_accounts=None):
     with transaction(path) as db:
-        row=db.execute(f"""SELECT q.*,r.canonical,b.targets,b.control,{REVIEW_REVISION} revision
-            FROM reprint_reviews q JOIN rows r ON r.id=q.row_id LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'
-            JOIN batches b ON b.id=r.batch WHERE b.id=? AND r.id=?""",(bid,rid)).fetchone()
-        if not row or row["sha"]!=sha or type(revision) is not int or row["revision"]!=revision:
-            raise ValueError("审核条目与预览版本不一致")
-        if row["state"] in ("approved","duplicate"):
-            return row["state"]
-        if row["state"]!="pending" or row["control"]!="active":
-            raise ValueError("仅运行中批次的待审文章可通过")
-        reviewed=reviewed_snapshot(row)
-        assigned=[]
-        history=existing_deliveries(db,[row["canonical"]]).get(row["canonical"],{})
-        pools=pools_for(json.loads(row["targets"]))
-        check_prior(history,pools,expected_prior)
-        if expected_accounts is not None and (not isinstance(expected_accounts,dict) or expected_accounts.keys()!=pools.keys()):
-            raise ValueError("预览的平台与本批次不一致，请重新预览排期")
-        for p,accounts in pools.items():
-            prior=history.get(p)
-            view=reviewed["editions"][p] if "editions" in reviewed else reviewed
-            pool,position=rotation(db,p,accounts)
-            account=prior["account"] if prior else accounts[position%len(accounts)]
-            if expected_accounts is not None and expected_accounts[p]!=account:
-                raise ValueError("预计分稿账号已变化，请重新预览后再审核")
-            if prior:
-                if expected_prior is None:
-                    frozen_sha=db.execute("SELECT sha FROM frozen_deliveries WHERE job=?",(prior["id"],)).fetchone()[0]
-                    if frozen_sha!=digest(compact(view)):
-                        raise ValueError("已有任务与本次送审稿不同，请按平台核对冻结稿并确认沿用任务")
-                db.execute("INSERT INTO reprint_assignments VALUES(?,?,?,1)",(rid,p,prior["id"]))
-                continue
-            did=db.execute("""INSERT INTO drafts(row_id,platform,account,rev,state,title,body,provider,frozen)
-                VALUES(?,?,?,?,'approved',?,?,'reprint',?)""",(rid,p,account,revision,view["title"],view["text"],compact(view))).lastrowid
-            job=schedule_in(db,did,{},now)
-            db.execute("INSERT INTO reprint_assignments VALUES(?,?,?,0)",(rid,p,job["id"]))
-            db.execute("INSERT OR REPLACE INTO account_rotation VALUES(?,?)",(pool,(position+1)%len(accounts)))
-            assigned.append(dict(platform=p,account=account))
-        db.execute("INSERT INTO row_targets VALUES(?,?)",(rid,compact(assigned)))
-        db.execute("INSERT INTO reprint_approvals(row_id,revision,review_sha,approved_at) VALUES(?,?,?,?)",
-                   (rid,revision,row["sha"],now))
-        state="approved" if assigned else "duplicate"
-        db.execute("UPDATE reprint_reviews SET state=? WHERE row_id=?",(state,rid))
+        state=approve_in(db,bid,rid,sha,now,revision,expected_prior,expected_accounts)
+        # Older clients confirm synchronously. A successful new decision also
+        # resolves this article's previously failed background scheduling job.
+        prior=db.execute("""UPDATE jobs SET state='done',attempts=attempts+1,failure='',finished=?
+            WHERE row_id=? AND stage='reprint_schedule' AND state='failed' RETURNING id,attempts""",(now,rid)).fetchone()
+        if prior:
+            decision=dict(sha=sha,revision=revision,expected_prior=expected_prior,expected_accounts=expected_accounts)
+            db.execute("UPDATE reprint_schedule_inputs SET decision=?,confirmed=? WHERE job=?",(compact(decision),now,prior["id"]))
+            db.execute("INSERT INTO attempts(job,seq,started,ended,outcome) VALUES(?,?,?,?,'done')",
+                       (prior["id"],prior["attempts"],now,now))
         return state
+
+
+def approve_in(db,bid,rid,sha,now,revision,expected_prior,expected_accounts,confirmed_at=None):
+    row=db.execute(f"""SELECT q.*,r.canonical,b.targets,b.control,{REVIEW_REVISION} revision
+        FROM reprint_reviews q JOIN rows r ON r.id=q.row_id LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'
+        JOIN batches b ON b.id=r.batch WHERE b.id=? AND r.id=?""",(bid,rid)).fetchone()
+    if not row or row["sha"]!=sha or type(revision) is not int or row["revision"]!=revision:
+        raise ValueError("审核条目与预览版本不一致")
+    if row["state"] in ("approved","duplicate"):
+        return row["state"]
+    expected_state="pending" if confirmed_at is None else "scheduling"
+    if row["state"]!=expected_state or row["control"]!="active":
+        raise ValueError("审核状态已变化，请刷新批次")
+    reviewed=reviewed_snapshot(row)
+    assigned=[]
+    history=existing_deliveries(db,[row["canonical"]]).get(row["canonical"],{})
+    pools=pools_for(json.loads(row["targets"]))
+    check_prior(history,pools,expected_prior)
+    if expected_accounts is not None and (not isinstance(expected_accounts,dict) or expected_accounts.keys()!=pools.keys()):
+        raise ValueError("预览的平台与本批次不一致，请重新预览排期")
+    for p,accounts in pools.items():
+        prior=history.get(p)
+        view=reviewed["editions"][p] if "editions" in reviewed else reviewed
+        pool,position=rotation(db,p,accounts)
+        account=prior["account"] if prior else accounts[position%len(accounts)]
+        if expected_accounts is not None and expected_accounts[p]!=account:
+            raise ValueError("预计分稿账号已变化，请重新预览后再审核")
+        if prior:
+            if expected_prior is None:
+                frozen_sha=db.execute("SELECT sha FROM frozen_deliveries WHERE job=?",(prior["id"],)).fetchone()[0]
+                if frozen_sha!=digest(compact(view)):
+                    raise ValueError("已有任务与本次送审稿不同，请按平台核对冻结稿并确认沿用任务")
+            db.execute("INSERT INTO reprint_assignments VALUES(?,?,?,1)",(rid,p,prior["id"]))
+            continue
+        did=db.execute("""INSERT INTO drafts(row_id,platform,account,rev,state,title,body,provider,frozen)
+            VALUES(?,?,?,?,'approved',?,?,'reprint',?)""",(rid,p,account,revision,view["title"],view["text"],compact(view))).lastrowid
+        job=schedule_in(db,did,{},now)
+        db.execute("INSERT INTO reprint_assignments VALUES(?,?,?,0)",(rid,p,job["id"]))
+        db.execute("INSERT OR REPLACE INTO account_rotation VALUES(?,?)",(pool,(position+1)%len(accounts)))
+        assigned.append(dict(platform=p,account=account))
+    db.execute("INSERT INTO row_targets VALUES(?,?)",(rid,compact(assigned)))
+    db.execute("INSERT INTO reprint_approvals(row_id,revision,review_sha,approved_at) VALUES(?,?,?,?)",
+               (rid,revision,row["sha"],now if confirmed_at is None else confirmed_at))
+    state="approved" if assigned else "duplicate"
+    db.execute("UPDATE reprint_reviews SET state=? WHERE row_id=?",(state,rid))
+    return state
+
+
+def queue_review(db,bid,item,now):
+    rid=item.get("id") if isinstance(item,dict) else None
+    if type(rid) is not int or type(item.get("revision")) is not int:
+        raise ValueError("审核条目或版次无效")
+    row=db.execute(f"""SELECT q.state,q.sha,{REVIEW_REVISION} revision,b.control,
+        s.id job,s.attempts,i.decision FROM rows r JOIN batches b ON b.id=r.batch
+        JOIN reprint_reviews q ON q.row_id=r.id LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'
+        LEFT JOIN jobs s ON s.row_id=r.id AND s.stage='reprint_schedule'
+        LEFT JOIN reprint_schedule_inputs i ON i.job=s.id WHERE r.batch=? AND r.id=?""",(bid,rid)).fetchone()
+    if not row or row["sha"]!=item.get("sha") or row["revision"]!=item["revision"]:
+        raise ValueError("审核条目与预览版本不一致")
+    decision=compact({key:item.get(key) for key in ("sha","revision","expected_prior","expected_accounts")})
+    if row["state"] in ("approved","duplicate"):
+        return dict(id=rid,state=row["state"],job=row["job"])
+    if row["control"]=="cancelled":
+        raise ValueError("批次已取消")
+    if row["state"]=="scheduling" and row["decision"]==decision:
+        return dict(id=rid,state="scheduling",job=row["job"])
+    if row["state"]!="pending" or row["control"]!="active":
+        raise ValueError("审核状态已变化，请刷新批次")
+    if type(item.get("previous_attempt",0)) is not int or item.get("previous_attempt",0)!=(row["attempts"] or 0):
+        raise ValueError("上次排期结果已变化，请重新核对这篇稿件")
+    enqueue(db,rid,"reprint_schedule",now)
+    job=db.execute("SELECT id FROM jobs WHERE row_id=? AND stage='reprint_schedule'",(rid,)).fetchone()[0]
+    db.execute("UPDATE jobs SET state='ready',failure='',due=?,finished=NULL WHERE id=?",(now,job))
+    db.execute("INSERT OR REPLACE INTO reprint_schedule_inputs(job,decision,confirmed) VALUES(?,?,?)",(job,decision,now))
+    db.execute("UPDATE reprint_reviews SET state='scheduling' WHERE row_id=?",(rid,))
+    return dict(id=rid,state="scheduling",job=job)
+
+
+def execute_approval(db,job,now):
+    from .engine import close_attempt
+    record=db.execute("""SELECT r.batch,i.decision,i.confirmed FROM reprint_schedule_inputs i
+        JOIN rows r ON r.id=? WHERE i.job=?""",(job["row_id"],job["id"])).fetchone()
+    # A late account conflict can occur after the first platform was processed.
+    db.execute("SAVEPOINT freeze_article")
+    try:
+        if not record:
+            raise ValueError("找不到此稿的审核受理记录")
+        decision=json.loads(record["decision"])
+        approve_in(db,record["batch"],job["row_id"],decision["sha"],now,decision["revision"],
+                   decision["expected_prior"],decision["expected_accounts"],record["confirmed"])
+    except (ValueError,KeyError,TypeError,sqlite3.IntegrityError) as exc:
+        db.execute("ROLLBACK TO freeze_article")
+        db.execute("UPDATE reprint_reviews SET state='pending' WHERE row_id=? AND state='scheduling'",(job["row_id"],))
+        reason=str(exc) if isinstance(exc,ValueError) else "此稿的送审内容或关联记录不完整，请在任务详情核对后重新送审"
+        close_attempt(db,job,now,"failed",reason)
+    else:
+        close_attempt(db,job,now,"done")
+    db.execute("RELEASE freeze_article")
 
 
 def overview(db,bid,platforms=()):
     items=db.execute(f"""SELECT r.id,r.line,r.note,r.canonical,r.owner,q.title,q.state,q.sha,j.id AS prepare_job,
-        {REVIEW_REVISION} revision,j.state AS prepare_state,j.attempts AS prepare_attempts FROM rows r
+        {REVIEW_REVISION} revision,j.state AS prepare_state,j.attempts AS prepare_attempts,
+        s.id AS schedule_job,s.attempts AS schedule_attempts,s.failure AS schedule_failure FROM rows r
         JOIN reprint_reviews q ON r.id=q.row_id
-        LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare' WHERE r.batch=? ORDER BY r.line""",(bid,)).fetchall()
+        LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'
+        LEFT JOIN jobs s ON s.row_id=r.id AND s.stage='reprint_schedule' WHERE r.batch=? ORDER BY r.line""",(bid,)).fetchall()
     assignments=db.execute("""SELECT a.row_id,a.platform,a.reused,j.account,j.slot,j.due,j.state,j.id,j.receipt,f.draft,
         j.revision,j.finished,d.title,origin.batch AS source_batch,origin.line AS source_line,owner.control AS source_control,
         coalesce(pin.name,t.name) draft_recipient,coalesce(pin.user_id,t.user_id) draft_recipient_id,
@@ -446,7 +516,7 @@ def overview(db,bid,platforms=()):
         for event in db.execute("""SELECT h.* FROM rows r JOIN reprint_returns h ON h.row_id=r.id
                 WHERE r.batch=? ORDER BY h.row_id,h.revision DESC""",(bid,)):
             returns.setdefault(event["row_id"],[]).append(dict(event))
-    prior=existing_deliveries(db,[r["canonical"] for r in items if r["state"]=="pending"]) if platforms else {}
+    prior=existing_deliveries(db,[r["canonical"] for r in items if r["state"] in ("pending","scheduling")]) if platforms else {}
     result=[]
     for r in items:
         row=dict(r)
@@ -455,7 +525,7 @@ def overview(db,bid,platforms=()):
         history=prior.get(row.pop("canonical"),{})
         row["assignments"]=([dict(job,reused=1) for job in by_row.get(row["owner"],[])]
                             if row["owner"] else by_row.get(r["id"],[]))
-        if platforms and row["state"]=="pending":
+        if platforms and row["state"] in ("pending","scheduling"):
             row["prior_jobs"]=[history[p] for p in platforms if p in history]
             row["missing_platforms"]=[p for p in platforms if p not in history]
         result.append(row)
@@ -565,13 +635,13 @@ def register(api,path,current_root,body):
                 WHERE r.batch=? AND r.id=?""",(bid,rid)).fetchone()
             if not r:
                 raise KeyError("找不到转载稿")
-            if r["state"] not in ("pending","returned","approved","duplicate"):
+            if r["state"] not in ("pending","scheduling","returned","approved","duplicate"):
                 return jsonify(error="这篇文章尚无可审核的稿件"),409
             platform=request.args.get("platform")
             platforms=pools_for(json.loads(r["targets"]))
             if platform is not None and platform not in platforms:
                 raise ValueError("该平台不在本批次中")
-            if r["state"]=="pending":
+            if r["state"] in ("pending","scheduling"):
                 history=existing_deliveries(db,[r["canonical"]]).get(r["canonical"],{})
                 jobs={p:(history[p]["id"],True) for p in platforms if p in history}
             else:
@@ -611,6 +681,15 @@ def register(api,path,current_root,body):
         if data.get("approved") is not True or not isinstance(reviews,list) or not 1<=len(reviews)<=100:
             raise ValueError("请先勾选已审核的稿件")
         result=[]
+        if data.get("background") is True:
+            with transaction(path) as db:
+                now=int(time.time())
+                for review in reviews:
+                    try:
+                        result.append(queue_review(db,bid,review,now))
+                    except ValueError as exc:
+                        result.append(dict(id=review.get("id") if isinstance(review,dict) else None,error=str(exc)))
+            return jsonify(items=result),202
         for review in reviews:
             rid=review.get("id") if isinstance(review,dict) else None
             try:

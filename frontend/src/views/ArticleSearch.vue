@@ -36,10 +36,11 @@
       <el-table-column label="交付状态" width="116"><template #default="{row}"><el-tag :type="colors[row.state] || 'info'">{{states[row.state] || label(row.state)}}</el-tag>
         <div v-if="row.draft_state" class="secondary">知乎草稿 · {{draftStates[row.draft_state] || row.draft_state}}</div>
         <div v-if="row.draft_updated" class="secondary">草稿更新 {{date(row.draft_updated)}}</div>
-        <div v-if="row.control==='paused' && ['ready','unscheduled','pending','returned'].includes(row.state)" class="secondary">批次已暂停</div>
+        <div v-if="row.control==='paused' && ['ready','unscheduled','pending','returned','scheduling'].includes(row.state)" class="secondary">批次已暂停</div>
         <el-button v-if="row.job_id" link @click="$emit('job',row.job_id)">任务详情</el-button>
         <router-link v-if="row.stage==='review' && row.state==='pending' && row.control==='active'"
           :to="{query:{batch:row.batch,review_row:String(row.row_id)}}">审核这篇</router-link>
+        <router-link v-if="row.state==='scheduling'" :to="{query:{batch:row.batch,review_row:String(row.row_id)}}">查看排期进度</router-link>
         <router-link v-if="row.state==='returned'" :to="{query:{batch:row.batch,review_row:String(row.row_id)}}">查看退回原因</router-link></template></el-table-column>
     </el-table>
     <nav v-if="result.total>result.page_size" class="pages" aria-label="查询结果翻页">

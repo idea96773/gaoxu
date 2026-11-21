@@ -131,7 +131,7 @@ def batch_view(db, bid, detail=True):
                 review["delivery_progress"]=assigned_progress(review["assignments"])
                 if state=="approved":
                     state=review["delivery_progress"]
-            elif state in ("pending","preparing","invalid","returned") and batch["control"]=="cancelled":
+            elif state in ("pending","preparing","invalid","returned","scheduling") and batch["control"]=="cancelled":
                 state="cancelled"
             elif state=="preparing" and review["prepare_state"]=="running":
                 state="reading"
@@ -256,6 +256,8 @@ def job_action(path,jid,action,data,now):
                 return
             if j["state"]!="failed":
                 raise ValueError("只能重试失败的步骤")
+            if j["stage"]=="reprint_schedule":
+                raise ValueError("请在「转载审核与分稿」核对当前版本与账号，再确认这一篇的排期")
             db.execute("UPDATE jobs SET state='ready',due=?,failure='' WHERE id=?",(now,jid))
             if j["stage"]=="reprint_prepare":
                 db.execute("UPDATE rows SET note='' WHERE id=?",(j["row_id"],))
@@ -416,8 +418,13 @@ def make_blueprint(path,fixed_root):
                 raise KeyError("找不到任务")
             history=db.execute("SELECT seq,started,ended,outcome,reason FROM attempts WHERE job=? ORDER BY seq",(jid,)).fetchall()
             cancelled=db.execute("SELECT cancelled_at,scope FROM publish_cancellations WHERE job=?",(jid,)).fetchone()
+            received=None
+            if j["stage"]=="reprint_schedule":
+                record=db.execute("SELECT confirmed,decision FROM reprint_schedule_inputs WHERE job=?",(jid,)).fetchone()
+                if record:
+                    received=dict(confirmed=record["confirmed"],**json.loads(record["decision"]))
             return jsonify(job=dict(j),delivery=delivery.details(path,db,j) if j["stage"]=="deliver" else None,
-                           history=[dict(r) for r in history],cancel_guard=cancel_guard(j),
+                           review_decision=received,history=[dict(r) for r in history],cancel_guard=cancel_guard(j),
                            cancellation=dict(cancelled) if cancelled else None,mode="dry-run")
     @api.get("/jobs/<int:jid>/available-slot")
     def available_time(jid):

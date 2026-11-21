@@ -34,7 +34,7 @@
         <div v-for="[title,num] in (tab==='deliveries' || batch.reprint) ? deliveryMetrics : [['导入行数',batch.rows_total],['有效唯一文章',batch.unique],['重复行',batch.counts.duplicate||0],['失败步骤',batch.failures.length],['模拟回执',batch.simulated+' / '+batch.expected],['真实公开',batch.public]]" :key="title">
           <small>{{title}}</small><strong>{{num}}</strong></div>
       </div>
-      <p v-if="batch.reprint" class="progress">共 {{batch.rows_total}} 行　等待读取 {{batch.counts.preparing||0}}　读取中 {{batch.counts.reading||0}}　待审核 {{batch.counts.pending||0}}　审核退回 {{batch.counts.returned||0}}　交付中 {{batch.counts.processing||0}}　已审且全部交付 {{batch.counts.done||0}}　重复 {{batch.counts.duplicate||0}}　资料异常 {{batch.counts.invalid||0}}　部分成功 {{batch.counts.partial||0}}　失败 {{batch.counts.failed||0}}　取消 {{batch.counts.cancelled||0}}<span v-if="batch.counts.unconfirmed">　待核对回执 {{batch.counts.unconfirmed}}</span></p>
+      <p v-if="batch.reprint" class="progress">共 {{batch.rows_total}} 行　等待读取 {{batch.counts.preparing||0}}　读取中 {{batch.counts.reading||0}}　待审核 {{batch.counts.pending||0}}　已受理待排期 {{batch.counts.scheduling||0}}　审核退回 {{batch.counts.returned||0}}　交付中 {{batch.counts.processing||0}}　已审且全部交付 {{batch.counts.done||0}}　重复 {{batch.counts.duplicate||0}}　资料异常 {{batch.counts.invalid||0}}　部分成功 {{batch.counts.partial||0}}　失败 {{batch.counts.failed||0}}　取消 {{batch.counts.cancelled||0}}<span v-if="batch.counts.unconfirmed">　待核对回执 {{batch.counts.unconfirmed}}</span></p>
       <p v-if="!batch.reprint && tab!=='deliveries'" class="progress">模拟流程进度　已完成 {{batch.counts.done||0}}　处理中 {{batch.counts.processing||0}}　部分成功 {{batch.counts.partial||0}}　失败 {{batch.counts.failed||0}}　取消 {{batch.counts.cancelled||0}}　无效行 {{batch.counts.invalid||0}}</p>
       <div v-if="batch.has_local" class="batchbar"><span>成稿　待生成 {{batch.editorial?.queued||0}}　生成中 {{batch.editorial?.generating||0}}　待审核 {{batch.editorial?.editing||0}}　已冻结 {{batch.editorial?.approved||0}}　失败 {{batch.editorial?.failed||0}}</span>
         <el-button :disabled="!batch.ai_ready || batch.control!=='active'" @click="generateBatch">批量生成平台成稿</el-button></div>
@@ -160,7 +160,9 @@
         <el-button v-if="job.cancel_guard" plain type="danger" :loading="cancellingJob" @click="cancelJob">取消此账号的排期</el-button>
         <RescheduleJob v-if="jobOpen && ['publish','deliver'].includes(job.job.stage) && job.job.state==='ready'"
           :key="[job.job.id,job.job.slot,job.job.due].join(':')" :job="job.job" :date="date" :api="api" @saved="rescheduled" />
-        <el-button v-if="job.job.state==='failed'" @click="retry(job.job.id,job.job.attempts)">仅重试此项</el-button>
+        <p v-if="job.review_decision">审核受理于 {{date(job.review_decision.confirmed)}} · 第 {{job.review_decision.revision}} 版</p>
+        <el-button v-if="job.job.stage==='reprint_schedule' && job.job.state==='failed'" @click="openFailedReview(job.job)">核对这篇转载稿</el-button>
+        <el-button v-else-if="job.job.state==='failed'" @click="retry(job.job.id,job.job.attempts)">仅重试此项</el-button>
         <div v-for="h in job.history" :key="h.seq" class="record"><span>#{{h.seq}}　{{date(h.started)}}</span><span>{{label(h.outcome)}} {{h.reason}}</span></div>
       </template>
     </el-dialog>
@@ -231,8 +233,9 @@ async function scan(){
   }catch(e){formError.value=e.message}finally{scanning.value=false}
 }
 const formError=ref(''),submitting=ref(false),article=ref(null),articleOpen=ref(false),job=ref(null),jobOpen=ref(false)
-const labels={preparing:'等待读取',reading:'正在读取',reprint_prepare:'读取转载资料',done:'已完成',ready:'排队中',active:'运行中',paused:'已暂停',cancelled:'已取消',processing:'处理中',partial:'部分成功',failed:'失败',invalid:'无效',duplicate:'重复',running:'执行中',interrupted:'已中断',ingest:'导入正文',normalize:'标准化',analyze:'模拟分析',adapt:'平台适配',check:'质量检查',plan:'生成排期',publish:'模拟发布',deliver:'冻结稿模拟交付'}
+const labels={scheduling:'已受理待排期',reprint_schedule:'按审核记录分稿排期',preparing:'等待读取',reading:'正在读取',reprint_prepare:'读取转载资料',done:'已完成',ready:'排队中',active:'运行中',paused:'已暂停',cancelled:'已取消',processing:'处理中',partial:'部分成功',failed:'失败',invalid:'无效',duplicate:'重复',running:'执行中',interrupted:'已中断',ingest:'导入正文',normalize:'标准化',analyze:'模拟分析',adapt:'平台适配',check:'质量检查',plan:'生成排期',publish:'模拟发布',deliver:'冻结稿模拟交付'}
 const label=x=>x==='unconfirmed'?'待核对回执':labels[x]||x
+function openFailedReview(job){jobOpen.value=false;failuresOpen.value=false;router.push({query:{batch:job.batch,review_row:String(job.row_id)}})}
 const date=t=>t?new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date(t*1000)):'—'
 const failureVersion=computed(()=>(batch.value?.failures||[]).map(j=>j.id+"-"+j.attempts).join(","))
 const deliveryStates=['ready','paused','running','done','failed','cancelled','unconfirmed']

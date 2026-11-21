@@ -33,13 +33,15 @@
           <p v-for="entry in row.returns" :key="entry.revision">第 {{entry.revision}} 版 · {{date(entry.returned_at)}}　{{entry.reason}}
             <small v-if="entry.resumed_at"> · {{date(entry.resumed_at)}} {{entry.resumed_as==='directory'?'从目录重读':'原稿重新送审'}}</small></p>
         </details>
-        <template v-if="['pending','returned','approved','duplicate'].includes(row.state)">
+        <template v-if="['pending','scheduling','returned','approved','duplicate'].includes(row.state)">
           <el-button v-for="p in rowPlatforms(row)" :key="p" type="primary" link @click="preview(row,p)">预览{{names[p]}}{{boundJob(row,p)?'冻结稿':row.state==='returned'?'退回稿':'待审稿'}}</el-button>
         </template>
         <el-button v-if="active && row.state==='pending'" link :disabled="busy" @click="changeDecision(row,'return')">退回此稿</el-button>
         <el-button v-if="active && row.state==='returned'" link :disabled="busy" @click="changeDecision(row,'reopen')">原稿重新送审</el-button>
         <el-button v-if="active && ['pending','returned'].includes(row.state) && row.prepare_job" link :disabled="busy" @click="reread(row)">从目录重读</el-button>
         <el-button v-if="row.prepare_job" link @click="$emit('job',row.prepare_job)">读取记录（{{row.prepare_attempts}} 次）</el-button>
+        <el-button v-if="row.schedule_job" link @click="$emit('job',row.schedule_job)">分稿排期记录 #{{row.schedule_job}}</el-button>
+        <p v-if="row.state==='pending' && row.schedule_failure" role="alert">{{row.schedule_failure}}</p>
         <el-button v-if="row.prepare_state==='failed' && active" link type="primary" @click="$emit('retry',row.prepare_job,row.prepare_attempts)">重新读取这篇</el-button></template></el-table-column>
       <el-table-column label="进度" width="116"><template #default="{row}">{{row.progress==='pending'?'待审核':row.progress==='returned'?'审核退回':label(row.progress)}}
         <small v-if="row.state==='duplicate' && row.delivery_progress"> · 关联任务{{label(row.delivery_progress)}}</small></template></el-table-column>
@@ -78,7 +80,7 @@ const emit=defineEmits(['job','refresh','retry'])
 const ids=ref([]),error=ref(''),busy=ref(false),opened=ref(false),view=ref(null)
 const pending=computed(()=>props.batch.reviews.filter(r=>r.state==='pending'))
 const priorIds=r=>Object.fromEntries((r.prior_jobs || []).map(job=>[job.platform,job.id]))
-const reviewKey=r=>[r.id,r.revision,r.sha,JSON.stringify(r.expected_prior || priorIds(r))].join(':')
+const reviewKey=r=>[r.id,r.revision,r.sha,r.previous_attempt??r.schedule_attempts??0,JSON.stringify(r.expected_prior || priorIds(r))].join(':')
 const checked=computed(()=>pending.value.filter(r=>ids.value.includes(reviewKey(r))))
 const active=computed(()=>props.batch.control==='active')
 const planning=ref(false),forecast=ref(null)
@@ -86,7 +88,7 @@ const selection=computed(()=>JSON.stringify([props.batch.id,active.value,checked
 const planRows=computed(()=>(forecast.value?.items||[]).flatMap(r=>(r.assignments||[]).map(a=>({...a,title:r.title}))))
 const plannedAssignments=computed(()=>new Map((forecast.value?.items||[]).filter(r=>!r.error).map(r=>[r.id,r.assignments])))
 const approvable=computed(()=>forecast.value?checked.value.filter(r=>plannedAssignments.value.has(r.id)):checked.value)
-const reviewItem=row=>({id:row.id,sha:row.sha,revision:row.revision,expected_prior:priorIds(row)})
+const reviewItem=row=>({id:row.id,sha:row.sha,revision:row.revision,expected_prior:priorIds(row),previous_attempt:row.schedule_attempts||0})
 watch(selection,()=>{forecast.value=null},{flush:'sync'})
 async function plan(){
   const key=selection.value
@@ -104,8 +106,8 @@ const pool=computed(()=>Object.entries(props.names).flatMap(([p,label])=>{
 function selectAll(e){ids.value=e.target.checked?pending.value.map(reviewKey):[]}
 const previewKey=ref(''),previewPlatform=ref(''),previewTask=ref(null),previewRevision=ref(0)
 const previewPlatforms=computed(()=>[...new Set(props.batch.targets.map(t=>t.platform))])
-const rowPlatforms=row=>['pending','returned'].includes(row.state)?previewPlatforms.value:row.assignments.map(a=>a.platform)
-const boundJob=(row,p)=>(row.state==='pending'?row.prior_jobs:row.assignments)?.find(job=>job.platform===p)?.id ?? null
+const rowPlatforms=row=>['pending','scheduling','returned'].includes(row.state)?previewPlatforms.value:row.assignments.map(a=>a.platform)
+const boundJob=(row,p)=>(['pending','scheduling'].includes(row.state)?row.prior_jobs:row.assignments)?.find(job=>job.platform===p)?.id ?? null
 const previewIdentity=(row,p)=>JSON.stringify([props.batch.id,reviewKey(row),row.state,p,boundJob(row,p)])
 const localImages=computed(()=>(view.value?.images || []).filter(src=>typeof src==='string' && /^\/api\/distribution\/media\/[a-f0-9]{64}$/.test(src)))
 watch(()=>props.batch.reviews,rows=>{
@@ -174,13 +176,13 @@ async function approve(){
   try{await ElMessageBox.confirm('确认已审核这 '+items.length+' 篇原文、配图和文末链接，可在本地试稿并按规则模拟交付？新冻结稿的授权范围为「仅本地试稿」。','确认转载审核',{confirmButtonText:'确认模拟排期',cancelButtonText:'返回'})}catch{return}
   if(selection.value!==key || !active.value){error.value='当前选稿或批次已变化，请重新核对';return}
   busy.value=true;error.value=''
-  try{const result=await props.api('reprints/'+bid+'/approve',{approved:true,items})
+  try{const result=await props.api('reprints/'+bid+'/approve',{approved:true,background:true,items})
     const failed=new Set(result.items.filter(x=>x.error).map(x=>x.id))
     const completed=new Set(items.filter(x=>!failed.has(x.id)).map(reviewKey))
     ids.value=ids.value.filter(id=>!completed.has(id))
     forecast.value=null
     error.value=result.items.filter(x=>x.error).map(x=>'#'+x.id+' '+x.error).join('；')
-    if(!error.value)ElMessage.success('审核已记录，分稿与排期结果已更新')
+    if(!error.value)ElMessage.success('审核已受理，可关闭页面。分稿和排期进度会保存在本批次。')
     emit('refresh')
   }catch(e){error.value=e.message}finally{busy.value=false}
 }

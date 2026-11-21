@@ -54,6 +54,47 @@ class Reprint(unittest.TestCase):
             self.assertEqual(result.status_code, 200)
             return result.json["items"]
 
+    def test_background_approval_recovers_and_rolls_back_only_the_conflicting_article(self):
+        bid=self.create([self.source(i) for i in (11,12,13)])
+        self.prepare()
+        rows=self.batch(bid)["reviews"]
+        items=[dict(id=r["id"],sha=r["sha"],revision=r["revision"],expected_prior={}) for r in rows]
+        items[1]["expected_accounts"]={"zhihu":"模拟B","toutiao":"已变更"}
+        def submit(selected):
+            return self.client.post(BASE+f"reprints/{bid}/approve",json=dict(approved=True,background=True,items=selected)).json["items"]
+        received=submit(items)
+        self.assertEqual(received,submit(items))
+        self.assertEqual([r["state"] for r in received],["scheduling"]*3)
+        self.assertEqual(self.batch(bid)["deliveries"],[])
+        stamp=int(time.time())
+        self.client.post(BASE+f"batches/{bid}/pause",json={})
+        self.assertIsNone(claim(self.path,stamp))
+        self.client.post(BASE+f"batches/{bid}/resume",json={})
+        stale=claim(self.path,stamp)
+        self.assertEqual(stale[0],received[0]["job"])
+        self.assertIsNone(claim(self.path,stamp))
+        self.client=create_app(self.path,self.root).test_client()
+        replacement=claim(self.path,stamp+31)
+        self.assertEqual(replacement[0],stale[0])
+        execute(self.path,stale,stamp+31)
+        execute(self.path,replacement,stamp+31)
+        for pending in received[1:]:
+            ticket=claim(self.path,stamp+31)
+            self.assertEqual(ticket[0],pending["job"])
+            execute(self.path,ticket,stamp+31)
+        batch=self.batch(bid)
+        self.assertEqual([r["state"] for r in batch["reviews"]],["approved","pending","approved"])
+        self.assertEqual([j["account"] for j in batch["reviews"][2]["assignments"]],["模拟B","模拟B"])
+        self.assertEqual(len(batch["deliveries"]),4)
+        self.assertEqual(batch["reviews"][1]["assignments"],[])
+        self.assertIn("账号已变化",batch["reviews"][1]["schedule_failure"])
+        replay=submit(items)
+        self.assertIn("error",replay[1])
+        updated=items[1]|dict(previous_attempt=1,expected_accounts={"zhihu":"模拟A","toutiao":"模拟A"})
+        self.assertEqual(submit([updated])[0]["job"],received[1]["job"])
+        self.client.post(BASE+f"batches/{bid}/cancel",json={})
+        self.assertEqual(self.client.get(BASE+f"jobs/{received[1]['job']}").json["job"]["state"],"cancelled")
+
     def test_plan_matches_rotation_and_quota_without_reserving_work(self):
         bid=self.create([self.source(i) for i in range(5)])
         self.prepare()

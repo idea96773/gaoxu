@@ -30,7 +30,11 @@ def claim(path, now, lease=30, *, preparation=None):
                        (now,row["id"]))
             db.execute("UPDATE jobs SET state='ready',token=NULL WHERE id=?",(row["id"],))
         job = db.execute("""SELECT j.id,j.stage FROM jobs j JOIN rows r ON r.id=j.row_id
-              JOIN batches b ON b.id=r.batch WHERE j.state='ready' AND j.due<=? AND b.control='active'"""+lane+" ORDER BY j.due,j.id LIMIT 1",(now,)).fetchone()
+              JOIN batches b ON b.id=r.batch WHERE j.state='ready' AND j.due<=? AND b.control='active'
+              AND (j.stage!='reprint_schedule' OR NOT EXISTS
+                  (SELECT 1 FROM jobs WHERE stage='reprint_schedule' AND state='running'))"""+lane+"""
+              ORDER BY j.due,CASE WHEN j.stage='reprint_schedule' THEN
+                  (SELECT seq FROM reprint_schedule_inputs WHERE job=j.id) ELSE j.id END,j.id LIMIT 1""",(now,)).fetchone()
         if not job:
             return None
         if job["stage"]=="reprint_prepare":
@@ -130,6 +134,10 @@ def execute(path, ticket, now, fault=None, after_send=None):
                 return
         if j["control"] != "active":
             close_attempt(db,j,now,"cancelled" if j["control"]=="cancelled" else "ready")
+            return
+        if st=="reprint_schedule":
+            from .reprint import execute_approval
+            execute_approval(db,j,now)
             return
         assigned = db.execute("SELECT targets FROM row_targets WHERE row_id=?", (j["row_id"],)).fetchone()
         targets, rules = json.loads(assigned[0] if assigned else j["targets"]), json.loads(j["rules"])

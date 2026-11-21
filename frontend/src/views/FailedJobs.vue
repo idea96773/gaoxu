@@ -17,8 +17,8 @@
     <ul v-if="message && skipped.length"><li v-for="item in skipped" :key="item.id">任务 #{{item.id}}　{{item.reason}}</li></ul>
     <el-table :data="result.items" v-loading="loading" row-key="id" empty-text="当前条件下没有失败任务">
       <el-table-column width="56">
-        <template #header><input type="checkbox" aria-label="选择本页失败任务" :checked="allSelected" :disabled="!result.items.length || saving || loading" @change="selectPage"></template>
-        <template #default="{row}"><input v-model="selected" type="checkbox" :aria-label="'选择任务 '+row.id" :disabled="saving || loading" :value="keyOf(row)"></template>
+        <template #header><input type="checkbox" aria-label="选择本页可重试任务" :checked="allSelected" :disabled="!retryable.length || saving || loading" @change="selectPage"></template>
+        <template #default="{row}"><input v-model="selected" type="checkbox" :aria-label="'选择任务 '+row.id" :disabled="row.stage==='reprint_schedule' || saving || loading" :value="keyOf(row)"></template>
       </el-table-column>
       <el-table-column label="文章 / 任务" min-width="180"><template #default="{row}">
         <strong>{{row.title}}</strong><small>批次 {{row.batch.slice(0,8)}} · {{label(row.control)}}</small>
@@ -45,14 +45,15 @@
 import {computed,ref,watch,onBeforeUnmount} from 'vue'
 const props=defineProps({api:Function,label:Function,date:Function,batch:String,version:String})
 const emit=defineEmits(['job','retried'])
-const stages=['reprint_prepare','ingest','normalize','analyze','adapt','check','plan','deliver','publish']
+const stages=['reprint_prepare','reprint_schedule','ingest','normalize','analyze','adapt','check','plan','deliver','publish']
 const empty=()=>({items:[],platforms:{},page:1,page_size:25,total:0})
 const result=ref(empty()),selected=ref([]),day=ref(''),stage=ref('')
 const loading=ref(false),saving=ref(false),message=ref(''),error=ref(''),skipped=ref([])
 const keyOf=r=>r.id+'-'+r.attempts
-const allSelected=computed(()=>result.value.items.length>0 && selected.value.length===result.value.items.length)
+const retryable=computed(()=>result.value.items.filter(r=>r.stage!=='reprint_schedule'))
+const allSelected=computed(()=>retryable.value.length>0 && selected.value.length===retryable.value.length)
 let sequence=0,disposed=false
-function selectPage(e){selected.value=e.target.checked?result.value.items.map(keyOf):[]}
+function selectPage(e){selected.value=e.target.checked?retryable.value.map(keyOf):[]}
 async function load(page=1){
   const seq=++sequence
   const query=new URLSearchParams({page:String(page)})

@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx vite:*)",
+      "Bash(curl -s http://localhost:5409/getFiles)",
+      "Bash(curl:*)",
+      "Bash(ls /home/czy/workspace/ai/social-auto-upload/data/videoFile/*.mp4)",
+      "Bash(xargs basename:*)",
+      "Bash(ls:*)",
+      "Bash(rm -rf ~/.claude/skills/gstack)",
+      "Bash(git clone:*)",
+      "Bash(rm -rf ../../target)",
+      "Bash(cmd.exe /C \"\\\\\"C:\\\\Program Files \\(x86\\)\\\\Microsoft Visual Studio\\\\2022\\\\BuildTools\\\\VC\\\\Auxiliary\\\\Build\\\\vcvarsall.bat\\\\\" x64 && set PATH=%USERPROFILE%\\\\.cargo\\\\bin;%PATH% && cargo check 2>&1\")"
+    ]
+  }
+}

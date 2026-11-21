@@ -35,8 +35,14 @@ def pools_for(targets):
 
 
 def snapshot(doc, destination):
-    if doc["missing_images"] or not canonicalize(doc["source_url"] or ""):
-        raise ValueError("缺少本地配图或有效的原文链接")
+    if doc["missing_images"]:
+        # Keep local references actionable and avoid echoing remote image URLs into logs.
+        missing=doc["missing_images"]
+        local=[ref for ref in missing if ref.startswith("img/") and "?" not in ref and "#" not in ref]
+        names="、".join(ref[:120] for ref in local[:3])
+        raise ValueError(f"有 {len(missing)} 处配图无法本地读取，请核对 Markdown、HTML 与 img 文件夹"+(f"（{names}）" if names else ""))
+    if not canonicalize(doc["source_url"] or ""):
+        raise ValueError("Markdown 缺少有效的公众号原文地址，请检查导出设置并补全资料")
     body=doc["markdown_content"]
     tokens=MD.parse(body)
     images,files=[],{}
@@ -124,6 +130,7 @@ def prepare_one(path,ticket,now):
         source=db.execute(query,ticket).fetchone()
     if not source:
         return
+    started=time.monotonic()
     transient=False
     error=None
     read_started=source["control"]=="active"
@@ -141,6 +148,7 @@ def prepare_one(path,ticket,now):
         except (ValueError,RecursionError,AssertionError) as exc:
             error=str(exc) or "文章格式异常，请检查下载文件"
     with transaction(path) as db:
+        now+=int(time.monotonic()-started)
         job=db.execute(query,ticket).fetchone()
         if not job:
             return
@@ -150,9 +158,14 @@ def prepare_one(path,ticket,now):
         rid=job["row_id"]
         if error is not None:
             db.execute("UPDATE rows SET note=? WHERE id=?",(error,rid))
-            if transient and job["attempts"]<3:
-                close_attempt(db,job,now,"ready",error,now+5*2**(job["attempts"]-1))
-                return
+            if transient:
+                # A manual reread or retry starts a fresh automatic backoff budget.
+                retries=db.execute("""SELECT count(*) FROM attempts WHERE job=? AND outcome='ready'
+                    AND reason<>'' AND seq>coalesce((SELECT max(seq) FROM attempts WHERE job=?
+                    AND outcome IN ('done','failed')),0)""",(job["id"],job["id"])).fetchone()[0]
+                if retries<2:
+                    close_attempt(db,job,now,"ready",error,now+5*2**retries)
+                    return
             db.execute("UPDATE reprint_reviews SET state='invalid' WHERE row_id=?",(rid,))
             close_attempt(db,job,now,"failed",error)
             return
@@ -164,11 +177,12 @@ def prepare_one(path,ticket,now):
         close_attempt(db,job,now,"done")
 
 
-def approve_one(path,bid,rid,sha,now):
+def approve_one(path,bid,rid,sha,now,revision=1):
     with transaction(path) as db:
-        row=db.execute("""SELECT q.*,r.canonical,b.targets,b.control FROM reprint_reviews q JOIN rows r ON r.id=q.row_id
+        row=db.execute("""SELECT q.*,r.canonical,b.targets,b.control,coalesce(j.revision,1) revision
+            FROM reprint_reviews q JOIN rows r ON r.id=q.row_id LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'
             JOIN batches b ON b.id=r.batch WHERE b.id=? AND r.id=?""",(bid,rid)).fetchone()
-        if not row or row["sha"]!=sha:
+        if not row or row["sha"]!=sha or type(revision) is not int or row["revision"]!=revision:
             raise ValueError("审核条目与预览版本不一致")
         if row["state"] in ("approved","duplicate"):
             return row["state"]
@@ -201,7 +215,7 @@ def approve_one(path,bid,rid,sha,now):
 
 def overview(db,bid):
     items=db.execute("""SELECT r.id,r.line,r.note,q.title,q.state,q.sha,j.id AS prepare_job,
-        j.state AS prepare_state,j.attempts AS prepare_attempts FROM rows r
+        coalesce(j.revision,1) revision,j.state AS prepare_state,j.attempts AS prepare_attempts FROM rows r
         JOIN reprint_reviews q ON r.id=q.row_id
         LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare' WHERE r.batch=? ORDER BY r.line""",(bid,)).fetchall()
     assignments=db.execute("""SELECT a.row_id,a.platform,a.reused,j.account,j.slot,j.state,j.id,j.receipt,f.draft
@@ -242,16 +256,35 @@ def register(api,path,root,body):
     def new_reprints():
         return jsonify(id=create(path,root,body())),201
 
+    @api.post("/reprints/<bid>/<int:rid>/reread")
+    def reread_reprint(bid,rid):
+        data=body()
+        with transaction(path) as db:
+            row=db.execute("""SELECT q.state,q.sha,j.id,j.revision,j.state job_state,b.control
+                FROM reprint_reviews q JOIN rows r ON r.id=q.row_id JOIN batches b ON b.id=r.batch
+                JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'
+                JOIN reprint_sources s ON s.row_id=r.id WHERE r.id=? AND b.id=?""",(rid,bid)).fetchone()
+            if not row:
+                raise ValueError("此稿缺少可重读的来源目录，请重新选稿")
+            if (row["control"]!="active" or row["state"]!="pending" or row["job_state"]!="done"
+                    or data.get("sha")!=row["sha"] or type(data.get("revision")) is not int or data["revision"]!=row["revision"]):
+                return jsonify(error="批次或预览版本已变化，请刷新后再操作"),409
+            db.execute("""UPDATE jobs SET state='ready',due=?,finished=NULL,failure='',revision=revision+1
+                WHERE id=?""",(int(time.time()),row["id"]))
+            db.execute("UPDATE reprint_reviews SET state='preparing',sha='',snapshot='null' WHERE row_id=?",(rid,))
+            return jsonify(id=row["id"],revision=row["revision"]+1)
+
     @api.get("/reprints/<bid>/<int:rid>")
     def preview_reprint(bid,rid):
         with transaction(path,False) as db:
-            r=db.execute("""SELECT q.* FROM reprint_reviews q JOIN rows r ON r.id=q.row_id
+            r=db.execute("""SELECT q.*,coalesce(j.revision,1) revision FROM reprint_reviews q JOIN rows r ON r.id=q.row_id
+                LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'
                 WHERE r.batch=? AND r.id=?""",(bid,rid)).fetchone()
             if not r:
                 raise KeyError("找不到转载稿")
             if r["state"] not in ("pending","approved","duplicate"):
                 return jsonify(error="这篇文章尚无可审核的稿件"),409
-            return jsonify(snapshot=json.loads(r["snapshot"]),sha=r["sha"])
+            return jsonify(snapshot=json.loads(r["snapshot"]),sha=r["sha"],revision=r["revision"])
 
     @api.post("/reprints/<bid>/approve")
     def approve_reprints(bid):
@@ -265,7 +298,7 @@ def register(api,path,root,body):
             try:
                 if type(rid) is not int:
                     raise ValueError("审核条目无效")
-                state=approve_one(path,bid,rid,review.get("sha"),int(time.time()))
+                state=approve_one(path,bid,rid,review.get("sha"),int(time.time()),review.get("revision",1))
                 result.append(dict(id=rid,state=state))
             except ValueError as exc:
                 result.append(dict(id=rid,error=str(exc)))

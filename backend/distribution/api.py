@@ -140,13 +140,17 @@ def control_batch(path,bid,action,now):
 
 def job_action(path,jid,action,data,now):
     with transaction(path) as db:
-        j=db.execute("""SELECT j.*,b.control,b.rules,r.canonical FROM jobs j JOIN rows r ON r.id=j.row_id
+        j=db.execute("""SELECT j.*,b.control,b.rules,r.canonical,r.batch FROM jobs j JOIN rows r ON r.id=j.row_id
              JOIN batches b ON b.id=r.batch WHERE j.id=?""",(jid,)).fetchone()
         if not j:
             raise KeyError("找不到任务")
         if j["control"]=="cancelled":
             raise ValueError("批次已取消")
         if action=="retry":
+            if "expected_attempt" in data:
+                if (type(data["expected_attempt"]) is not int or j["attempts"]!=data["expected_attempt"]
+                        or j["state"]!="failed" or data.get("batch",j["batch"])!=j["batch"]):
+                    raise ValueError("任务状态或失败记录已变化，请刷新")
             if j["state"]=="done":
                 return
             if j["state"]!="failed":
@@ -268,6 +272,24 @@ def make_blueprint(path,root):
                 raise KeyError("找不到任务")
             history=db.execute("SELECT seq,started,ended,outcome,reason FROM attempts WHERE job=? ORDER BY seq",(jid,)).fetchall()
             return jsonify(job=dict(j),delivery=delivery.details(path,db,j) if j["stage"]=="deliver" else None,history=[dict(r) for r in history],mode="dry-run")
+    @api.post("/failed-jobs/retry")
+    def retry_failed_jobs():
+        items=body().get("items")
+        if not isinstance(items,list) or not 1<=len(items)<=100:
+            raise ValueError("请选择 1 至 100 个失败任务")
+        results=[]
+        for item in items:
+            job_id=item.get("id") if isinstance(item,dict) else None
+            try:
+                if (type(job_id) is not int or not 0<job_id<2**63 or type(item.get("expected_attempt")) is not int
+                        or not isinstance(item.get("batch"),str)):
+                    raise ValueError("缺少任务编号、所属批次或失败次数")
+                job_action(path,job_id,"retry",item,int(time.time()))
+                results.append(dict(id=job_id,queued=True))
+            except (ValueError,KeyError) as exc:
+                results.append(dict(id=job_id,queued=False,reason=str(exc)))
+        return jsonify(items=results)
+
     @api.post("/jobs/<int:jid>/<action>")
     def change_job(jid,action):
         job_action(path,jid,action,body(),int(time.time()))

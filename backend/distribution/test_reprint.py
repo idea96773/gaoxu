@@ -46,7 +46,7 @@ class Reprint(unittest.TestCase):
         return self.client.get(BASE+"batches/"+bid).json
 
     def approve(self, bid, rows):
-        items = [dict(id=r["id"], sha=r["sha"]) for r in rows]
+        items = [dict(id=r["id"], sha=r["sha"], revision=r["revision"]) for r in rows]
         with self.app.test_client() as client:
             result = client.post(BASE+"reprints/"+bid+"/approve", json=dict(approved=True, items=items))
             self.assertEqual(result.status_code, 200)
@@ -127,6 +127,48 @@ class Reprint(unittest.TestCase):
         self.assertEqual(current[0],first)
         self.assertEqual(current[1]["state"],"pending")
         self.assertEqual(current[2],invalid)
+
+    def test_reread_requires_review_again_even_when_bytes_match(self):
+        bid=self.create([self.source(3)])
+        self.prepare()
+        first=self.batch(bid)["reviews"][0]
+        url=BASE+f"reprints/{bid}/{first['id']}/reread"
+        seen=dict(sha=first["sha"],revision=first["revision"])
+        self.assertEqual(self.client.post(url,json=seen).status_code,200)
+        self.assertEqual(self.client.post(url,json=seen).status_code,409)
+        self.prepare()
+        latest=self.batch(bid)["reviews"][0]
+        self.assertEqual(latest["sha"],first["sha"])
+        self.assertGreater(latest["revision"],first["revision"])
+        self.assertIn("error",self.approve(bid,[first])[0])
+        self.assertEqual(self.approve(bid,[latest])[0]["state"],"approved")
+        self.assertEqual(self.client.post(url,json=dict(sha=latest["sha"],revision=latest["revision"])).status_code,409)
+
+    def test_failed_queue_retries_only_selected_attempts(self):
+        a=self.create(["资料甲",self.source(1)])
+        b=self.create(["资料乙"],"batch-b")
+        self.prepare()
+        first=self.batch(a)["reviews"][1]
+        self.approve(a,[first])
+        scheduled=self.batch(a)["deliveries"]
+        failed=self.client.get(BASE+"failed-jobs?stage=reprint_prepare").json
+        self.assertEqual(failed["total"],2)
+        items={row["batch"]:dict(id=row["id"],batch=row["batch"],expected_attempt=row["attempts"])
+               for row in failed["items"]}
+        scoped=self.client.get(BASE+"failed-jobs?batch="+a).json
+        self.assertEqual([r["directory"] for r in scoped["items"]],["资料甲"])
+        failure_day=datetime.fromtimestamp(scoped["items"][0]["failed_at"],BEIJING).date().isoformat()
+        self.assertEqual(self.client.get(BASE+"failed-jobs?day="+failure_day+"&batch="+a).json["total"],1)
+        endpoint=BASE+"failed-jobs/retry"
+        results=self.client.post(endpoint,json=dict(items=[items[a],items[b]|{"batch":a}])).json["items"]
+        self.assertEqual([r["queued"] for r in results],[True,False])
+        self.prepare()
+        self.assertFalse(self.client.post(endpoint,json=dict(items=[items[a]])).json["items"][0]["queued"])
+        self.client.post(BASE+f"batches/{b}/pause",json={})
+        self.assertTrue(self.client.post(endpoint,json=dict(items=[items[b]])).json["items"][0]["queued"])
+        self.prepare()
+        self.assertEqual(self.batch(b)["reviews"][0]["prepare_state"],"ready")
+        self.assertEqual(self.batch(a)["deliveries"],scheduled)
 
     def test_100_articles_200_independent_receipts(self):
         bid = self.create([self.source(i) for i in range(100)])

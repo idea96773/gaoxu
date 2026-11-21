@@ -3,7 +3,7 @@
     <header class="heading">
       <div><h1>{{calendarView?'排期日历':searching?'跨批次查询':'文章分发'}}</h1><p v-if="!searching && !calendarView">本地导入 · 平台成稿审核 · 模拟排期与发布 · 北京时间</p></div>
       <div v-if="searching || calendarView" class="actions"><el-button v-if="searching" @click="openCalendar">排期日历</el-button><el-button @click="leaveSearch">返回批次管理</el-button></div>
-      <div v-else class="actions"><el-button @click="openCalendar">排期日历</el-button><el-button @click="router.push({query:{...route.query,view:'search'}})">跨批次查询</el-button><el-button :type="online ? 'success' : 'warning'" plain @click="runtimeOpen=true">{{online ? '调度器在线' : '查看调度器状态'}}</el-button>
+      <div v-else class="actions"><el-button @click="failuresOpen=true">跨批次失败待办</el-button><el-button @click="openCalendar">排期日历</el-button><el-button @click="router.push({query:{...route.query,view:'search'}})">跨批次查询</el-button><el-button :type="online ? 'success' : 'warning'" plain @click="runtimeOpen=true">{{online ? '调度器在线' : '查看调度器状态'}}</el-button>
         <ReprintCreate :api="api" @created="openReprint" /><el-button @click="showImport=true">导入文章</el-button></div>
     </header>
     <el-alert v-if="error" :title="error" type="error" show-icon @close="error=''" />
@@ -60,7 +60,7 @@
           </el-table>
         </el-tab-pane>
         <el-tab-pane :label="'失败待办 ('+batch.failures.length+')'" name="failed">
-          <el-table :data="batch.failures"><el-table-column prop="row_id" label="文章 ID"/><el-table-column label="步骤"><template #default="{row}">{{label(row.stage)}} {{names[row.platform]}}</template></el-table-column><el-table-column prop="failure" label="原因"/><el-table-column label="操作"><template #default="{row}"><el-button link type="primary" @click="retry(row.id)">仅重试此项</el-button></template></el-table-column></el-table>
+          <FailedJobs v-if="tab==='failed'" :key="batch.id" :api="api" :date="date" :label="label" :batch="batch.id" :version="failureVersion" @job="openJob" @retried="refresh"/>
         </el-tab-pane>
         <el-tab-pane label="平台统计" name="stats">
           <el-table :data="stats"><el-table-column prop="platform" label="平台"/><el-table-column prop="done" label="模拟成功"/><el-table-column prop="failed" label="发布失败"/><el-table-column prop="pending" label="待执行"/><el-table-column prop="rate" label="模拟终态成功率"/></el-table>
@@ -68,6 +68,9 @@
       </el-tabs>
     </template>
     </template>
+    <el-dialog v-model="failuresOpen" title="跨批次失败待办" width="min(1100px, 96vw)">
+      <FailedJobs v-if="failuresOpen" :api="api" :date="date" :label="label" :version="String(retryVersion)" @job="openJob" @retried="refresh" />
+    </el-dialog>
     <el-dialog v-model="runtimeOpen" title="调度器运行状态" width="min(580px, 95vw)">
       <RuntimeStatus v-if="runtimeOpen" :api="api" :date="date" />
     </el-dialog>
@@ -121,7 +124,7 @@
         <p>状态 {{label(job.job.state)}} · 执行 {{job.job.attempts}} 次</p>
         <p>计划 {{date(job.job.slot)}}　完成 {{date(job.job.finished)}}</p><p>模拟回执 {{job.job.receipt||'—'}}</p><p>{{job.job.failure}}</p>
         <div v-if="['publish','deliver'].includes(job.job.stage) && job.job.state==='ready'"><label>改期（北京时间） <input v-model="newTime" type="datetime-local"></label> <el-button @click="reschedule">保存改期</el-button></div>
-        <el-button v-if="job.job.state==='failed'" @click="retry(job.job.id)">仅重试此项</el-button>
+        <el-button v-if="job.job.state==='failed'" @click="retry(job.job.id,job.job.attempts)">仅重试此项</el-button>
         <div v-for="h in job.history" :key="h.seq" class="record"><span>#{{h.seq}}　{{date(h.started)}}</span><span>{{label(h.outcome)}} {{h.reason}}</span></div>
       </template>
     </el-dialog>
@@ -133,13 +136,14 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import ScheduleCalendar from './ScheduleCalendar.vue'
 import ArticleSearch from "./ArticleSearch.vue"
 import PlatformDraftPanel from './PlatformDraftPanel.vue'
+import FailedJobs from "./FailedJobs.vue"
 import RuntimeStatus from "./RuntimeStatus.vue"
 import ReprintCreate from "./ReprintCreate.vue"
 import ReprintReview from "./ReprintReview.vue"
 import EditorialPanel from "./EditorialPanel.vue"
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-const runtimeOpen=ref(false)
+const runtimeOpen=ref(false),failuresOpen=ref(false),retryVersion=ref(0)
 const route=useRoute(),router=useRouter()
 const searching=computed(()=>route.query.view==='search')
 const calendarView=computed(()=>route.query.view==='calendar')
@@ -167,6 +171,7 @@ const formError=ref(''),submitting=ref(false),article=ref(null),articleOpen=ref(
 const labels={preparing:'等待读取',reading:'正在读取',reprint_prepare:'读取转载资料',done:'已完成',ready:'排队中',active:'运行中',paused:'已暂停',cancelled:'已取消',processing:'处理中',partial:'部分成功',failed:'失败',invalid:'无效',duplicate:'重复',running:'执行中',interrupted:'已中断',ingest:'导入正文',normalize:'标准化',analyze:'模拟分析',adapt:'平台适配',check:'质量检查',plan:'生成排期',publish:'模拟发布',deliver:'冻结稿模拟交付'}
 const label=x=>labels[x]||x
 const date=t=>t?new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date(t*1000)):'—'
+const failureVersion=computed(()=>(batch.value?.failures||[]).map(j=>j.id+"-"+j.attempts).join(","))
 const deliveryMetrics=computed(()=>{
   const tasks=batch.value?.deliveries||[]
   const count=state=>tasks.filter(t=>t.state===state).length
@@ -222,7 +227,7 @@ async function generateBatch(){
 async function cancelBatch(){try{await ElMessageBox.confirm('取消本批次未完成的任务？已完成的模拟回执将保留。','取消批次');await control('cancel')}catch{}}
 async function openArticle(id){await action(async()=>{article.value=await api('articles/'+id);articleOpen.value=true})}
 async function openJob(id){await action(async()=>{job.value=await api('jobs/'+id);newTime.value='';jobOpen.value=true})}
-async function retry(id){await action(async()=>{await api('jobs/'+id+'/retry',{});if(jobOpen.value)job.value=await api('jobs/'+id);ElMessage.success('已重新排队')})}
+async function retry(id,attempt){await action(async()=>{await api('jobs/'+id+'/retry',attempt===undefined?{}:{expected_attempt:attempt});retryVersion.value++;if(jobOpen.value)job.value=await api('jobs/'+id);ElMessage.success('已重新排队')})}
 async function reschedule(){await action(async()=>{const t=Date.parse(newTime.value+':00+08:00')/1000;if(!Number.isFinite(t))throw Error('请选择北京时间');await api('jobs/'+job.value.job.id+'/reschedule',{time:t,expected_slot:job.value.job.slot});job.value=await api('jobs/'+job.value.job.id)})}
 let timer,closed=false
 async function poll(){await refresh();if(!closed)timer=setTimeout(poll,3000)}

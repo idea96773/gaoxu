@@ -40,9 +40,9 @@ tool('reprint_prepare','按选定目录创建转载批次并返回批次编号�
   destination:z.string().url(),rules:reprintRule
 },a=>api('reprints',a))
 tool('reprint_preview','读取某条待审或已审转载的冻结预览',{batch:batchId,row:jobId},async a=>{
-  const {sha,snapshot}=await api('reprints/'+a.batch+'/'+a.row)
+  const {sha,snapshot,revision}=await api('reprints/'+a.batch+'/'+a.row)
   if(!snapshot)throw new Error('该条目的原始资料异常，请先查看批次详情')
-  return {sha,title:snapshot.title,text:snapshot.text,images:snapshot.images,link:snapshot.link}
+  return {sha,revision,title:snapshot.title,text:snapshot.text,images:snapshot.images,link:snapshot.link}
 })
 tool('article_search','按标题、平台、账号以及北京时间日期跨批次查询模拟记录',{
   title:z.string().optional(),platform:target.shape.platform.optional(),account:z.string().optional(),
@@ -56,6 +56,12 @@ tool('batch_status','查询三级任务进度及独立失败项',{id:batchId},a=
 tool('batch_control','暂停、继续或取消模拟批次',{id:batchId,action:z.enum(['pause','resume','cancel'])},a=>api('batches/'+a.id+'/'+a.action,{}))
 tool('article_detail','读取指定文章来源、已保存正文、版本及阶段',{id:jobId},a=>api('articles/'+a.id))
 tool('publish_status','查看单个步骤、模拟回执及尝试记录',{id:jobId},a=>api('jobs/'+a.id))
+tool('failed_jobs','按批次、步骤或北京时间失败日期查看当前失败的后台任务',{
+  batch:batchId.optional(),stage:z.string().optional(),day:day.optional(),page:jobId.optional()
+},args=>api('failed-jobs?'+new URLSearchParams(args)))
+tool('failed_jobs_retry','只将选中的失败尝试重新排队，可按返回结果逐项核对',{
+  items:z.array(z.object({id:jobId,batch:batchId,expected_attempt:z.number().int().nonnegative()})).min(1).max(100)
+},args=>api('failed-jobs/retry',args))
 tool('stage_retry','只重试选中的失败步骤',{id:jobId},a=>api('jobs/'+a.id+'/retry',{}))
 tool('publish_reschedule','重新安排未领取的模拟任务；冻结稿交付须传上次读取的 slot 作为 expected_slot',{
   id:jobId,time:z.number().int(),expected_slot:z.number().int().optional()

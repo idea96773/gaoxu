@@ -58,6 +58,7 @@ tool('reprint_preview','按平台读取转载待审稿或已有任务绑定的�
 tool('article_search','按标题、平台、账号以及北京时间日期跨批次查询模拟记录',{
   title:z.string().optional(),platform:target.shape.platform.optional(),account:z.string().optional(),
   draft_review:z.enum(['awaiting','issue','verified']).optional(),
+  work:z.enum(['pending_reprint','queued_delivery','confirmed_delivery']).optional(),
   date_field:z.enum(['scheduled','execution','delivered','imported']).optional(),start:day.optional(),end:day.optional(),page:jobId.optional()
 },a=>api('article-search?'+new URLSearchParams(a)))
 tool('scheduler_status','读取服务心跳、活动批次积压、过期租约与待核对的草稿回执',{},()=>api('runtime-status'))
@@ -71,7 +72,7 @@ tool('agent_runs','查看最近到达管理台的 Agent 调用记录，使用 ne
 },args=>api('agent-runs?'+new URLSearchParams(args)))
 tool('library_import','导入最多 100 个已列出的本地文章目录并开始模拟处理',{...admission,directories:z.array(z.string()).min(1).max(100)},a=>api('library',a))
 tool('article_batch_import','以模拟正文处理手工提交的微信链接',{...admission,urls:z.array(z.string()).min(1).max(1000)},a=>api('batches',a))
-tool('dashboard_summary','模拟批次及调度器心跳',{},()=>api('batches'))
+tool('dashboard_summary','模拟批次、全局待审转载数、待交付数、今日冻结稿回执数、失败步骤及调度器心跳。compact 可只取汇总和批次索引',{compact:z.boolean().optional()},a=>api(a.compact?'batches?summary=1':'batches'))
 tool('batch_status','查询三级任务进度及独立失败项',{id:batchId},a=>api('batches/'+a.id))
 tool('batch_control','暂停、继续或取消模拟批次',{id:batchId,action:z.enum(['pause','resume','cancel'])},a=>api('batches/'+a.id+'/'+a.action,{}))
 tool('article_detail','读取指定文章来源、已保存正文、版本及阶段',{id:jobId},a=>api('articles/'+a.id))

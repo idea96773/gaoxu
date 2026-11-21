@@ -3,21 +3,28 @@
     <header class="heading">
       <div><h1>{{calendarView?'排期日历':searching?'跨批次查询':'文章分发'}}</h1><p v-if="!searching && !calendarView">本地导入 · 平台成稿审核 · 模拟排期与发布 · 北京时间</p></div>
       <div v-if="searching || calendarView" class="actions"><el-button v-if="searching" @click="openCalendar">排期日历</el-button><el-button @click="leaveSearch">返回批次管理</el-button></div>
-      <div v-else class="actions"><el-button @click="failuresOpen=true">跨批次失败待办</el-button><el-button @click="openCalendar">排期日历</el-button><el-button @click="router.push({query:{...route.query,view:'search'}})">跨批次查询</el-button><el-button :type="online ? 'success' : 'warning'" plain @click="runtimeOpen=true">{{online ? '调度器在线' : '查看调度器状态'}}</el-button>
+      <div v-else class="actions"><el-button @click="openCalendar">排期日历</el-button><el-button @click="router.push({query:{...route.query,view:'search'}})">跨批次查询</el-button><el-button :type="online ? 'success' : 'warning'" plain @click="runtimeOpen=true">{{online ? '调度器在线' : '查看调度器状态'}}</el-button>
         <el-button @click="openDraftAccounts('')">知乎草稿账号</el-button><ReprintCreate :api="api" @created="openReprint" @job="openJob" /><el-button @click="showImport=true">导入文章</el-button></div>
     </header>
     <el-alert v-if="error" :title="error" type="error" show-icon @close="error=''" />
     <ScheduleCalendar v-if="calendarView" :api="api" :names="names" :label="label" @platforms="names=$event" />
     <ArticleSearch v-else-if="searching" :api="api" :names="names" :date="date" :label="label" :version="retryVersion" @job="openJob" @platforms="names=$event" />
     <template v-else>
+    <nav v-if="overview" class="batchbar" aria-label="全部批次的工作进度">
+      <b>全部批次</b>
+      <el-button @click="openWork('pending_reprint')">待审转载 {{overview.pending_reprint}} 篇</el-button>
+      <el-button @click="openWork('queued_delivery')">冻结稿待交付 {{overview.queued_delivery}} 份</el-button>
+      <el-button @click="openWork('confirmed_delivery')">今日模拟交付 {{overview.delivered_today}} 份</el-button>
+      <el-button @click="failuresOpen=true">跨批次失败待办 {{overview.failed_steps}} 项</el-button>
+    </nav>
     <div class="batchbar">
       <label>当前批次</label>
       <el-select v-model="bid" placeholder="请选择批次" @change="selectBatch" style="width:320px">
         <el-option v-for="b in batches" :key="b.id" :value="b.id" :label="date(b.created)+' · '+b.rows_total+' 行 · '+b.id.slice(0,6)" />
       </el-select>
       <template v-if="batch"><el-tag>{{label(batch.control)}}</el-tag>
-        <el-button v-if="batch.control==='active'" @click="control('pause')">暂停</el-button>
-        <el-button v-if="batch.control==='paused'" @click="control('resume')">继续</el-button>
+        <el-button v-if="batch.control==='active'" @click="control('pause')">暂停批次</el-button>
+        <el-button v-if="batch.control==='paused'" @click="control('resume')">继续批次</el-button>
         <el-button v-if="batch.control!=='cancelled'" @click="cancelBatch">取消批次</el-button></template>
     </div>
     <el-empty v-if="!batch" description="选择本地文章目录，或粘贴链接新建模拟批次" />
@@ -32,7 +39,11 @@
         <el-button :disabled="!batch.ai_ready || batch.control!=='active'" @click="generateBatch">批量生成平台成稿</el-button></div>
       <el-tabs v-model="tab">
         <el-tab-pane v-if="batch.reprint" label="转载审核与分稿" name="reprint">
-          <ReprintReview @retry="retry" :key="batch.id" :batch="batch" :api="api" :names="names" :label="label" :date="date" @refresh="refresh" @job="openJob" />
+          <div v-if="focusedRow" class="batchbar">
+            <span>{{reviewBatch.reviews.length?'正在查看第 '+reviewBatch.reviews[0].line+' 行':'本批次中找不到该行'}}</span>
+            <el-button link @click="router.push({query:{batch:batch.id}})">查看整批</el-button>
+          </div>
+          <ReprintReview v-if="!focusedRow || reviewBatch.reviews.length" @retry="retry" :key="batch.id+':'+focusedRow" :batch="reviewBatch" :api="api" :names="names" :label="label" :date="date" @refresh="refresh" @job="openJob" />
         </el-tab-pane>
         <el-tab-pane v-else label="文章收件箱" name="rows">
           <el-table :data="batch.rows" max-height="490" @row-click="r=>openArticle(r.id)">
@@ -142,7 +153,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import ScheduleCalendar from './ScheduleCalendar.vue'
 import ArticleSearch from "./ArticleSearch.vue"
 import DraftAccounts from './DraftAccounts.vue'
@@ -169,8 +180,17 @@ function openCalendar(){
   if(searching.value && ['scheduled','execution'].includes(route.query.date_field))query.date_field=route.query.date_field
   router.push({query})
 }
-async function leaveSearch(){await router.push({query:bid.value?{batch:bid.value}:{}});await refresh()}
+async function leaveSearch(){await router.push({query:bid.value?{batch:bid.value}:{}})}
 const batches=ref([]),names=ref({}),bid=ref(String(route.query.batch||'')),batch=ref(null),error=ref(''),online=ref(false)
+const overview=ref(null)
+const focusedRow=computed(()=>route.query.batch===batch.value?.id ? String(route.query.review_row || '') : '')
+const reviewBatch=computed(()=>focusedRow.value && batch.value?.reprint
+  ? {...batch.value,reviews:batch.value.reviews.filter(row=>String(row.id)===focusedRow.value)} : batch.value)
+function openWork(work){
+  const query={view:'search',work,date_field:work==='pending_reprint'?'imported':'execution'}
+  if(work==='confirmed_delivery')Object.assign(query,{date_field:'delivered',start:overview.value.today,end:overview.value.today})
+  router.push({query})
+}
 const tab=ref(route.query.tab==='deliveries'?'deliveries':'rows'),showImport=ref(false),source=ref('library'),files=ref([]),urls=ref(''),platforms=ref(['zhihu','xiaohongshu']),routing=ref('rotate'),gap=ref(60),cap=ref(10),platformCap=ref(20)
 const accounts=ref({})
 try { accounts.value=JSON.parse(localStorage.getItem('distribution.account-aliases') || '{}') || {} } catch {}
@@ -204,11 +224,42 @@ async function api(path,data){
   if(!response.ok){const err=await response.json().catch(()=>({}));throw Error(err.error||'请求失败 '+response.status)}
   return response.json()
 }
-async function detail(){const id=bid.value;if(id){const result=await api('batches/'+id);if(bid.value===id){if(batch.value?.id!==id){if(result.reprint && tab.value!=='deliveries')tab.value='reprint';else if(!result.reprint && tab.value==='reprint')tab.value='rows'}batch.value=result}}}
-async function refresh(){if(searching.value || calendarView.value)return;try{const data=await api('batches?summary=1');batches.value=data.batches;names.value=data.platforms;for(const p of Object.keys(data.platforms))accounts.value[p]??='模拟账号';online.value=!!data.worker_seen && data.checked>=data.worker_seen && data.checked-data.worker_seen<18
-  if(!bid.value || !data.batches.some(b=>b.id===bid.value))bid.value=data.batches[0]?.id||''
-  await detail();error.value=''}catch(e){online.value=false;error.value=e.message}}
-async function selectBatch(){await router.replace({query:{batch:bid.value}});await refresh()}
+let refreshSequence=0
+async function detail(seq){
+  const id=bid.value
+  if(!id){batch.value=null;return}
+  const result=await api('batches/'+encodeURIComponent(id))
+  if(bid.value!==id || seq!==refreshSequence)return
+  if(batch.value?.id!==id){
+    if(result.reprint && (route.query.review_row || tab.value!=='deliveries'))tab.value='reprint'
+    else if(!result.reprint && tab.value==='reprint')tab.value='rows'
+  }
+  batch.value=result
+}
+async function refresh(){
+  if(searching.value || calendarView.value)return
+  const seq=++refreshSequence,pinned=String(route.query.batch || '')
+  try{
+    const data=await api('batches?summary=1'+(pinned?'&include='+encodeURIComponent(pinned):''))
+    if(seq!==refreshSequence || searching.value || calendarView.value)return
+    batches.value=data.batches;names.value=data.platforms;overview.value=data.overview
+    for(const p of Object.keys(data.platforms))accounts.value[p]??='模拟账号'
+    online.value=!!data.worker_seen && data.checked>=data.worker_seen && data.checked-data.worker_seen<18
+    if(pinned && !data.batches.some(b=>b.id===pinned)){batch.value=null;error.value='找不到链接中的批次，请选择其他批次';return}
+    if(pinned)bid.value=pinned
+    else if(!data.batches.some(b=>b.id===bid.value))bid.value=data.batches[0]?.id||''
+    await detail(seq)
+    if(seq===refreshSequence)error.value=''
+  }catch(e){if(seq===refreshSequence){online.value=false;error.value=e.message}}
+}
+async function selectBatch(){await router.replace({query:{batch:bid.value}})}
+watch(()=>route.fullPath,()=>{
+  ++refreshSequence
+  if(searching.value || calendarView.value)return
+  if(route.query.batch && route.query.batch!==batch.value?.id)batch.value=null
+  if(route.query.review_row)tab.value='reprint'
+  refresh()
+})
 async function openReprint(id){bid.value=id;tab.value='reprint';await selectBatch()}
 function chooseFiles(e){files.value=[...e.target.files].filter(f=>/\.(html|md|jpg|jpeg|png|gif|webp|other)$/i.test(f.name))}
 function fillSample(){const prefix=crypto.randomUUID().slice(0,8);urls.value=Array.from({length:100},(_,i)=>'https://mp.weixin.qq.com/s/demo-'+prefix+'-'+(i+1)).join('\n')}

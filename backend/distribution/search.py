@@ -55,6 +55,20 @@ DATE_FIELDS = {"scheduled":"slot", "execution":"execution_slot", "delivered":"re
 PAGE_SIZE = 25
 
 
+def overview(db,now):
+    today=datetime.fromtimestamp(now,BEIJING).date().isoformat()
+    counts=db.execute("""SELECT
+        (SELECT count(*) FROM reprint_reviews q JOIN rows r ON r.id=q.row_id
+         JOIN batches b ON b.id=r.batch WHERE q.state='pending' AND b.control='active') pending_reprint,
+        (SELECT count(*) FROM jobs j JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch
+         WHERE j.stage='deliver' AND j.state='ready' AND b.control='active') queued_delivery,
+        (SELECT count(*) FROM jobs WHERE stage='deliver' AND state='done' AND receipt IS NOT NULL
+         AND finished>=? AND finished<?) delivered_today,
+        (SELECT count(*) FROM jobs WHERE state='failed') failed_steps""",
+        (day_start(today),day_start(today,following=True))).fetchone()
+    return dict(counts)|{"today":today}
+
+
 def day_start(value, following=False):
     try:
         day = date.fromisoformat(value)
@@ -72,6 +86,14 @@ def search(db, args):
     if not field:
         raise ValueError("未知的日期类型")
     filters, values = [], []
+    work=args.get("work","")
+    if work:
+        scopes={"pending_reprint":"stage='review' AND state='pending' AND control='active'",
+                "queued_delivery":"stage='deliver' AND state='ready' AND control='active'",
+                "confirmed_delivery":"stage='deliver' AND state='done' AND received IS NOT NULL"}
+        if work not in scopes:
+            raise ValueError("未知的任务筛选条件")
+        filters.append(scopes[work])
     review=args.get("draft_review","")
     if review:
         conditions={"awaiting":"draft_state IN ('saved','unknown')","issue":"draft_state='needs_review'",

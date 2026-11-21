@@ -14,7 +14,7 @@ import zipfile
 from .api import create_app
 from .engine import claim, execute, tick
 from .reprint import DESTINATION
-from .store import BEIJING
+from .store import BEIJING, transaction
 from .test_workflow import drain, export_folder
 
 BASE = "/api/distribution/"
@@ -53,6 +53,51 @@ class Reprint(unittest.TestCase):
             result = client.post(BASE+"reprints/"+bid+"/approve", json=dict(approved=True, items=items))
             self.assertEqual(result.status_code, 200)
             return result.json["items"]
+
+    def test_overview_drills_down_to_active_rows_and_beijing_day_receipts(self):
+        bid = self.create([self.source(1), self.source(2)])
+        self.prepare()
+        first, second = self.batch(bid)["reviews"]
+        self.approve(bid, [first])
+
+        def overview():
+            return self.client.get(BASE+"batches?summary=1").json["overview"]
+
+        def results(work, **filters):
+            return self.client.get(BASE+"article-search", query_string=dict(work=work, **filters)).json
+
+        self.assertEqual(overview()["pending_reprint"], 1)
+        self.assertEqual([r["row_id"] for r in results("pending_reprint")["items"]], [second["id"]])
+        self.assertEqual(overview()["queued_delivery"], 2)
+        self.assertEqual(results("queued_delivery")["total"], 2)
+        self.client.post(BASE+f"batches/{bid}/pause", json={})
+        for scope in ("queued_delivery", "pending_reprint"):
+            self.assertEqual(overview()[scope], 0)
+            self.assertEqual(results(scope)["total"], 0)
+
+        # 两个模拟回执分别在北京时间零点和零点前一秒落账。
+        with patch("distribution.api.time.time", return_value=1800000000):
+            today = overview()["today"]
+            midnight = int(datetime.fromisoformat(today).replace(tzinfo=BEIJING).timestamp())
+            with transaction(self.path) as db:
+                jobs = db.execute("SELECT id FROM jobs WHERE row_id=? AND stage='deliver' ORDER BY id",
+                                  (first["id"],)).fetchall()
+                db.executemany("UPDATE jobs SET state='done', finished=?, receipt=? WHERE id=?",
+                               [(midnight-i, "local-receipt-"+str(i), row["id"]) for i, row in enumerate(jobs)])
+            self.assertEqual(overview()["delivered_today"], 1)
+            self.assertEqual(results("confirmed_delivery", date_field="delivered", start=today, end=today)["total"], 1)
+
+    def test_overview_keeps_an_older_selected_batch_accessible(self):
+        bid = self.create([self.source(1)])
+        with transaction(self.path) as db:
+            db.executemany("""INSERT INTO batches(id,request_key,digest,created,control,targets,rules)
+                SELECT ?,?,?,created+100,control,targets,rules FROM batches WHERE id=?""",
+                [(f"recent-{i}", f"request-{i}", "fixture", bid) for i in range(200)])
+        recent = self.client.get(BASE+"batches?summary=1").json["batches"]
+        self.assertNotIn(bid, [b["id"] for b in recent])
+        pinned = self.client.get(BASE+"batches", query_string={"summary":"1", "include":bid}).json["batches"]
+        self.assertEqual(pinned[:-1], recent)
+        self.assertEqual((pinned[-1]["id"], pinned[-1]["rows_total"]), (bid, 1))
 
     def test_review_snapshot_isolation_export_and_duplicate(self):
         dirs = [self.source(i) for i in range(3)]

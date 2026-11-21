@@ -243,15 +243,22 @@ def make_blueprint(path,root):
     @api.get("/batches")
     def batches():
         with transaction(path,False) as db:
-            recent=db.execute("SELECT id,created FROM batches ORDER BY created DESC,rowid DESC LIMIT 200").fetchall()
             if request.args.get("summary")=="1":
-                records=[dict(batch)|{"rows_total":db.execute("SELECT count(*) FROM rows WHERE batch=?",
-                         (batch["id"],)).fetchone()[0]} for batch in recent]
+                summary="""SELECT b.id,b.created,(SELECT count(*) FROM rows r WHERE r.batch=b.id) rows_total
+                           FROM batches b"""
+                records=[dict(row) for row in db.execute(summary+" ORDER BY b.created DESC,b.rowid DESC LIMIT 200")]
+                selected=request.args.get("include")
+                if selected and not any(b["id"]==selected for b in records):
+                    pinned=db.execute(summary+" WHERE b.id=?",(selected,)).fetchone()
+                    if pinned:
+                        records.append(dict(pinned))
             else:
+                recent=db.execute("SELECT id FROM batches ORDER BY created DESC,rowid DESC LIMIT 200")
                 records=[batch_view(db,batch["id"],False) for batch in recent]
             seen=db.execute("SELECT seen FROM health WHERE name='worker'").fetchone()
-            return jsonify(batches=records,platforms=PLATFORMS,mode="dry-run",checked=int(time.time()),
-                           worker_seen=seen[0] if seen else None)
+            now=int(time.time())
+            return jsonify(batches=records,platforms=PLATFORMS,mode="dry-run",checked=now,
+                           overview=search.overview(db,now),worker_seen=seen[0] if seen else None)
     @api.post("/batches")
     def create():
         return jsonify(id=import_batch(path,body())),201

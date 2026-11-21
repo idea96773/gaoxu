@@ -10,28 +10,14 @@ import re
 import threading
 import time
 import uuid
-from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from .platform_draft import claim, edit_url, payload, transition
+from .runtime import instance_lock
 from .store import DEFAULT_DB, initialize, transaction
 
 CHUNK = 512 * 1024
-
-
-@contextmanager
-def exclusive_worker(path):
-    # An OS lock disappears on process death. A stale PID cannot unlock another worker.
-    with open(str(path)+".draft-worker.lock","a+b") as lock:
-        lock.seek(0)
-        if os.name=="nt":
-            import msvcrt
-            msvcrt.locking(lock.fileno(),msvcrt.LK_NBLCK,1)
-        else:
-            import fcntl
-            fcntl.flock(lock.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
-        yield
 
 
 class Bridge:
@@ -160,7 +146,7 @@ def serve_bridge(path,port,extension_id,token):
             heartbeat(path)
             gate.release()
     initialize(path)
-    with exclusive_worker(path), serve(handle,"127.0.0.1",port,origins=["chrome-extension://"+extension_id]) as server:
+    with instance_lock(str(path)+".draft-worker.lock"), serve(handle,"127.0.0.1",port,origins=["chrome-extension://"+extension_id]) as server:
         with transaction(path) as db:
             now=int(time.time())
             db.execute("UPDATE platform_drafts SET state='failed',reason='准备过程中断，可重试',updated=? WHERE state='preparing'",(now,))

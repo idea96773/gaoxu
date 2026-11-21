@@ -173,13 +173,27 @@ def make_blueprint(path,root):
         if not isinstance(data,dict):
             raise ValueError("请求体必须是 JSON 对象")
         return data
+    from .runtime import health
+    @api.get("/health")
+    def heartbeat():
+        return jsonify(health(path))
+
+    @api.get("/runtime-status")
+    def runtime_status():
+        return jsonify(health(path,details=True))
+
     @api.get("/batches")
     def batches():
         with transaction(path,False) as db:
-            ids=db.execute("SELECT id FROM batches ORDER BY created DESC,rowid DESC LIMIT 200").fetchall()
+            recent=db.execute("SELECT id,created FROM batches ORDER BY created DESC,rowid DESC LIMIT 200").fetchall()
+            if request.args.get("summary")=="1":
+                records=[dict(batch)|{"rows_total":db.execute("SELECT count(*) FROM rows WHERE batch=?",
+                         (batch["id"],)).fetchone()[0]} for batch in recent]
+            else:
+                records=[batch_view(db,batch["id"],False) for batch in recent]
             seen=db.execute("SELECT seen FROM health WHERE name='worker'").fetchone()
-            return jsonify(batches=[batch_view(db,r[0],False) for r in ids],platforms=PLATFORMS,
-                           mode="dry-run",worker_seen=seen[0] if seen else None)
+            return jsonify(batches=records,platforms=PLATFORMS,mode="dry-run",checked=int(time.time()),
+                           worker_seen=seen[0] if seen else None)
     @api.post("/batches")
     def create():
         return jsonify(id=import_batch(path,body())),201

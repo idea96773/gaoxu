@@ -239,5 +239,7 @@ if __name__ == "__main__":
     ap.add_argument("--db", default=os.getenv("DIST_DB",str(DEFAULT_DB)))
     ap.add_argument("--concurrency",type=int,choices=range(1,9),default=1)
     args = ap.parse_args()
+    from .runtime import instance_lock
     initialize(args.db)
-    worker(args.db,args.concurrency)
+    with instance_lock(str(args.db)+'.scheduler.lock'):
+        worker(args.db,args.concurrency)

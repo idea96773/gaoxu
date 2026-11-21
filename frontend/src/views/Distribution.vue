@@ -3,7 +3,7 @@
     <header class="heading">
       <div><h1>{{searching?'跨批次查询':'文章分发'}}</h1><p v-if="!searching">本地导入 · 平台成稿审核 · 模拟排期与发布 · 北京时间</p></div>
       <div v-if="searching" class="actions"><el-button @click="leaveSearch">返回批次管理</el-button></div>
-      <div v-else class="actions"><el-button @click="router.push({query:{...route.query,view:'search'}})">跨批次查询</el-button><el-tag :type="online ? 'success' : 'warning'">{{online ? '调度器在线' : '等待调度器'}}</el-tag>
+      <div v-else class="actions"><el-button @click="router.push({query:{...route.query,view:'search'}})">跨批次查询</el-button><el-button :type="online ? 'success' : 'warning'" plain @click="runtimeOpen=true">{{online ? '调度器在线' : '查看调度器状态'}}</el-button>
         <ReprintCreate :api="api" @created="openReprint" /><el-button @click="showImport=true">导入文章</el-button></div>
     </header>
     <el-alert v-if="error" :title="error" type="error" show-icon @close="error=''" />
@@ -67,6 +67,9 @@
       </el-tabs>
     </template>
     </template>
+    <el-dialog v-model="runtimeOpen" title="调度器运行状态" width="min(580px, 95vw)">
+      <RuntimeStatus v-if="runtimeOpen" :api="api" :date="date" />
+    </el-dialog>
     <el-dialog v-model="showImport" title="导入文章" width="min(660px, 94vw)" :close-on-click-modal="false">
       <el-radio-group v-model="source"><el-radio-button value="library">固定保存目录</el-radio-button><el-radio-button value="folder">另选文件夹</el-radio-button><el-radio-button value="url">链接模拟</el-radio-button></el-radio-group>
       <div v-if="source==='library'" class="input-block"><p>{{libraryRoot || 'Easy WeChat 保存目录'}}</p>
@@ -128,11 +131,13 @@
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import ArticleSearch from "./ArticleSearch.vue"
 import PlatformDraftPanel from './PlatformDraftPanel.vue'
+import RuntimeStatus from "./RuntimeStatus.vue"
 import ReprintCreate from "./ReprintCreate.vue"
 import ReprintReview from "./ReprintReview.vue"
 import EditorialPanel from "./EditorialPanel.vue"
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+const runtimeOpen=ref(false)
 const route=useRoute(),router=useRouter()
 const searching=computed(()=>route.query.view==='search')
 async function leaveSearch(){await router.push({query:bid.value?{batch:bid.value}:{}});await refresh()}
@@ -170,9 +175,9 @@ async function api(path,data){
   return response.json()
 }
 async function detail(){const id=bid.value;if(id){const result=await api('batches/'+id);if(bid.value===id){if(batch.value?.id!==id){if(result.reprint && tab.value!=='deliveries')tab.value='reprint';else if(!result.reprint && tab.value==='reprint')tab.value='rows'}batch.value=result}}}
-async function refresh(){if(searching.value)return;try{const data=await api('batches');batches.value=data.batches;names.value=data.platforms;for(const p of Object.keys(data.platforms))accounts.value[p]??='模拟账号';online.value=Date.now()/1000-data.worker_seen<18
+async function refresh(){if(searching.value)return;try{const data=await api('batches?summary=1');batches.value=data.batches;names.value=data.platforms;for(const p of Object.keys(data.platforms))accounts.value[p]??='模拟账号';online.value=!!data.worker_seen && data.checked>=data.worker_seen && data.checked-data.worker_seen<18
   if(!bid.value || !data.batches.some(b=>b.id===bid.value))bid.value=data.batches[0]?.id||''
-  await detail();error.value=''}catch(e){error.value=e.message}}
+  await detail();error.value=''}catch(e){online.value=false;error.value=e.message}}
 async function selectBatch(){await router.replace({query:{batch:bid.value}});await refresh()}
 async function openReprint(id){bid.value=id;tab.value='reprint';await selectBatch()}
 function chooseFiles(e){files.value=[...e.target.files].filter(f=>/\.(html|md|jpg|jpeg|png|gif|webp|other)$/i.test(f.name))}

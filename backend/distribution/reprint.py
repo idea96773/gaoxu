@@ -71,16 +71,22 @@ def snapshot(doc, destination):
                 link=dict(mode="direct",destination=destination,short="",label="延伸阅读"))
 
 
-def create(path,root,data):
-    key=data.get("request_id")
-    if not isinstance(key,str) or not 1<=len(key)<=128:
-        raise ValueError("缺少请求编号")
+def validated_settings(data):
     destination=data.get("destination",DESTINATION)
     if not isinstance(destination,str) or not canonicalize(destination) or re.search(r'[\s<>()\\\[\]]',destination):
         raise ValueError("请输入 HTTPS 公众号文章地址")
     pools=pools_for(data.get("targets"))
     targets=[dict(platform=p,account=a) for p,accounts in pools.items() for a in accounts]
-    rules=clean_rules(data.get("rules",{}))
+    return dict(targets=targets,destination=destination,rules=clean_rules(data.get("rules",{})))
+
+
+def create(path,root,data):
+    key=data.get("request_id")
+    if not isinstance(key,str) or not 1<=len(key)<=128:
+        raise ValueError("缺少请求编号")
+    settings=validated_settings(data)
+    targets,destination,rules=settings["targets"],settings["destination"],settings["rules"]
+    pools=pools_for(targets)
     dirs=data.get("directories")
     fingerprint=digest(compact(["reprint",dirs,pools,rules,destination]))
     def previous(db):
@@ -171,6 +177,30 @@ def overview(db,bid):
 
 
 def register(api,path,root,body):
+    @api.get("/reprint-settings")
+    def read_defaults():
+        with transaction(path,False) as db:
+            row=db.execute("SELECT revision,payload FROM reprint_defaults WHERE singleton=1").fetchone()
+            if row:
+                return jsonify(revision=row["revision"],settings=json.loads(row["payload"]))
+        return jsonify(revision=0,settings=None)
+
+    @api.post("/reprint-settings")
+    def write_defaults():
+        data=body()
+        expected=data.get("revision")
+        if type(expected) is not int or expected<0:
+            raise ValueError("请读取当前常用设置后保存")
+        settings=validated_settings(data)
+        with transaction(path) as db:
+            row=db.execute("SELECT revision,payload FROM reprint_defaults WHERE singleton=1").fetchone()
+            if row and json.loads(row["payload"])==settings:
+                return jsonify(revision=row["revision"],settings=settings)
+            if (row["revision"] if row else 0)!=expected:
+                return jsonify(error="常用设置已被更新，请重新读取后保存"),409
+            db.execute("INSERT OR REPLACE INTO reprint_defaults VALUES(1,?,?)",(expected+1,compact(settings)))
+        return jsonify(revision=expected+1,settings=settings)
+
     @api.post("/reprints")
     def new_reprints():
         return jsonify(id=create(path,root,body())),201

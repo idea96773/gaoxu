@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE TABLE IF NOT EXISTS frozen_deliveries (
  job INTEGER PRIMARY KEY REFERENCES jobs(id), draft INTEGER UNIQUE NOT NULL REFERENCES drafts(id),
  requested INTEGER, planned INTEGER NOT NULL, snapshot TEXT NOT NULL, sha TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS reprint_defaults (
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision INTEGER NOT NULL, payload TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS reprint_batches (
  batch TEXT PRIMARY KEY REFERENCES batches(id), destination TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS reprint_reviews (

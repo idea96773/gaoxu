@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .api import create_app
 from .scheduling import BEIJING, available_slot
-from .store import clean_rules, compact, transaction
+from .store import booked_slot, clean_rules, compact, transaction
 
 
 def timestamp(day, clock):
@@ -57,3 +57,22 @@ class ScopedScheduling(unittest.TestCase):
             self.assertEqual(data["days"],{DAY:{"paused":1}})
             search=client.get(root+"article-search",query_string=dict(start=DAY,end=DAY,platform="zhihu",account="甲")).json
             self.assertEqual(search["total"],sum(data["days"][DAY].values()))
+
+    def test_moving_one_job_can_use_gap_before_future_reservation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"queue.sqlite"
+            create_app(path)
+            rules=clean_rules({"gap":60})
+            stamp=timestamp(DAY,"09:00")
+            with transaction(path) as db:
+                db.execute("INSERT INTO batches VALUES('b','key','digest',?,'active',?,?)",
+                           (stamp,compact(TARGETS),compact(rules)))
+                jobs=[]
+                for line,minute in enumerate((0,60,120),1):
+                    rid=db.execute("INSERT INTO rows(batch,line,url,kind) VALUES('b',?,?,'article')",
+                                   (line,f"fixture-{line}")).lastrowid
+                    slot=stamp+minute*60
+                    jobs.append(db.execute("""INSERT INTO jobs(row_id,stage,platform,account,due,slot)
+                        VALUES(?,'publish','zhihu','甲',?,?)""",(rid,slot,slot)).lastrowid)
+                self.assertEqual(booked_slot(db,"publish","zhihu","甲",stamp+10,rules,jobs[-1]),stamp+60)
+                self.assertEqual(booked_slot(db,"publish","zhihu","甲",stamp+10,rules),stamp+121*60)

@@ -92,6 +92,35 @@ class FrozenDelivery(unittest.TestCase):
         self.assertNotEqual(self.detail(other_job)["job"]["receipt"],d["job"]["receipt"])
         self.assertEqual(self.schedule(did,self.slot)["id"],jid)
 
+    def test_preview_releases_failed_booking_but_keeps_unreconciled_receipt(self):
+        draft,_=self.freeze(self.targets[0])
+        peer,_=self.freeze(self.targets[1])
+        first=self.schedule(draft,self.slot)["id"]
+        other=self.schedule(peer,self.slot+90)["id"]
+        route=BASE+f"jobs/{other}/available-slot"
+        def preview():
+            result=self.client.get(route,query_string={"time":self.slot})
+            self.assertEqual(result.status_code,200,result.json)
+            return result.json
+        proposal=preview()
+        self.assertEqual(proposal["available"],self.slot+5)
+        self.assertEqual(self.detail(other)["delivery"]["reschedules"],[])
+        with transaction(self.path) as db:
+            db.execute("UPDATE jobs SET state='failed',attempts=1 WHERE id=?",(first,))
+        self.assertEqual(preview()["available"],self.slot)
+        self.post(f"jobs/{first}/retry",{})
+        body=dict(time=self.slot,expected_available=self.slot,
+                  expected_slot=proposal["expected_slot"],expected_execution=proposal["expected_execution"])
+        self.assertEqual(self.client.post(BASE+f"jobs/{other}/reschedule",json=body).status_code,400)
+        self.assertEqual(self.detail(other)["job"]["slot"],self.slot+90)
+        self.crash(self.slot)
+        with transaction(self.path) as db:
+            db.execute("UPDATE jobs SET state='failed' WHERE id=?",(first,))
+        self.assertEqual(preview()["available"],self.slot+5)
+        agreed=self.slot+5
+        self.assertEqual(self.post(f"jobs/{other}/reschedule",body|dict(time=agreed,expected_available=agreed))["slot"],agreed)
+        self.assertEqual(self.detail(other)["delivery"]["planned"],agreed)
+
     def test_crash_before_and_after_acceptance(self):
         did,frozen=self.freeze(self.targets[0])
         peer,_=self.freeze(self.targets[1])

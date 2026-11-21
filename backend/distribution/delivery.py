@@ -79,25 +79,8 @@ def free_slot(db, platform, account, stamp, limits, exclude=0):
     return booked_slot(db,"deliver",platform,account,stamp,limits,exclude)
 
 
-def move_slot(path, db, job, data, now):
-    stamp,previous=data.get("time"),data.get("expected_slot")
-    if type(stamp) is not int or type(previous) is not int:
-        raise ValueError("请刷新后选择新的北京时间")
-    if job["state"]!="ready" or receipt(path,db,job):
-        raise ValueError("只能调整尚未领取、没有接收回执的任务")
-    if job["slot"]==stamp:
-        return
-    if job["slot"]!=previous:
-        raise ValueError("排期已被其他操作修改，请刷新任务")
-    if "expected_execution" in data and (type(data["expected_execution"]) is not int or
-            data["expected_execution"]!=max(job["slot"],job["due"])):
-        raise ValueError("后台已调整预计执行时间，请刷新后确认改期")
-    if not now<=stamp<=now+366*86400:
-        raise ValueError("请选择未来一年内的北京时间")
-    slot=free_slot(db,job["platform"],job["account"],stamp,json.loads(job["rules"]),job["id"])
-    if slot!=stamp:
-        suggestion=datetime.fromtimestamp(slot,BEIJING).strftime("%Y-%m-%d %H:%M:%S")
-        raise ValueError("新排期与账号或平台规则冲突，可用北京时间 "+suggestion)
+def apply_move(db,job,slot,now):
+    previous=job["slot"]
     bound=db.execute("UPDATE frozen_deliveries SET planned=? WHERE job=? AND planned=?",
                      (slot,job["id"],previous))
     if bound.rowcount!=1:

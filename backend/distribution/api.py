@@ -5,6 +5,7 @@ import os
 import time
 from collections import Counter, defaultdict
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 
 from flask import Blueprint, Flask, Response, jsonify, request, send_from_directory
@@ -12,7 +13,7 @@ from flask import Blueprint, Flask, Response, jsonify, request, send_from_direct
 from . import delivery, frozen_reprint, reprint, search, platform_draft
 from .scheduling import effective_limits
 from .engine import close_attempt, lookup_receipt
-from .store import DEFAULT_DB, PLATFORMS, import_batch, initialize, next_slot, operation_key, transaction
+from .store import BEIJING, DEFAULT_DB, PLATFORMS, booked_slot, import_batch, initialize, operation_key, transaction
 from .library import catalog, catalog_page, check_library_root, configure_library, library_settings, read_selected
 
 def outcome(row, jobs, target_count):
@@ -167,12 +168,37 @@ def control_batch(path,bid,action,now):
                     else:
                         db.execute("UPDATE jobs SET state='failed',failure=? WHERE id=?",(str(exc),j["id"]))
 
+def scheduling_job(db,jid):
+    job=db.execute("""SELECT j.*,b.control,b.rules,r.canonical,r.batch FROM jobs j JOIN rows r ON r.id=j.row_id
+        JOIN batches b ON b.id=r.batch WHERE j.id=?""",(jid,)).fetchone()
+    if not job:
+        raise KeyError("找不到任务")
+    return job
+
+
+def check_movable(path,db,job):
+    if job["stage"] not in ("publish","deliver") or job["state"]!="ready" or job["control"]=="cancelled":
+        raise ValueError("只能改期尚未领取的发布或冻结稿交付任务")
+    if job["stage"]=="deliver":
+        received=delivery.receipt(path,db,job)
+    else:
+        received=job["attempts"] and lookup_receipt(path,operation_key(job))
+    if received:
+        raise ValueError("接收端已有回执，请刷新任务核对交付结果")
+
+
+def reschedule_candidate(db,job,stamp,now):
+    if type(stamp) is not int or not now<=stamp<=now+366*86400:
+        raise ValueError("请选择未来一年内的北京时间")
+    slot=booked_slot(db,job["stage"],job["platform"],job["account"],stamp,json.loads(job["rules"]),job["id"])
+    if slot>now+366*86400:
+        raise ValueError("未来一年内没有满足当前账号和平台规则的空档")
+    return slot
+
+
 def job_action(path,jid,action,data,now):
     with transaction(path) as db:
-        j=db.execute("""SELECT j.*,b.control,b.rules,r.canonical,r.batch FROM jobs j JOIN rows r ON r.id=j.row_id
-             JOIN batches b ON b.id=r.batch WHERE j.id=?""",(jid,)).fetchone()
-        if not j:
-            raise KeyError("找不到任务")
+        j=scheduling_job(db,jid)
         if action=="cancel":
             if j["stage"] not in ("publish","deliver"):
                 raise ValueError("只能单独取消平台发布或冻结稿交付任务")
@@ -200,21 +226,30 @@ def job_action(path,jid,action,data,now):
                 db.execute("UPDATE rows SET note='' WHERE id=?",(j["row_id"],))
                 db.execute("UPDATE reprint_reviews SET state='preparing' WHERE row_id=? AND state='invalid'",(j["row_id"],))
         elif action=="reschedule":
-            if j["stage"]=="deliver":
-                return delivery.move_slot(path,db,j,data,now)
-            if j["stage"]!="publish" or j["state"]!="ready":
-                raise ValueError("只能改期尚未领取的发布任务")
-            if j["attempts"] and lookup_receipt(path,operation_key(j)):
-                raise ValueError("模拟接收端已确认这份稿件，请刷新任务查看回执")
+            check_movable(path,db,j)
             stamp=data.get("time")
-            if type(stamp) is not int or not now<=stamp<=now+366*86400:
-                raise ValueError("新时间应在未来一年内")
+            frozen=j["stage"]=="deliver"
+            if frozen and (type(data.get("expected_slot")) is not int or type(stamp) is not int):
+                raise ValueError("请刷新后选择新的北京时间")
+            if frozen and j["slot"]==stamp and "expected_available" not in data:
+                return {"slot":stamp}
             expected={"expected_slot":j["slot"], "expected_execution":max(j["slot"],j["due"])}
             if any(key in data and (type(data[key]) is not int or data[key]!=value)
                    for key,value in expected.items()):
                 raise ValueError("排期或顺延时间已变化，请刷新任务后改期")
-            slot=next_slot(db,j["platform"],j["account"],stamp,json.loads(j["rules"]),jid)
-            db.execute("UPDATE jobs SET slot=?,due=? WHERE id=?",(slot,slot,jid))
+            slot=reschedule_candidate(db,j,stamp,now)
+            if frozen or "expected_available" in data:
+                accepted=data.get("expected_available",stamp)
+                if type(accepted) is not int or accepted!=stamp or accepted!=slot:
+                    when=datetime.fromtimestamp(slot,BEIJING).strftime("%Y-%m-%d %H:%M:%S")
+                    raise ValueError("该时刻与现有排期规则冲突，可用北京时间 "+when)
+            if frozen and slot==j["slot"]:
+                return {"slot":slot}
+            if frozen:
+                delivery.apply_move(db,j,slot,now)
+            else:
+                db.execute("UPDATE jobs SET slot=?,due=? WHERE id=?",(slot,slot,jid))
+            return {"slot":slot}
         else:
             raise ValueError("未知操作")
 
@@ -349,6 +384,16 @@ def make_blueprint(path,fixed_root):
             return jsonify(job=dict(j),delivery=delivery.details(path,db,j) if j["stage"]=="deliver" else None,
                            history=[dict(r) for r in history],cancel_guard=cancel_guard(j),
                            cancellation=dict(cancelled) if cancelled else None,mode="dry-run")
+    @api.get("/jobs/<int:jid>/available-slot")
+    def available_time(jid):
+        with transaction(path,False) as db:
+            job=scheduling_job(db,jid)
+            check_movable(path,db,job)
+            stamp=request.args.get("time",type=int)
+            slot=reschedule_candidate(db,job,stamp,int(time.time()))
+            return jsonify(job=jid,requested=stamp,available=slot,expected_slot=job["slot"],
+                           expected_execution=max(job["slot"],job["due"])),200,{"Cache-Control":"no-store"}
+
     @api.get("/jobs/<int:jid>/reprint-check")
     def check_reprint(jid):
         with transaction(path,False) as db:

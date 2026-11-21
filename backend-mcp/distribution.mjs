@@ -92,8 +92,12 @@ tool('failed_jobs_retry','只将选中的失败尝试重新排队，可按返回
   items:z.array(z.object({id:jobId,batch:batchId,expected_attempt:z.number().int().nonnegative()})).min(1).max(100)
 },args=>api('failed-jobs/retry',args))
 tool('stage_retry','只重试选中的失败步骤',{id:jobId},a=>api('jobs/'+a.id+'/retry',{}))
-tool('publish_reschedule','调整排队任务。冻结稿传上次读取的 slot，可同时传 max(slot,due) 作为 expected_execution 核对后台顺延',{
-  id:jobId,time:z.number().int(),expected_slot:z.number().int().optional(),expected_execution:z.number().int().optional()
+tool('publish_available_slot','查询此任务按账号、平台和其他预约计算的可用改期时间。time 为请求的 Unix 秒，查询不会改动排期',{
+  id:jobId,time:z.number().int()
+},({id,time})=>api('jobs/'+id+'/available-slot?time='+time))
+tool('publish_reschedule','调整排队任务。采用查询建议时将 available 同时作为 time 和 expected_available，并传查询返回的 expected_slot、expected_execution；排期变化会报错',{
+  id:jobId,time:z.number().int(),expected_slot:z.number().int().optional(),expected_execution:z.number().int().optional(),
+  expected_available:z.number().int().optional()
 },({id,...data})=>api('jobs/'+id+'/reschedule',data))
 tool('draft_list','查看分配到此文章的账号及成稿审核状态',{id:jobId},a=>api('articles/'+a.id+'/editorial'))
 tool('draft_submit','提交 Agent 已生成的平台成稿供人工审核；已存在未结稿时返回其 ID',{id:jobId,platform:z.enum(['zhihu','xiaohongshu','toutiao']),account:z.string(),title:z.string().min(1),body:z.string().min(1)},a=>api('articles/'+a.id+'/editorial',{...a,action:'agent'}))

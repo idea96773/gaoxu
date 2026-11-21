@@ -147,7 +147,8 @@
         <p v-if="job.job.slot && job.job.due>job.job.slot">顺延执行时间　{{date(job.job.due)}}</p>
         <p v-if="job.cancellation">{{job.cancellation.scope==='task'?'单项取消':'随批次取消'}}于 {{date(job.cancellation.cancelled_at)}}</p>
         <el-button v-if="job.cancel_guard" plain type="danger" :loading="cancellingJob" @click="cancelJob">取消此账号的排期</el-button>
-        <div v-if="['publish','deliver'].includes(job.job.stage) && job.job.state==='ready'"><label>改期（北京时间） <input v-model="newTime" type="datetime-local"></label> <el-button @click="reschedule">保存改期</el-button></div>
+        <RescheduleJob v-if="jobOpen && ['publish','deliver'].includes(job.job.stage) && job.job.state==='ready'"
+          :key="[job.job.id,job.job.slot,job.job.due].join(':')" :job="job.job" :date="date" :api="api" @saved="rescheduled" />
         <el-button v-if="job.job.state==='failed'" @click="retry(job.job.id,job.job.attempts)">仅重试此项</el-button>
         <div v-for="h in job.history" :key="h.seq" class="record"><span>#{{h.seq}}　{{date(h.started)}}</span><span>{{label(h.outcome)}} {{h.reason}}</span></div>
       </template>
@@ -158,6 +159,7 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import ScheduleCalendar from './ScheduleCalendar.vue'
+import RescheduleJob from './RescheduleJob.vue'
 import ArticleSearch from "./ArticleSearch.vue"
 import DraftAccounts from './DraftAccounts.vue'
 import PlatformDraftPanel from './PlatformDraftPanel.vue'
@@ -216,7 +218,7 @@ async function scan(){
     scanned.value=true
   }catch(e){formError.value=e.message}finally{scanning.value=false}
 }
-const formError=ref(''),submitting=ref(false),article=ref(null),articleOpen=ref(false),job=ref(null),jobOpen=ref(false),newTime=ref('')
+const formError=ref(''),submitting=ref(false),article=ref(null),articleOpen=ref(false),job=ref(null),jobOpen=ref(false)
 const labels={preparing:'等待读取',reading:'正在读取',reprint_prepare:'读取转载资料',done:'已完成',ready:'排队中',active:'运行中',paused:'已暂停',cancelled:'已取消',processing:'处理中',partial:'部分成功',failed:'失败',invalid:'无效',duplicate:'重复',running:'执行中',interrupted:'已中断',ingest:'导入正文',normalize:'标准化',analyze:'模拟分析',adapt:'平台适配',check:'质量检查',plan:'生成排期',publish:'模拟发布',deliver:'冻结稿模拟交付'}
 const label=x=>labels[x]||x
 const date=t=>t?new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date(t*1000)):'—'
@@ -307,9 +309,16 @@ async function generateBatch(){
 }
 async function cancelBatch(){try{await ElMessageBox.confirm('取消本批次未完成的任务？已完成的模拟回执将保留。','取消批次');await control('cancel')}catch{}}
 async function openArticle(id){await action(async()=>{article.value=await api('articles/'+id);articleOpen.value=true})}
-async function openJob(id){await action(async()=>{job.value=await api('jobs/'+id);newTime.value='';jobOpen.value=true})}
+async function openJob(id){await action(async()=>{job.value=await api('jobs/'+id);jobOpen.value=true})}
 async function retry(id,attempt){await action(async()=>{await api('jobs/'+id+'/retry',attempt===undefined?{}:{expected_attempt:attempt});retryVersion.value++;if(jobOpen.value)job.value=await api('jobs/'+id);ElMessage.success('已重新排队')})}
-async function reschedule(){await action(async()=>{const t=Date.parse(newTime.value+':00+08:00')/1000;if(!Number.isFinite(t))throw Error('请选择北京时间');const j=job.value.job;await api('jobs/'+j.id+'/reschedule',{time:t,expected_slot:j.slot,expected_execution:Math.max(j.slot,j.due)});retryVersion.value++;job.value=await api('jobs/'+j.id)})}
+async function rescheduled(id,slot){
+  ElMessage.success('任务 #'+id+' 已改期至 '+date(slot))
+  retryVersion.value++
+  await action(async()=>{
+    const latest=await api('jobs/'+id)
+    if(jobOpen.value && job.value?.job.id===id)job.value=latest
+  })
+}
 async function cancelJob(){
   if(cancellingJob.value)return
   const item=job.value,j=item.job

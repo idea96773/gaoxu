@@ -144,6 +144,10 @@ POST /api/distribution/editorial/<draft_id>/schedule 接收可选的整数 Unix 
 
 在管理台顶部打开「排期日历」，可按月、平台和账号查看模拟排期。每日区分排队中、执行中、已完成、失败、暂停和取消；点击有任务的日期会打开相同筛选条件下的跨批次查询。冻结稿和模拟流程均计入日历，真实平台草稿回执另在任务详情中查看。
 
+在排队任务详情中输入希望改到的北京时间，可指定到秒。点击「查看可用时间」查看从该时刻起第一个满足账号及平台时段、间隔和日上限的空档，包括已有预约之间的空档。点击保存时会再算一次，如果这个时刻已被其他批次占用，可重新查看建议。已失败的任务保留重试记录；尚无回执时释放预约，有接收回执时仍按接收时间计入额度。重新排队后，后台会在交付前复核可用时段。
+
+DSH 可调用 `publish_available_slot` 只读查询时间。接受结果时，调用 `publish_reschedule`，将返回的 `available` 同时作为 `time` 和 `expected_available`，一并传入 `expected_slot` 和 `expected_execution`。
+
 DSH 可先调用 `library_list` 选择文章，调用 `reprint_settings` 读取已保存配置，再以指定的账号、规则、链接和稳定的请求编号调用 `reprint_prepare` 创建待审批次。`reprint_preview` 返回稿件摘要值、正文和配图引用供核对。人工审核入口仍在管理台。`article_search` 与 `scheduler_status` 可分别查询跨批记录和调度器运行状态。冻结稿通过 `publish_reschedule` 改期时，需传入上次读取的排期值 `expected_slot`。
 
 待审核阶段发现正文或配图需要修正时，先调整下载文件，再点该篇「从目录重读」。管理台会撤销旧选择，并要求重新审核新一次读取的预览。已审核的稿件继续使用冻结版本。

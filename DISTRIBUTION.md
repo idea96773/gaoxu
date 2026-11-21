@@ -70,7 +70,7 @@ Agent 可先用 `account_list` 查分稿账号，再用 `schedule_calendar` 按�
 
 ```powershell
 Push-Location backend
-..\.dist-venv\Scripts\python.exe -m unittest distribution.test_workflow distribution.test_editorial distribution.test_delivery distribution.test_reprint distribution.test_search distribution.test_scheduling -v
+..\.dist-venv\Scripts\python.exe -m unittest distribution.test_workflow distribution.test_editorial distribution.test_delivery distribution.test_reprint distribution.test_search distribution.test_scheduling distribution.test_daily_backup -v
 Pop-Location
 ```
 
@@ -158,6 +158,10 @@ uv pip install --python .dist-venv/Scripts/python.exe websockets==15.0.1
 在冻结稿任务详情核对本稿目标 ID 和当前登录 ID，点击「保存到该账号的草稿箱」，确认后程序才会发送本地图片和正文。保存期间保持该浏览器配置登录同一账号。任务持久记录平台账号 ID、冻结稿摘要和平台编辑地址。相同来源在同一知乎账号只建一条任务，准备阶段出错可手动重试。平台保存请求发出后中断或没有收到明确草稿回执时，任务进入「需核对草稿箱」。先在指定账号检查已有草稿，找到后可记录编辑地址。平台返回的草稿仍需打开，核对文内图片顺序和文末链接后才能标记人工核对完成。真实草稿保存由操作员逐份确认，与原有模拟交付排期独立。
 
 ## 本地备份和隔离恢复
+
+在管理台打开「调度器在线 → 调度器状态 → 每日备份 → 设置」，可以开启自动备份并选择北京时间。默认关闭，启用后由独立调度器执行。若当天时刻已过，会在下次检查时备份。关机多日后只补最近一个已到期的备份时段，副本保存实际执行时的数据。失败后最多尝试三次，状态页显示失败原因、下次重试及最近成功的恢复目录。
+
+默认保存在运行数据库旁的 `backups` 目录。同盘备份可用于处理误操作；若需应对磁盘损坏，请在启动程序前将 `DIST_BACKUP_DIR` 设置为另一块受控磁盘的绝对路径，重启管理台后保存备份设置。自动副本放在本实例的专用目录中，每天最多一份。保留最近七个通过清单校验的有效日期副本，手工备份独立保留。恢复到新目录后需要重新选择是否启用每日备份。
 
 在 `backend` 目录运行以下命令。备份会在指定目录下生成带北京时间的子目录，包含主库、模拟接收账本和 SHA-256 清单。主库内含已归档的文章、配图和审核版本。Easy WeChat 原始下载目录需自行另存。
 

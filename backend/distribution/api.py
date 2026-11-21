@@ -235,6 +235,11 @@ def make_blueprint(path,root):
     def runtime_status():
         return jsonify(health(path,details=True))
 
+    @api.post("/backup-settings")
+    def backup_settings():
+        from .daily_backup import configure
+        return jsonify(configure(path,body()))
+
     @api.get("/batches")
     def batches():
         with transaction(path,False) as db:

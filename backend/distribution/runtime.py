@@ -27,6 +27,8 @@ def health(path,details=False):
         result=dict(application="gaoxu",mode="dry-run",checked=now,worker_seen=beat,
                     worker_online=beat is not None and 0<=now-beat<18,api_pid=os.getpid())
         if details:
+            from .daily_backup import status as backup_status
+            result["backup"]=backup_status(db,path)
             queue=db.execute("""SELECT
                 count(CASE WHEN j.state='ready' AND j.due<=? THEN 1 END) due,
                 min(CASE WHEN j.state='ready' AND j.due<=? THEN j.due END) oldest_due,

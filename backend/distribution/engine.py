@@ -240,10 +240,19 @@ def worker(path, concurrency=1, preparation_concurrency=1):
             except Exception:
                 logging.exception("成稿队列异常")
                 stopped.wait(2)
-    with ThreadPoolExecutor(max_workers=concurrency+preparation_concurrency+1) as pool:
+    def backup_loop():
+        from .daily_backup import tick as backup_tick
+        while not stopped.is_set():
+            try:
+                backup_tick(path)
+            except Exception:
+                logging.exception("读取或记录自动备份状态失败")
+            stopped.wait(30)
+    with ThreadPoolExecutor(max_workers=concurrency+preparation_concurrency+2) as pool:
         threads = [pool.submit(loop,False) for _ in range(concurrency)]
         threads.extend(pool.submit(loop,True) for _ in range(preparation_concurrency))
         threads.append(pool.submit(draft_loop))
+        threads.append(pool.submit(backup_loop))
         try:
             for t in threads:
                 t.result()

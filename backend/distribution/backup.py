@@ -39,7 +39,7 @@ def staging(parent):
     return tempfile.TemporaryDirectory(prefix=".gaoxu-",dir=parent)
 
 
-def create(source,output):
+def create(source,output,*,daily=None):
     source=source.resolve()
     paths=(source,Path(ledger_path(source)))
     with staging(output) as temp:
@@ -65,8 +65,12 @@ def create(source,output):
                 inspect(bundle/name)
         now=datetime.now(BEIJING)
         manifest={"format":1,"created":now.isoformat(),"sha256":{n:checksum(bundle/n) for n in DATABASES}}
+        if daily:
+            manifest["daily"]=daily
         (bundle/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
-        final=output/now.strftime("gaoxu-%Y%m%d-%H%M%S-%f")
+        final=output/(daily["day"] if daily else now.strftime("gaoxu-%Y%m%d-%H%M%S-%f"))
+        if final.exists():
+            raise ValueError("备份目标已存在，请核对目录")
         bundle.rename(final)
         return final.resolve()
 
@@ -92,6 +96,8 @@ def restore(bundle,destination):
         # Saved-but-unconfirmed receipts require a human check after a restore.
         # A backup can predate a subsequent external write: never replay live drafts.
         with closing(database(result/DATABASES[0],"rw")) as db:
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='backup_policy'").fetchone():
+                db.execute("DELETE FROM backup_policy")
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='platform_drafts'").fetchone():
                 db.execute("BEGIN IMMEDIATE")
                 db.execute("""UPDATE platform_drafts SET state='unknown',reason='从备份恢复，请先核对知乎草稿箱'

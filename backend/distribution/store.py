@@ -107,6 +107,11 @@ CREATE TABLE IF NOT EXISTS platform_drafts (
 CREATE UNIQUE INDEX IF NOT EXISTS platform_drafts_job ON platform_drafts(job);
 CREATE INDEX IF NOT EXISTS platform_drafts_queue ON platform_drafts(state,user_id,id);
 CREATE TABLE IF NOT EXISTS health (name TEXT PRIMARY KEY, seen INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS backup_policy (
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), owner TEXT NOT NULL, revision INTEGER NOT NULL,
+ enabled INTEGER NOT NULL, minute INTEGER NOT NULL, destination TEXT NOT NULL, since INTEGER NOT NULL,
+ day TEXT NOT NULL DEFAULT '', state TEXT NOT NULL DEFAULT 'waiting', attempts INTEGER NOT NULL DEFAULT 0,
+ retry_at INTEGER NOT NULL DEFAULT 0, last_success INTEGER, last_bundle TEXT, message TEXT NOT NULL DEFAULT '');
 """
 def compact(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

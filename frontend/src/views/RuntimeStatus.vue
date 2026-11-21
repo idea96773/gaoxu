@@ -3,6 +3,10 @@
     <el-alert v-if="problem" :title="problem" type="warning" :closable="false"/>
     <el-descriptions v-if="status" :column="1" border>
       <el-descriptions-item label="调度器">{{problem?'连接中断':status.worker_online?'在线':'心跳过期或尚未启动'}}</el-descriptions-item>
+      <el-descriptions-item v-if="status.api_build && status.worker_build" label="后台版本">
+        {{status.api_build===status.worker_build?'管理台与调度器一致':'版本不同，请双击「启动稿序」更新'}}
+        <small>管理台 {{status.api_build.slice(0,10)}} · 调度器 {{status.worker_build.slice(0,10)}}</small>
+      </el-descriptions-item>
       <el-descriptions-item label="数据截至">{{date(status.checked)}}</el-descriptions-item>
       <el-descriptions-item label="最后心跳">{{date(status.worker_seen)}}</el-descriptions-item>
       <el-descriptions-item label="最近领取任务">{{date(status.last_claim)}}</el-descriptions-item>

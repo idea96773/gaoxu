@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS draft_inspections (
  checks TEXT NOT NULL, checked_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS draft_inspection_history ON draft_inspections(outbox,id);
 CREATE TABLE IF NOT EXISTS health (name TEXT PRIMARY KEY, seen INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS worker_build (singleton INTEGER PRIMARY KEY CHECK(singleton=1),build TEXT,pid INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS backup_policy (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), owner TEXT NOT NULL, revision INTEGER NOT NULL,
  enabled INTEGER NOT NULL, minute INTEGER NOT NULL, destination TEXT NOT NULL, since INTEGER NOT NULL,

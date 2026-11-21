@@ -228,8 +228,13 @@ def tick(path, now=None, *, preparation=None, **kwargs):
 
 def worker(path, concurrency=1, preparation_concurrency=1):
     from threading import Event
+    from .runtime import reload_request
     import logging
     stopped = Event()
+    marker=reload_request()
+    with transaction(path) as db:
+        db.execute("INSERT OR REPLACE INTO worker_build VALUES(1,?,?)",(os.environ.get("GAOXU_BUILD"),os.getpid()))
+        db.execute("DELETE FROM health WHERE name='worker'")
     def loop(preparation):
         last_beat = 0
         while not stopped.is_set():
@@ -267,10 +272,18 @@ def worker(path, concurrency=1, preparation_concurrency=1):
         threads.append(pool.submit(draft_loop))
         threads.append(pool.submit(backup_loop))
         try:
+            if marker:
+                while not marker.exists():
+                    if any(t.done() for t in threads):
+                        break
+                    stopped.wait(0.4)
+                stopped.set()
             for t in threads:
                 t.result()
         except KeyboardInterrupt:
             stopped.set()
+    if marker:
+        marker.unlink(missing_ok=True)
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

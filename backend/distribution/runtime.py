@@ -2,8 +2,47 @@
 import os
 import time
 from contextlib import contextmanager
+from pathlib import Path
 
 from .store import transaction
+
+
+def reload_request():
+    value=os.environ.get("GAOXU_RELOAD_FILE")
+    return Path(value) if value else None
+
+
+def serve_console(app,port):
+    from waitress import create_server, serve
+    settings=dict(host="127.0.0.1",port=port,max_request_body_size=260*1024*1024)
+    marker=reload_request()
+    if marker is None:
+        return serve(app,**settings)
+    server=create_server(app,**settings)
+    checked=0
+    try:
+        while True:
+            server.asyncore.loop(timeout=0.4,map=server._map,count=1)
+            now=time.monotonic()
+            if server.accepting and now>=checked:
+                checked=now+0.5
+                if marker.exists():
+                    server.accepting=False
+            if not server.accepting:
+                # Only the I/O thread closes sockets. Let accepted request bodies,
+                # application transactions and buffered responses finish first.
+                for channel in list(server.active_channels.values()):
+                    if not (channel.request or channel.requests or channel.total_outbufs_len):
+                        channel.handle_close()
+                if not server.active_channels:
+                    dispatcher=server.task_dispatcher
+                    with dispatcher.lock:
+                        if not dispatcher.active_count and not dispatcher.queue:
+                            break
+    finally:
+        server.task_dispatcher.shutdown()
+        server.close()
+        marker.unlink(missing_ok=True)
 
 
 @contextmanager
@@ -26,6 +65,9 @@ def health(path,details=False):
         beat=seen[0] if seen else None
         result=dict(application="gaoxu",mode="dry-run",checked=now,worker_seen=beat,
                     worker_online=beat is not None and 0<=now-beat<18,api_pid=os.getpid())
+        worker=db.execute("SELECT build,pid FROM worker_build WHERE singleton=1").fetchone()
+        result.update(api_build=os.environ.get("GAOXU_BUILD"),worker_build=worker["build"] if worker else None,
+                      worker_pid=worker["pid"] if worker else None)
         if details:
             from .daily_backup import status as backup_status
             result["backup"]=backup_status(db,path)

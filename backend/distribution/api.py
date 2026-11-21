@@ -8,7 +8,6 @@ from dataclasses import asdict
 from pathlib import Path
 
 from flask import Blueprint, Flask, Response, jsonify, request, send_from_directory
-from waitress import serve
 
 from . import delivery, reprint, search, platform_draft
 from .scheduling import effective_limits
@@ -400,4 +399,5 @@ if __name__=="__main__":
     parser.add_argument("--db",default=os.getenv("DIST_DB",str(DEFAULT_DB)))
     parser.add_argument("--port",type=int,default=5419)
     args=parser.parse_args()
-    serve(create_app(args.db),host="127.0.0.1",port=args.port,max_request_body_size=260*1024*1024)
+    from .runtime import serve_console
+    serve_console(create_app(args.db),args.port)

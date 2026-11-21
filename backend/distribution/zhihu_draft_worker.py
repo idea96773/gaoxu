@@ -2,8 +2,6 @@
 import argparse
 import base64
 import getpass
-import hashlib
-import html
 import json
 import os
 import re
@@ -15,7 +13,8 @@ from urllib.parse import urlsplit
 
 from .markdown_media import replace_media_urls
 from .draft_bridge import heartbeat, listener
-from .platform_draft import claim, edit_url, payload, require_rights, transition
+from . import frozen_reprint
+from .platform_draft import authorized_source, claim, edit_url, require_rights, transition
 from .runtime import instance_lock
 from .store import DEFAULT_DB, initialize, transaction
 
@@ -68,20 +67,8 @@ class Bridge:
 
 
 def prepare_content(path,task,bridge):
-    view=payload(path,task)
-    markup=view["html"].removeprefix("<h1>"+html.escape(view["title"])+"</h1>")
-    refs=re.findall(r'<img\b[^>]*?\ssrc="([^"]+)"',markup)
-    if refs!=view["images"]:
-        raise ValueError("冻结稿文内配图清单不一致")
-    link=view["link"]
-    mode=link["mode"]
-    if mode not in ("omit","short","direct"):
-        raise ValueError("冻结稿文末链接设置无效")
-    if mode!="omit":
-        url=link["short"] if mode=="short" else link["destination"]
-        dest=html.escape(url,quote=True)
-        if not url or not re.search(r'<a href="'+re.escape(dest)+r'">[^<]*</a></p>\s*$',markup):
-            raise ValueError("冻结稿文末链接校验失败")
+    with transaction(path,False) as db:
+        report=frozen_reprint.inspect(db,authorized_source(db,task))
     def check_task():
         with transaction(path,False) as db:
             require_rights(db,task)
@@ -90,17 +77,15 @@ def prepare_content(path,task,bridge):
         if not status or status["state"]!="preparing" or status["control"]!="active":
             raise ValueError("任务状态已变化")
     uploaded={}
-    for ref in dict.fromkeys(refs):
-        if not re.fullmatch(r"/api/distribution/media/[0-9a-f]{64}",ref):
-            raise ValueError("冻结稿含未归档的图片")
+    for position,ref in enumerate(report["images"],1):
+        if ref in uploaded:
+            continue
         with transaction(path,False) as db:
-            media=db.execute("SELECT mime,data FROM media WHERE sha=?",(ref.rsplit("/",1)[1],)).fetchone()
-        if not media or hashlib.sha256(media["data"]).hexdigest()!=ref.rsplit("/",1)[1]:
-            raise ValueError("本地图片校验失败")
+            media=frozen_reprint.checked_image(db,ref,position)
         if bridge.identity()[0]!=task["user_id"]:
             raise ValueError("账号已切换")
         uploaded[ref]=bridge.upload(media["data"],media["mime"],check_task)
-    return {"title":view["title"],"content":replace_media_urls(markup,uploaded)}
+    return {"title":report["title"],"content":replace_media_urls(report["html"],uploaded)}
 
 
 def run_task(path,task,bridge):
@@ -120,11 +105,12 @@ def run_task(path,task,bridge):
         if bridge.identity()[0]!=task["user_id"]:
             raise ValueError("回执所属账号需要核对")
         transition(path,task,stage,"saved",url=url)
-    except Exception:
+    except Exception as exc:
         if stage=="sending":
             transition(path,task,stage,"unknown","草稿请求已发出，请到指定账号的知乎草稿箱核对")
         else:
-            transition(path,task,stage,"failed","准备失败，请检查扩展连接、登录账号、冻结稿和配图后重试")
+            reason=str(exc) if isinstance(exc,frozen_reprint.ContentError) else "准备失败，请检查扩展连接、登录账号、冻结稿和配图后重试"
+            transition(path,task,stage,"failed",reason)
         # A late reply after a timeout must never be consumed as the next command.
         raise
 

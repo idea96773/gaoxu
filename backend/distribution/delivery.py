@@ -128,14 +128,19 @@ def receipt(path, db, job):
         return confirmed_receipt(remote,db,job)
 
 
-def deliver(path, db, job, now):
-    bound = db.execute("""SELECT f.*, d.state, d.frozen, d.rev, d.platform, d.account, d.row_id
+def frozen_binding(db, job):
+    bound = db.execute("""SELECT f.*, d.state, d.frozen, d.rev, d.platform, d.account, d.row_id,d.provider
         FROM frozen_deliveries f JOIN drafts d ON d.id=f.draft WHERE f.job=?""",(job["id"],)).fetchone()
     if not bound or bound["state"]!="approved" or bound["frozen"]!=bound["snapshot"] or digest(bound["snapshot"])!=bound["sha"]:
         raise ValueError("冻结快照校验失败")
     if (bound["row_id"],bound["platform"],bound["account"],bound["rev"],bound["planned"]) != (
             job["row_id"],job["platform"],job["account"],job["revision"],job["slot"]):
         raise ValueError("任务账号、版本或排期与冻结绑定不一致")
+    return bound
+
+
+def deliver(path, db, job, now):
+    bound = frozen_binding(db,job)
     key = delivery_key(job)
     with transaction(ledger_path(path)) as remote:
         existing = confirmed_receipt(remote,db,job)

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from flask import Blueprint, Flask, Response, jsonify, request, send_from_directory
 
-from . import delivery, reprint, search, platform_draft
+from . import delivery, frozen_reprint, reprint, search, platform_draft
 from .scheduling import effective_limits
 from .engine import close_attempt, lookup_receipt
 from .store import DEFAULT_DB, PLATFORMS, import_batch, initialize, next_slot, operation_key, transaction
@@ -349,6 +349,12 @@ def make_blueprint(path,fixed_root):
             return jsonify(job=dict(j),delivery=delivery.details(path,db,j) if j["stage"]=="deliver" else None,
                            history=[dict(r) for r in history],cancel_guard=cancel_guard(j),
                            cancellation=dict(cancelled) if cancelled else None,mode="dry-run")
+    @api.get("/jobs/<int:jid>/reprint-check")
+    def check_reprint(jid):
+        with transaction(path,False) as db:
+            report=frozen_reprint.inspect(db,frozen_reprint.source(db,jid))
+            return jsonify(report),200,{"Cache-Control":"no-store"}
+
     @api.post("/failed-jobs/retry")
     def retry_failed_jobs():
         items=body().get("items")

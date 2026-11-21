@@ -7,9 +7,9 @@ from urllib.parse import urlsplit
 
 from flask import jsonify, request
 
-from . import rights
+from . import frozen_reprint, rights
 from .draft_bridge import status as bridge_status
-from .store import compact, digest, transaction
+from .store import compact, transaction
 
 
 def edit_url(value):
@@ -56,13 +56,7 @@ def record_inspection(db,job,record,data,now):
 
 
 def source(db, job):
-    row=db.execute("""SELECT j.id,j.state,j.account,r.canonical,b.control,f.sha,f.snapshot,d.frozen,d.state AS approval
-        FROM jobs j JOIN frozen_deliveries f ON f.job=j.id JOIN drafts d ON d.id=f.draft
-        JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch
-        WHERE j.id=? AND j.platform='zhihu' AND d.provider='reprint' AND d.platform=j.platform AND d.account=j.account AND d.row_id=j.row_id""",(job,)).fetchone()
-    if not row or row["approval"]!="approved" or row["snapshot"]!=row["frozen"] or digest(row["snapshot"])!=row["sha"]:
-        raise ValueError("需要已审核、内容校验通过的知乎转载冻结稿")
-    return row
+    return frozen_reprint.source(db,job,platform="zhihu")
 
 
 def recipient(db,job,alias,existing):
@@ -239,16 +233,20 @@ def claim(path,user_id):
         return dict(row)
 
 
+def authorized_source(db,task):
+    row=source(db,task["job"])
+    pin=db.execute("SELECT user_id FROM zhihu_draft_recipients WHERE job=?",(task["job"],)).fetchone()
+    if pin and pin["user_id"]!=task["user_id"]:
+        raise ValueError("草稿任务与冻结时锁定的知乎账号不一致")
+    if row["sha"]!=task["sha"]:
+        raise ValueError("审核版本已变化")
+    require_rights(db,task)
+    return row
+
+
 def payload(path,task):
     with transaction(path,False) as db:
-        row=source(db,task["job"])
-        pin=db.execute("SELECT user_id FROM zhihu_draft_recipients WHERE job=?",(task["job"],)).fetchone()
-        if pin and pin["user_id"]!=task["user_id"]:
-            raise ValueError("草稿任务与冻结时锁定的知乎账号不一致")
-        if row["sha"]!=task["sha"]:
-            raise ValueError("审核版本已变化")
-        require_rights(db,task)
-        return json.loads(row["snapshot"])
+        return json.loads(authorized_source(db,task)["snapshot"])
 
 
 def require_rights(db,task):

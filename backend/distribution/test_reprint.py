@@ -5,7 +5,7 @@ from datetime import datetime
 import io
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import tempfile
 import time
 import unittest
@@ -196,6 +196,42 @@ class Reprint(unittest.TestCase):
         self.client.post(BASE+f"batches/{bid}/resume", json={})
         self.approve(bid,[third])
         self.assertEqual(self.batch(bid)["reviews"][2]["assignments"][0]["account"], "模拟A")
+
+    def test_frozen_reprint_checks_every_asset_before_platform_contact(self):
+        from . import rights
+        from .zhihu_draft_worker import prepare_content
+
+        directory=self.source(71)
+        folder=self.root/directory
+        # GIF89a, 1×1 pixel.
+        (folder/"img/last.gif").write_bytes(bytes.fromhex(
+            "47494638396101000100800000000000ffffff2c00000000010001000002024401003b"))
+        with (folder/"正文.md").open("a",encoding="utf-8") as stream:
+            stream.write("\n\n![重复图片](img/0.png)\n\n![最后一张](img/last.gif)")
+        bid=self.create([directory])
+        self.prepare()
+        self.approve(bid,self.batch(bid)["reviews"])
+        assignments=self.batch(bid)["reviews"][0]["assignments"]
+        self.assertEqual({a["platform"] for a in assignments},{"zhihu","toutiao"})
+        for assignment in assignments:
+            url=BASE+"jobs/"+str(assignment["id"])
+            job=self.client.get(url).json
+            report=self.client.get(url+"/reprint-check").json
+            self.assertEqual((report["sha"],report["draft"],report["account"],report["planned"]),
+                             (job["delivery"]["sha"],assignment["draft"],assignment["account"],job["job"]["slot"]))
+            self.assertEqual((len(report["images"]),report["unique_images"],report["reader_url"]),(3,2,DESTINATION))
+            self.assertTrue(report["html"].rstrip().endswith('href="'+DESTINATION+'">延伸阅读</a></p>'))
+            if assignment["platform"]=="zhihu":
+                task=dict(job=assignment["id"],sha=report["sha"],user_id="fixture-uid")
+                last=report["images"][-1].rsplit("/",1)[1]
+
+        with transaction(self.path) as db:
+            rights.record(db,task["job"],task["sha"],"zhihu_draft",task["user_id"],int(time.time()))
+            db.execute("UPDATE media SET data=? WHERE sha=?",(b"damaged",last))
+        bridge=Mock()
+        with self.assertRaisesRegex(ValueError,"第 3 处配图"):
+            prepare_content(self.path,task,bridge)
+        self.assertEqual(bridge.mock_calls,[])
 
     def test_catalog_partial_coverage_and_fast_duplicate(self):
         path=self.source(31)

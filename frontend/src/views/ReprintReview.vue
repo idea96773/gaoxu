@@ -47,13 +47,14 @@
       <template v-if="view"><p v-if="previewTask">{{previewTask.reused?'沿用冻结稿':'已冻结'}} · 任务 #{{previewTask.job}} · {{previewTask.account}}</p>
         <p>{{view.images.length}} 处配图 · {{view.link.mode==='omit'?'不追加延伸阅读':'读者链接　'+(view.link.short || view.link.destination)}}</p>
         <p v-if="view.link.mode==='short'">目标公众号文章　{{view.link.destination}}</p>
-        <iframe v-if="view.html" title="审核版转载正文" sandbox="" :srcdoc="frame"></iframe>
+        <ReprintFrame v-if="view.html" title="审核版转载正文" :html="view.html" />
         <article v-else class="plain-preview"><h3>{{view.title}}</h3><p>{{view.text}}</p><img v-for="src in localImages" :key="src" :src="src" alt="冻结稿配图"></article></template>
     </el-drawer>
   </section>
 </template>
 <script setup>
 import {ref,computed,watch} from 'vue'
+import ReprintFrame from './ReprintFrame.vue'
 import {ElMessageBox,ElMessage} from 'element-plus'
 const props=defineProps({batch:Object,api:Function,names:Object,label:Function,date:Function})
 const clock=m=>[Math.floor(m/60),m%60].map(n=>String(n).padStart(2,'0')).join(':')
@@ -69,7 +70,6 @@ const pool=computed(()=>Object.entries(props.names).flatMap(([p,label])=>{
   return accounts.length?[label+' · '+accounts.join('、')]:[]
 }).join('　/　'))
 function selectAll(e){ids.value=e.target.checked?pending.value.map(reviewKey):[]}
-const frame=computed(()=>'<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src '+location.origin+'; style-src \'unsafe-inline\'"><style>body{max-width:680px;margin:18px auto;padding:0 16px;color:#242830;font:16px/1.8 system-ui}img{max-width:100%;height:auto}h1{font-size:24px}a{color:#1766aa}p{overflow-wrap:anywhere}</style>'+view.value.html)
 const previewKey=ref(''),previewPlatform=ref(''),previewTask=ref(null)
 const previewPlatforms=computed(()=>[...new Set(props.batch.targets.map(t=>t.platform))])
 const rowPlatforms=row=>['pending','returned'].includes(row.state)?previewPlatforms.value:row.assignments.map(a=>a.platform)

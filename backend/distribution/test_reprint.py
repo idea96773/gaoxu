@@ -151,7 +151,10 @@ class Reprint(unittest.TestCase):
         dirs = [self.source(i) for i in range(3)]
         md = self.root / dirs[0] / "正文.md"
         md.write_text(md.read_text(encoding="utf-8")+"\n\n保留原句\n\n![再次配图](img/0.png)", encoding="utf-8")
+        receipt=BASE+"reprint-request?request_id=batch"
+        self.assertIsNone(self.client.get(receipt).json["id"])
         bid = self.create(dirs+["失效目录"])
+        self.assertEqual(self.client.get(receipt).json["id"],bid)
         self.assertEqual(self.create(dirs+["失效目录"]), bid)
         self.assertEqual(self.batch(bid)["counts"], {"preparing":4})
         self.prepare()

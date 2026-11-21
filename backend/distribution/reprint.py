@@ -408,6 +408,16 @@ def register(api,path,current_root,body):
     def new_reprints():
         return jsonify(id=create(path,current_root(),body())),201
 
+    @api.get("/reprint-request")
+    def find_submission():
+        key=request.args.get("request_id","")
+        if not 1<=len(key)<=128:
+            raise ValueError("缺少有效的提交编号")
+        with transaction(path,False) as db:
+            row=db.execute("""SELECT b.id FROM batches b JOIN reprint_batches r ON r.batch=b.id
+                WHERE b.request_key=?""",(key,)).fetchone()
+        return jsonify(id=row["id"] if row else None),200,{"Cache-Control":"no-store"}
+
     @api.post("/reprints/<bid>/<int:rid>/reread",defaults={"action":"reread"})
     @api.post("/reprints/<bid>/<int:rid>/return",defaults={"action":"return"})
     @api.post("/reprints/<bid>/<int:rid>/reopen",defaults={"action":"reopen"})

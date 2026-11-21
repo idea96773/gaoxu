@@ -1,7 +1,10 @@
 <template>
   <el-button type="primary" @click="open">批量转载</el-button>
   <el-dialog v-model="visible" append-to-body title="从固定目录选择转载文章" width="min(780px, 95vw)" :close-on-click-modal="false">
-    <small>{{root}}</small>
+    <p v-if="pending" role="status">上次提交 {{pending.data.directories.length}} 篇，回执待核对。重试将使用上次提交的选稿和设置。
+      <el-button link :disabled="busy || loading" @click="recover">查找原批次</el-button></p>
+    <div :inert="busy || loading">
+    <small>{{root}}</small> <el-button link @click="reloadLibrary(root)">刷新目录</el-button>
     <LibrarySettings :api="api" :disabled="loading || busy" @saved="reloadLibrary" />
     <p><el-input v-model="filter" placeholder="搜索文章标题或目录" clearable /></p>
     <div class="coverage-tools">
@@ -45,6 +48,7 @@
         <small>{{entry.source_name || entry.directory}}{{entry.problem?' · '+entry.problem:''}}</small>
         <el-button link @click="dirs=dirs.filter(dir=>dir!==entry.directory)">移出</el-button>
       </div>
+      <el-button link @click="dirs=[]">清空选稿</el-button>
     </details>
     <p v-else>已选 0 篇 / 最多 100 篇</p>
     <p v-if="!loading && unavailable" role="alert">有 {{unavailable}} 项选稿需要核对，请移出后重新选择。</p>
@@ -80,8 +84,10 @@
     <div class="defaults"><el-button :disabled="loading || busy || saving || !targets.length" :loading="saving" @click="saveDefaults">保存为常用设置</el-button>
       <el-button link :disabled="loading || busy || saving" @click="reloadDefaults">读取常用设置</el-button>
       <small role="status">{{notice}}</small></div>
+    </div>
+    <p v-if="storageError" role="status">{{storageError}}</p>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
-    <template #footer><el-button @click="visible=false">关闭</el-button><el-button type="primary" :disabled="loading || saving || !dirs.length || unavailable || !targets.length" :loading="busy" @click="submit">提交选稿到后台</el-button></template>
+    <template #footer><el-button @click="visible=false">关闭</el-button><el-button type="primary" :disabled="busy || loading || saving || (!pending && (!dirs.length || unavailable || !targets.length))" :loading="busy" @click="submit">{{pending?'重试上次提交':'提交选稿到后台'}}</el-button></template>
   </el-dialog>
 </template>
 <script setup>
@@ -163,6 +169,77 @@ const links=reactive(Object.fromEntries(Object.keys(channels).map(p=>[p,{mode:'d
 for(const p of Object.keys(channels)){
   watch(()=>[destination.value,links[p].mode,links[p].short,JSON.stringify(chosen[p])],()=>{links[p].verified=false},{flush:'sync'})
 }
+const sessionKey='gaoxu.reprint.selection.v1'
+const pending=ref(null),storageError=ref('')
+let initialized=false
+
+function editState(){
+  return {root:root.value,entries:dirs.value.map(dir=>marked.get(dir)),targets:targets.value,destination:destination.value,
+    links,rules,overrides:overrides.value,holidays:holidays.value,workdays:workdays.value}
+}
+function persist(){
+  if(!initialized || loading.value)return
+  try{
+    if(dirs.value.length || pending.value){
+      sessionStorage.setItem(sessionKey,JSON.stringify({form:editState(),pending:pending.value}))
+    }else sessionStorage.removeItem(sessionKey)
+    storageError.value=''
+  }catch{storageError.value='当前浏览器无法保存选稿进度，请在此页完成提交并核对批次编号。'}
+}
+watch([dirs,targets,destination,links,rules,overrides,holidays,workdays],persist,{deep:true})
+
+function stored(){
+  try{return JSON.parse(sessionStorage.getItem(sessionKey) || 'null')}
+  catch{return null}
+}
+function restoreForm(form){
+  if(!Array.isArray(form?.entries) || !form.entries.length || form.entries.length>100 || form.root!==root.value ||
+     !Array.isArray(form.targets) || !form.targets.every(t=>t && channels[t.platform] && valid(t.account)) ||
+     !form.rules || !form.links?.zhihu || !form.links?.toutiao || !Array.isArray(form.overrides) ||
+     typeof form.destination!=='string' || typeof form.holidays!=='string' || typeof form.workdays!=='string')return false
+  for(const entry of form.entries){
+    if(!entry || typeof entry.directory!=='string' || !entry.key)return false
+  }
+  for(const p of Object.keys(channels)){
+    chosen[p]=form.targets.filter(t=>t.platform===p).map(t=>t.account)
+    aliases[p]=[...new Set([...aliases[p],...chosen[p]])]
+  }
+  destination.value=form.destination
+  Object.assign(rules,form.rules)
+  overrides.value=form.overrides;holidays.value=form.holidays;workdays.value=form.workdays
+  for(const p of Object.keys(channels))Object.assign(links[p],form.links[p])
+  marked.clear()
+  for(const entry of form.entries)marked.set(entry.directory,entry)
+  dirs.value=form.entries.map(e=>e.directory)
+  return true
+}
+
+// Compare the saved form before opening a previously committed batch. Edits
+// made after an uncertain response still belong to the operator's next batch.
+function finish(id,keepEdits){
+  if(typeof id!=='string' || !/^[a-f0-9]{32}$/.test(id))throw Error('批次编号尚未确认，请再次查找原批次。')
+  pending.value=null
+  if(!keepEdits){dirs.value=[];filter.value=''}
+  loading.value=false
+  persist()
+  visible.value=false
+  emit('created',id)
+}
+async function findPending(){
+  const candidate=pending.value
+  if(!candidate)return false
+  const found=await props.api('reprint-request?request_id='+encodeURIComponent(candidate.id))
+  if(!found.id || pending.value?.id!==candidate.id)return false
+  finish(found.id,candidate.form!==JSON.stringify(editState()))
+  return true
+}
+async function recover(){
+  if(busy.value || !pending.value)return
+  busy.value=true;error.value=''
+  try{
+    if(!await findPending())error.value='后台尚未查到这次提交，可沿用原编号再次提交。'
+  }catch(e){error.value=e.message}finally{busy.value=false}
+}
 function add(p){
   const a=custom[p]
   if(!valid(a)){error.value='别名可使用 1 至 40 个汉字、字母、数字、下划线或短横线';return}
@@ -235,7 +312,12 @@ async function reloadLibrary(folder){
   finally{if(request===openRequest)loading.value=false}
 }
 async function open(){
+  if(busy.value)return
   const request=++openRequest
+  const savedSession=stored()
+  if(!initialized && savedSession?.pending?.id && Array.isArray(savedSession.pending.data?.directories)){
+    pending.value=savedSession.pending
+  }
   visible.value=true;loading.value=true;error.value='';notice.value=''
   const [library,saved,bound]=await Promise.allSettled([props.api('library'),props.api('reprint-settings'),props.api('zhihu-draft-accounts')])
   if(request!==openRequest)return
@@ -247,19 +329,43 @@ async function open(){
   else{items.value=[];error.value=library.reason.message}
   if(saved.status==='fulfilled')applyDefaults(saved.value)
   else error.value=saved.reason.message
+  if(library.status==='rejected' && savedSession?.form)root.value=savedSession.form.root
+  if(restoreForm(savedSession?.form)){
+    notice.value='已恢复本标签页的选稿和排期设置'
+  }else if(savedSession?.form?.entries?.length && savedSession.form.root!==root.value){
+    notice.value='保存目录已更换，请从当前目录重新选稿'
+  }
+  initialized=true
+  if(pending.value){
+    try{if(await findPending())return}catch(e){error.value=e.message}
+  }
   loading.value=false
+  if(library.status==='fulfilled')persist()
 }
-let signature='',key=''
 async function submit(){
+  if(busy.value)return
   busy.value=true;error.value=''
   try{
-    if(unavailable.value)throw Error('选稿与当前目录不一致，请重新核对')
-    const selections=Object.fromEntries(selection.value.map(item=>[item.directory,{key:item.key,title:item.title}]))
-    const data={directories:[...dirs.value],expected_root:root.value,selections,...options()}
-    const current=JSON.stringify(data)
-    if(current!==signature){signature=current;key=crypto.randomUUID()}
-    const result=await props.api('reprints',{...data,request_id:key})
-    dirs.value=[];signature='';filter.value='';visible.value=false;emit('created',result.id)
+    if(pending.value && await findPending())return
+    if(!pending.value){
+      if(unavailable.value)throw Error('选稿与当前目录不一致，请重新核对')
+      const selections=Object.fromEntries(selection.value.map(item=>[item.directory,{key:item.key,title:item.title}]))
+      const data={directories:[...dirs.value],expected_root:root.value,selections,...options()}
+      pending.value={id:crypto.randomUUID(),form:JSON.stringify(editState()),data:JSON.parse(JSON.stringify(data))}
+      persist()
+    }
+    const submission=pending.value
+    try{
+      const result=await props.api('reprints',{...submission.data,request_id:submission.id})
+      finish(result.id,submission.form!==JSON.stringify(editState()))
+    }catch(e){
+      if(e.status===400 || e.status===409){
+        // A copied browser tab may have committed this key first.
+        if(await findPending())return
+        pending.value=null;persist()
+      }
+      throw e
+    }
   }catch(e){error.value=e.message}finally{busy.value=false}
 }
 </script>

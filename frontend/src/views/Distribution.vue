@@ -238,7 +238,10 @@ const stats=computed(()=>[...new Set((batch.value?.targets||[]).map(t=>t.platfor
 async function api(path,data){
   const opts=data===undefined?{}:{method:'POST',headers:data instanceof FormData?{'X-Distribution-Import':'folder'}:{'Content-Type':'application/json'},body:data instanceof FormData?data:JSON.stringify(data)}
   const response=await fetch('/api/distribution/'+path,opts)
-  if(!response.ok){const err=await response.json().catch(()=>({}));throw Error(err.error||'请求失败 '+response.status)}
+  if(!response.ok){
+    const err=await response.json().catch(()=>({}))
+    throw Object.assign(Error(err.error||'请求失败 '+response.status),{status:response.status})
+  }
   return response.json()
 }
 let refreshSequence=0

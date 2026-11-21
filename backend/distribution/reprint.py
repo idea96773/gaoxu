@@ -7,10 +7,11 @@ import uuid
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote
 
-from flask import jsonify
+from flask import jsonify, request
 from markdown_it import MarkdownIt
 
 from .delivery import schedule_in
+from .editorial import checked_link
 from .library import read_folder, selected_directories
 from .store import canonicalize, clean_rules, compact, digest, enqueue, transaction
 
@@ -34,7 +35,7 @@ def pools_for(targets):
     return {p:sorted(accounts) for p,accounts in pools.items()}
 
 
-def snapshot(doc, destination):
+def review_snapshot(doc, destination, platforms, links):
     if doc["missing_images"]:
         # Keep local references actionable and avoid echoing remote image URLs into logs.
         missing=doc["missing_images"]
@@ -66,15 +67,40 @@ def snapshot(doc, destination):
     source_url=doc["source_url"]
     header=f'<h1>{html.escape(title)}</h1><p>{html.escape(credit)}　<a href="{html.escape(source_url,quote=True)}">原文地址</a></p>'
     raw=MD.renderer.render(tokens,MD.options,{})
-    # Preserve existing original links; avoid appending a second identical terminal footer.
-    footer=f"[延伸阅读]({destination})"
-    already=body.rstrip().endswith(footer)
-    suffix="" if already else f'<p><a href="{html.escape(destination,quote=True)}">延伸阅读</a></p>'
-    text=body if already else body+"\n\n延伸阅读："+destination
-    markdown=f"# {title}\n\n{credit}　[原文地址]({source_url})\n\n"+body+("" if already else "\n\n"+footer)+"\n"
-    return dict(kind="reprint",title=title,text=text,source_url=source_url,images=images,
-                html=header+raw+suffix,markdown=markdown,files=files,format="原文转载",
-                link=dict(mode="direct",destination=destination,short="",label="延伸阅读"))
+    heading=f"# {title}\n\n{credit}　[原文地址]({source_url})\n\n"
+
+    def edition(rule):
+        mode=rule.get("mode","direct")
+        short=rule.get("short","")
+        url=short if mode=="short" else destination
+        anchor=f'<p><a href="{html.escape(url,quote=True)}">延伸阅读</a></p>'
+        append=mode!="omit" and not raw.rstrip().endswith(anchor)
+        # Leave the author's original links intact in every representation.
+        markdown=heading+body+(f"\n\n[延伸阅读]({url})" if append else "")+"\n"
+        return dict(kind="reprint",title=title,text=body+("\n\n延伸阅读："+url if append else ""),
+                    source_url=source_url,images=images,html=header+raw+(anchor if append else ""),
+                    markdown=markdown,files=files,format="原文转载",
+                    link=dict(mode=mode,destination=destination if mode!="omit" else "",short=short,label="延伸阅读"))
+
+    if not links:
+        return edition({})
+    return {"editions":{platform:edition(links.get(platform,{})) for platform in platforms}}
+
+
+def platform_links(raw,pools,destination):
+    if not isinstance(raw,dict) or set(raw)-set(pools):
+        raise ValueError("文末链接只能设置在本批选中的平台")
+    links={}
+    for platform,rule in raw.items():
+        if not isinstance(rule,dict) or rule.get("mode") not in ("direct","omit","short"):
+            raise ValueError("请为平台选择有效的文末链接方式")
+        mode=rule["mode"]
+        if mode=="short":
+            value=checked_link(dict(mode=mode,destination=destination,short=rule.get("short"),verified=rule.get("verified")))
+            links[platform]=dict(mode=mode,short=value["short"],verified=True)
+        elif mode=="omit":
+            links[platform]=dict(mode=mode)
+    return links
 
 
 def validated_settings(data):
@@ -83,7 +109,11 @@ def validated_settings(data):
         raise ValueError("请输入 HTTPS 公众号文章地址")
     pools=pools_for(data.get("targets"))
     targets=[dict(platform=p,account=a) for p,accounts in pools.items() for a in accounts]
-    return dict(targets=targets,destination=destination,rules=clean_rules(data.get("rules",{}),targets))
+    settings=dict(targets=targets,destination=destination,rules=clean_rules(data.get("rules",{}),targets))
+    links=platform_links(data.get("links",{}),pools,destination)
+    if links:
+        settings["links"]=links
+    return settings
 
 
 def create(path,root,data):
@@ -94,7 +124,10 @@ def create(path,root,data):
     targets,destination,rules=settings["targets"],settings["destination"],settings["rules"]
     pools=pools_for(targets)
     dirs=data.get("directories")
-    fingerprint=digest(compact(["reprint",dirs,pools,rules,destination]))
+    identity=["reprint",dirs,pools,rules,destination]
+    if "links" in settings:
+        identity.append(settings["links"])
+    fingerprint=digest(compact(identity))
     def previous(db):
         row=db.execute("SELECT id,digest FROM batches WHERE request_key=?",(key,)).fetchone()
         if row and row["digest"]!=fingerprint:
@@ -110,6 +143,8 @@ def create(path,root,data):
         db.execute("INSERT INTO batches VALUES(?,?,?,?,?,?,?)",
                    (bid,key,fingerprint,int(time.time()),"active",compact(targets),compact(rules)))
         db.execute("INSERT INTO reprint_batches VALUES(?,?)",(bid,destination))
+        if "links" in settings:
+            db.execute("INSERT INTO reprint_link_rules VALUES(?,?)",(bid,compact(settings["links"])))
         for line,directory in enumerate(directories,1):
             rid=db.execute("INSERT INTO rows(batch,line,url,kind) VALUES(?,?,?,'reprint')",
                            (bid,line,directory)).lastrowid
@@ -122,9 +157,10 @@ def create(path,root,data):
 
 def prepare_one(path,ticket,now):
     from .engine import close_attempt
-    query="""SELECT j.*,b.control,s.root,s.directory,spec.destination FROM jobs j
+    query="""SELECT j.*,b.control,s.root,s.directory,spec.destination,b.targets,links.payload links FROM jobs j
         JOIN reprint_sources s ON s.row_id=j.row_id JOIN rows r ON r.id=j.row_id
         JOIN batches b ON b.id=r.batch JOIN reprint_batches spec ON spec.batch=b.id
+        LEFT JOIN reprint_link_rules links ON links.batch=b.id
         WHERE j.id=? AND j.token=? AND j.state='running' AND j.stage='reprint_prepare'"""
     with transaction(path,False) as db:
         source=db.execute(query,ticket).fetchone()
@@ -139,7 +175,8 @@ def prepare_one(path,ticket,now):
             item,_=read_folder(source["root"],source["directory"])
             if item["error"]:
                 raise ValueError(item["error"])
-            view=snapshot(item["doc"],source["destination"])
+            platforms=pools_for(json.loads(source["targets"]))
+            view=review_snapshot(item["doc"],source["destination"],platforms,json.loads(source["links"] or "{}"))
             payload=compact(view)
             sha=digest(payload)
         except OSError as exc:
@@ -173,7 +210,7 @@ def prepare_one(path,ticket,now):
             db.execute("INSERT OR IGNORE INTO media VALUES(?,?,?)",(media_sha,mime,blob))
         db.execute("UPDATE rows SET url=?,canonical=?,note='' WHERE id=?",(item["url"],"folder:"+item["canonical"],rid))
         db.execute("UPDATE reprint_reviews SET title=?,state='pending',sha=?,snapshot=? WHERE row_id=?",
-                   (view["title"],sha,payload,rid))
+                   (item["doc"]["title"],sha,payload,rid))
         close_attempt(db,job,now,"done")
 
 
@@ -188,7 +225,7 @@ def approve_one(path,bid,rid,sha,now,revision=1):
             return row["state"]
         if row["state"]!="pending" or row["control"]!="active":
             raise ValueError("仅运行中批次的待审文章可通过")
-        view=json.loads(row["snapshot"])
+        reviewed=json.loads(row["snapshot"])
         assigned=[]
         for p,accounts in pools_for(json.loads(row["targets"])).items():
             prior=db.execute("""SELECT j.id FROM jobs j JOIN rows r ON r.id=j.row_id
@@ -201,8 +238,9 @@ def approve_one(path,bid,rid,sha,now,revision=1):
             cursor=db.execute("SELECT position FROM account_rotation WHERE pool=?",(pool,)).fetchone()
             position=cursor[0] if cursor else 0
             account=accounts[position%len(accounts)]
+            view=reviewed["editions"][p] if "editions" in reviewed else reviewed
             did=db.execute("""INSERT INTO drafts(row_id,platform,account,rev,state,title,body,provider,frozen)
-                VALUES(?,?,?,1,'approved',?,?,'reprint',?)""",(rid,p,account,view["title"],view["text"],row["snapshot"])).lastrowid
+                VALUES(?,?,?,1,'approved',?,?,'reprint',?)""",(rid,p,account,view["title"],view["text"],compact(view))).lastrowid
             job=schedule_in(db,did,{},now)
             db.execute("INSERT INTO reprint_assignments VALUES(?,?,?,0)",(rid,p,job["id"]))
             db.execute("INSERT OR REPLACE INTO account_rotation VALUES(?,?)",(pool,(position+1)%len(accounts)))
@@ -277,14 +315,23 @@ def register(api,path,root,body):
     @api.get("/reprints/<bid>/<int:rid>")
     def preview_reprint(bid,rid):
         with transaction(path,False) as db:
-            r=db.execute("""SELECT q.*,coalesce(j.revision,1) revision FROM reprint_reviews q JOIN rows r ON r.id=q.row_id
+            r=db.execute("""SELECT q.*,coalesce(j.revision,1) revision,b.targets FROM reprint_reviews q JOIN rows r ON r.id=q.row_id
+                JOIN batches b ON b.id=r.batch
                 LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'
                 WHERE r.batch=? AND r.id=?""",(bid,rid)).fetchone()
             if not r:
                 raise KeyError("找不到转载稿")
             if r["state"] not in ("pending","approved","duplicate"):
                 return jsonify(error="这篇文章尚无可审核的稿件"),409
-            return jsonify(snapshot=json.loads(r["snapshot"]),sha=r["sha"],revision=r["revision"])
+            platform=request.args.get("platform")
+            platforms=pools_for(json.loads(r["targets"]))
+            if platform is not None and platform not in platforms:
+                raise ValueError("该平台不在本批次中")
+            reviewed=json.loads(r["snapshot"])
+            if "editions" in reviewed and not platform:
+                raise ValueError("此稿使用平台专属文末链接，请选择平台预览")
+            view=reviewed["editions"][platform] if "editions" in reviewed else reviewed
+            return jsonify(snapshot=view,platform=platform,edition_sha=digest(compact(view)),sha=r["sha"],revision=r["revision"])
 
     @api.post("/reprints/<bid>/approve")
     def approve_reprints(bid):

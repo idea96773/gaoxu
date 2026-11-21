@@ -112,6 +112,7 @@
       <template v-if="job"><h3>{{label(job.job.stage)}} · {{names[job.job.platform]||'文章'}} {{job.job.account}}</h3>
         <div v-if="job.delivery"><b>冻结稿 #{{job.delivery.draft_id}} · 第 {{job.job.revision}} 版</b>
           <p>{{job.delivery.snapshot.title}}</p>
+          <p v-if="job.delivery.snapshot.link">文末延伸阅读　{{job.delivery.snapshot.link.mode==='omit'?'未追加':job.delivery.snapshot.link.short || job.delivery.snapshot.link.destination}}</p>
           <details><summary>查看交付正文与配图</summary><pre>{{job.delivery.snapshot.text}}</pre>
             <div class="pictures"><img v-for="url in job.delivery.snapshot.images" :key="url" :src="url" alt="冻结稿配图"></div></details>
           <p>快照 SHA-256　<code style="overflow-wrap:anywhere">{{job.delivery.sha}}</code></p>

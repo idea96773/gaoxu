@@ -3,6 +3,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import io
+import json
 from pathlib import Path
 import tempfile
 import time
@@ -101,6 +102,40 @@ class Reprint(unittest.TestCase):
         self.client.post(BASE+f"batches/{bid}/resume", json={})
         self.approve(bid,[third])
         self.assertEqual(self.batch(bid)["reviews"][2]["assignments"][0]["account"], "模拟A")
+
+    def test_platform_footer_review_and_export(self):
+        short_url="https://example.invalid/read?ref=case&via=console"
+        links={"zhihu":{"mode":"short","short":short_url,"verified":True},"toutiao":{"mode":"omit"}}
+        data=dict(request_id="links",directories=[self.source(9)],targets=self.targets,destination=DESTINATION,links=links)
+        rejected=data|{"links":{"zhihu":links["zhihu"]|{"verified":False}}}
+        self.assertEqual(self.client.post(BASE+"reprints",json=rejected).status_code,400)
+        bid=self.client.post(BASE+"reprints",json=data).json["id"]
+        self.assertEqual(self.client.post(BASE+"reprints",json=data).json["id"],bid)
+        self.assertEqual(self.client.post(BASE+"reprints",json=data|{"links":{}}).status_code,400)
+        self.prepare()
+        row=self.batch(bid)["reviews"][0]
+        url=BASE+f"reprints/{bid}/{row['id']}"
+        self.assertEqual(self.client.get(url).status_code,400)
+        self.assertEqual(self.client.get(url+"?platform=weibo").status_code,400)
+        previews={p:self.client.get(url,query_string=dict(platform=p)).json for p in links}
+        for preview in previews.values():
+            self.assertEqual(preview["sha"],row["sha"])
+        z,t=(previews[p]["snapshot"] for p in ("zhihu","toutiao"))
+        self.assertTrue(z["markdown"].rstrip().endswith("]("+short_url+")"))
+        self.assertIn("case&amp;via=console",z["html"])
+        self.assertEqual(z["link"]["destination"],DESTINATION)
+        self.assertNotIn("延伸阅读",t["markdown"])
+        self.assertEqual(z["source_url"],t["source_url"])
+        self.assertEqual(z["images"],t["images"])
+        self.assertEqual(self.approve(bid,[row])[0]["state"],"approved")
+        for assignment in self.batch(bid)["reviews"][0]["assignments"]:
+            preview=previews[assignment["platform"]]
+            job=self.client.get(BASE+f"jobs/{assignment['id']}").json["delivery"]
+            self.assertEqual((job["sha"],job["snapshot"]),(preview["edition_sha"],preview["snapshot"]))
+            archive=self.client.get(BASE+f"editorial/{assignment['draft']}/export")
+            with zipfile.ZipFile(io.BytesIO(archive.data)) as pack:
+                self.assertEqual(pack.read("article.md").decode(),preview["snapshot"]["markdown"])
+                self.assertEqual(json.loads(pack.read("metadata.json"))["link"],preview["snapshot"]["link"])
 
     def test_prepare_recovery_pause_and_independent_retry(self):
         bid=self.create([self.source(1),"测试号/文章-2","../outside"])

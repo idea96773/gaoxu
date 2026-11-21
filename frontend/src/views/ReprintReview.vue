@@ -8,26 +8,31 @@
       </p>
       <p>{{batch.rules.weekdays_only?'仅周一至周五':'含周末'}}<span v-if="batch.rules.holidays.length">　停排 {{batch.rules.holidays.join('、')}}</span><span v-if="batch.rules.workdays.length">　补班 {{batch.rules.workdays.join('、')}}</span></p>
     </details>
-    <p>文末延伸阅读　{{batch.destination}}</p>
+    <p>目标公众号文章　{{batch.destination}}</p>
+    <p v-for="p in previewPlatforms" :key="p">{{names[p]}}文末　{{batch.links?.[p]?.mode==='omit'?'不追加延伸阅读':batch.links?.[p]?.short || batch.destination}}</p>
     <div class="bar"><label><input type="checkbox" :checked="pending.length>0 && checked.length===pending.length" :disabled="!active || !pending.length" @change="selectAll"> 全选待审核</label>
       <el-button type="primary" :loading="busy" :disabled="!active || !checked.length" @click="approve">审核通过并自动排期（{{checked.length}}）</el-button></div>
     <el-alert v-if="error" :title="error" type="error" :closable="false"/>
     <el-table :data="batch.reviews" row-key="id">
       <el-table-column width="50"><template #default="{row}"><input type="checkbox" :aria-label="'选择审核 '+row.title" :disabled="row.state!=='pending'||!active" v-model="ids" :value="reviewKey(row)"></template></el-table-column>
       <el-table-column label="转载文章" min-width="190"><template #default="{row}"><b>{{row.title}}</b><p v-if="row.note">{{row.note}}</p>
-        <el-button v-if="['pending','approved','duplicate'].includes(row.state)" type="primary" link @click="preview(row)">预览转载稿</el-button>
+        <template v-if="['pending','approved','duplicate'].includes(row.state)">
+          <el-button v-for="p in previewPlatforms" :key="p" type="primary" link @click="preview(row,p)">预览{{names[p]}}稿</el-button>
+          <el-button v-if="!previewPlatforms.length" type="primary" link @click="preview(row)">预览转载稿</el-button>
+        </template>
         <el-button v-if="active && row.state==='pending' && row.prepare_job" link :disabled="busy" @click="reread(row)">从目录重读</el-button>
         <el-button v-if="row.prepare_job" link @click="$emit('job',row.prepare_job)">读取记录（{{row.prepare_attempts}} 次）</el-button>
         <el-button v-if="row.prepare_state==='failed' && active" link type="primary" @click="$emit('retry',row.prepare_job,row.prepare_attempts)">重新读取这篇</el-button></template></el-table-column>
       <el-table-column label="进度" width="98"><template #default="{row}">{{row.progress==='pending'?'待审核':label(row.progress)}}</template></el-table-column>
       <el-table-column label="模拟账号、排期和回执" min-width="230"><template #default="{row}">
         <div v-for="a in row.assignments" :key="a.platform" class="assignment"><el-button link @click="$emit('job',a.id)">{{names[a.platform]}} · {{a.account}} · {{label(a.state)}} ›</el-button>
-          <small>{{date(a.slot)}}　{{a.reused?'已有任务，本批跳过':''}}</small>
+          <small>{{date(a.slot)}}　{{a.reused?'沿用原冻结稿及排期，本批跳过':''}}</small>
           <a :href="'/api/distribution/editorial/'+a.draft+'/export'">下载冻结稿</a></div>
         <span v-if="!row.assignments.length">—</span></template></el-table-column>
     </el-table>
-    <el-drawer v-model="opened" append-to-body title="转载稿审核预览" size="min(820px, 96vw)">
-      <template v-if="view"><p>{{view.images.length}} 处配图 · 文末链接 {{view.link.destination}}</p>
+    <el-drawer v-model="opened" append-to-body :title="(names[previewPlatform] || '转载稿')+'审核预览'" size="min(820px, 96vw)">
+      <template v-if="view"><p>{{view.images.length}} 处配图 · {{view.link.mode==='omit'?'不追加延伸阅读':'读者链接　'+(view.link.short || view.link.destination)}}</p>
+        <p v-if="view.link.mode==='short'">目标公众号文章　{{view.link.destination}}</p>
         <iframe title="审核版转载正文" sandbox="" :srcdoc="frame"></iframe></template>
     </el-drawer>
   </section>
@@ -49,7 +54,8 @@ const pool=computed(()=>Object.entries(props.names).flatMap(([p,label])=>{
 }).join('　/　'))
 function selectAll(e){ids.value=e.target.checked?pending.value.map(reviewKey):[]}
 const frame=computed(()=>'<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src '+location.origin+'; style-src \'unsafe-inline\'"><style>body{max-width:680px;margin:18px auto;padding:0 16px;color:#242830;font:16px/1.8 system-ui}img{max-width:100%;height:auto}h1{font-size:24px}a{color:#1766aa}p{overflow-wrap:anywhere}</style>'+view.value.html)
-const previewKey=ref('')
+const previewKey=ref(''),previewPlatform=ref('')
+const previewPlatforms=computed(()=>Object.keys(props.batch.links || {}).length?[...new Set(props.batch.targets.map(t=>t.platform))]:[])
 watch(()=>props.batch.reviews,rows=>{
   if(opened.value && !rows.some(r=>reviewKey(r)===previewKey.value)){
     opened.value=false;view.value=null;error.value='原预览已失效，请重新打开待审核稿'
@@ -65,9 +71,12 @@ async function reread(row){
     emit('refresh');ElMessage.success('已排队重读这篇文章')
   }catch(e){error.value=e.message}finally{busy.value=false}
 }
-async function preview(r){
-  try{const result=await props.api('reprints/'+props.batch.id+'/'+r.id);if(result.sha!==r.sha || result.revision!==r.revision)throw Error('预览版本已变化，请刷新后重试')
-    previewKey.value=reviewKey(r);view.value=result.snapshot;opened.value=true
+let previewRequest=0
+async function preview(r,platform=''){
+  const seq=++previewRequest
+  try{const result=await props.api('reprints/'+props.batch.id+'/'+r.id+(platform?'?platform='+encodeURIComponent(platform):''));if(seq!==previewRequest)return
+    if(result.sha!==r.sha || result.revision!==r.revision)throw Error('预览版本已变化，请刷新后重试')
+    previewKey.value=reviewKey(r);previewPlatform.value=platform;view.value=result.snapshot;opened.value=true
   }catch(e){error.value=e.message}
 }
 async function approve(){

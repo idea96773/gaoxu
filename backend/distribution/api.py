@@ -79,7 +79,7 @@ def batch_view(db, bid, detail=True):
             FROM jobs j JOIN frozen_deliveries f ON f.job=j.id JOIN rows r ON r.id=j.row_id
             WHERE r.batch=? ORDER BY j.slot,j.id""",(bid,))]
         result.update(rows=items,failures=failures,publishes=tasks)
-    spec=db.execute("SELECT destination FROM reprint_batches WHERE batch=?",(bid,)).fetchone()
+    spec=db.execute("SELECT rb.destination,lr.payload FROM reprint_batches rb LEFT JOIN reprint_link_rules lr ON lr.batch=rb.batch WHERE rb.batch=?",(bid,)).fetchone()
     if spec:
         reviews=reprint.overview(db,bid)
         counts=Counter()
@@ -108,6 +108,7 @@ def batch_view(db, bid, detail=True):
                       simulated=sum(c["done"] for c in platforms.values()),
                       expected=sum(sum(c.values()) for c in platforms.values()))
         if detail:
+            result["links"]=json.loads(spec["payload"] or "{}")
             result["reviews"]=reviews
             result["target_limits"]=[t|asdict(effective_limits(result["rules"],t["platform"],t["account"])) for t in targets]
     return result

@@ -37,12 +37,16 @@ tool('reprint_settings','读取管理台保存的常用转载账号、文末链�
 tool('reprint_prepare','按选定目录创建转载批次并返回批次编号。后台逐篇读取资料，使用 batch_status 查询进度，request_id 用于去重',{
   request_id:admission.request_id,directories:z.array(z.string()).min(1).max(100),
   targets:z.array(z.object({platform:z.enum(['zhihu','toutiao']),account:target.shape.account})).min(1).max(28),
-  destination:z.string().url(),rules:reprintRule
+  destination:z.string().url(),rules:reprintRule,
+  links:z.object(Object.fromEntries(['zhihu','toutiao'].map(p=>[p,z.discriminatedUnion('mode',[
+    z.object({mode:z.literal('direct')}),z.object({mode:z.literal('omit')}),
+    z.object({mode:z.literal('short'),short:z.string().url(),verified:z.literal(true)})
+  ]).optional()]))).optional()
 },a=>api('reprints',a))
-tool('reprint_preview','读取某条待审或已审转载的冻结预览',{batch:batchId,row:jobId},async a=>{
-  const {sha,snapshot,revision}=await api('reprints/'+a.batch+'/'+a.row)
+tool('reprint_preview','读取转载预览。使用平台专属文末链接时请指定平台，edition_sha 可用于核对该平台冻结稿',{batch:batchId,row:jobId,platform:z.enum(['zhihu','toutiao']).optional()},async a=>{
+  const {sha,snapshot,revision,edition_sha}=await api('reprints/'+a.batch+'/'+a.row+(a.platform?'?platform='+a.platform:''))
   if(!snapshot)throw new Error('该条目的原始资料异常，请先查看批次详情')
-  return {sha,revision,title:snapshot.title,text:snapshot.text,images:snapshot.images,link:snapshot.link}
+  return {sha,edition_sha,revision,platform:a.platform,title:snapshot.title,text:snapshot.text,images:snapshot.images,link:snapshot.link}
 })
 tool('article_search','按标题、平台、账号以及北京时间日期跨批次查询模拟记录',{
   title:z.string().optional(),platform:target.shape.platform.optional(),account:z.string().optional(),

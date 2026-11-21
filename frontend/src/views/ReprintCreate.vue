@@ -16,7 +16,20 @@
         <input v-model.trim="custom[p]" placeholder="新账号别名" maxlength="40" @keyup.enter="add(p)"><el-button size="small" @click="add(p)">添加别名</el-button>
       </div>
     </fieldset>
-    <p><label>文末公众号链接 <el-input v-model.trim="destination" /></label></p>
+    <fieldset><legend>文末延伸阅读</legend>
+      <label>目标公众号文章 <el-input v-model.trim="destination" /></label>
+      <div v-for="p in selectedPlatforms" :key="p" class="link-rule">
+        <label>{{channels[p]}}读者链接
+          <select v-model="links[p].mode">
+            <option value="direct">公众号直链</option><option value="short">已有 HTTPS 短链</option><option value="omit">不追加延伸阅读</option>
+          </select>
+        </label>
+        <template v-if="links[p].mode==='short'">
+          <el-input v-model.trim="links[p].short" :aria-label="channels[p]+'短链'" placeholder="粘贴读者可打开的 HTTPS 短链" />
+          <label><input type="checkbox" v-model="links[p].verified"> 已核对短链跳转到上方文章，且此平台所选账号允许使用</label>
+        </template>
+      </div>
+    </fieldset>
     <fieldset><legend>排期规则（北京时间）</legend>
       <div class="rules"><label v-for="r in fields" :key="r[0]">{{r[1]}} <input type="number" v-model.number="rules[r[0]]" :min="r[2]" :max="r[3]"></label></div>
       <ScopeSchedule v-model="overrides" :targets="targets" :channels="channels" />
@@ -34,7 +47,7 @@
   </el-dialog>
 </template>
 <script setup>
-import {ref, computed, reactive} from 'vue'
+import {ref, computed, reactive, watch} from 'vue'
 import ScopeSchedule from './ScopeSchedule.vue'
 const props=defineProps({api:Function})
 const emit=defineEmits(['created'])
@@ -54,6 +67,11 @@ const overrides=ref([])
 const fields=[['gap','平台间隔（秒）',1,86400],['account_cap','账号每日上限',1,1000],['platform_cap','平台每日上限',1,10000],['start_hour','开始小时',0,23],['end_hour','结束小时（不含）',1,24]]
 const filtered=computed(()=>items.value.filter(i=>i.directory.includes(filter.value.trim())))
 const targets=computed(()=>Object.keys(channels).flatMap(platform=>chosen[platform].map(account=>({platform,account}))))
+const selectedPlatforms=computed(()=>Object.keys(channels).filter(p=>chosen[p].length))
+const links=reactive(Object.fromEntries(Object.keys(channels).map(p=>[p,{mode:'direct',short:'',verified:false}])))
+for(const p of Object.keys(channels)){
+  watch(()=>[destination.value,links[p].mode,links[p].short,JSON.stringify(chosen[p])],()=>{links[p].verified=false},{flush:'sync'})
+}
 function add(p){
   const a=custom[p]
   if(!valid(a)){error.value='别名可使用 1 至 40 个汉字、字母、数字、下划线或短横线';return}
@@ -67,7 +85,15 @@ function options(){
   const off=dates(holidays.value),on=dates(workdays.value)
   if(on.some(day=>off.includes(day)))throw Error('同一日期不能同时设为停排和补班')
   const active=overrides.value.filter(r=>targets.value.some(t=>t.platform===r.platform && (!r.account || t.account===r.account)))
-  return {targets:targets.value,destination:destination.value,rules:{...rules,holidays:off,workdays:on,overrides:active}}
+  const policies={}
+  for(const p of selectedPlatforms.value){
+    const rule=links[p]
+    if(rule.mode==='short'){
+      if(!rule.verified)throw Error('请先核对'+channels[p]+'的短链及账号权限')
+      policies[p]={...rule}
+    }else if(rule.mode==='omit')policies[p]={mode:'omit'}
+  }
+  return {targets:targets.value,destination:destination.value,links:policies,rules:{...rules,holidays:off,workdays:on,overrides:active}}
 }
 function applyDefaults(data){
   revision.value=data.revision
@@ -78,6 +104,12 @@ function applyDefaults(data){
     aliases[p]=[...new Set([...aliases[p],...chosen[p]])]
   }
   destination.value=saved.destination
+  for(const p of Object.keys(channels)){
+    const rule=saved.links?.[p]
+    links[p].mode=rule?.mode || 'direct'
+    links[p].short=rule?.short || ''
+    links[p].verified=rule?.verified===true
+  }
   for(const key of Object.keys(rules))rules[key]=saved.rules[key]
   overrides.value=saved.rules.overrides ?? []
   holidays.value=saved.rules.holidays.join('\n');workdays.value=saved.rules.workdays.join('\n')
@@ -116,7 +148,7 @@ async function submit(){
 }
 </script>
 <style scoped>
-.articles{max-height:208px;min-height:50px;overflow:auto;border-block:1px solid var(--border);padding:6px 0}
+.link-rule{display:grid;gap:6px;margin:10px 0}.link-rule select{margin-left:8px;padding:4px}.articles{max-height:208px;min-height:50px;overflow:auto;border-block:1px solid var(--border);padding:6px 0}
 .articles label{display:block;padding:5px;cursor:pointer}.pool,.rules{display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px;margin:8px 0}.pool>input{width:95px}
 .calendar{margin-top:8px}.calendar label{display:block;margin:6px 0}.defaults{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.defaults small{color:var(--el-text-color-secondary)}
 fieldset{border:1px solid var(--border);border-radius:6px;margin:10px 0;padding:8px 14px}legend{font-weight:600}.rules input{width:72px}.pool label,.rules label{white-space:nowrap}

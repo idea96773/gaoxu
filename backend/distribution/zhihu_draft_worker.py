@@ -68,9 +68,15 @@ def prepare_content(path,task,bridge):
     refs=re.findall(r'<img\b[^>]*?\ssrc="([^"]+)"',markup)
     if refs!=view["images"]:
         raise ValueError("冻结稿文内配图清单不一致")
-    dest=html.escape(view["link"]["destination"],quote=True)
-    if not re.search(r'<a href="'+re.escape(dest)+r'">[^<]*</a></p>\s*$',markup):
-        raise ValueError("冻结稿文末链接校验失败")
+    link=view["link"]
+    mode=link["mode"]
+    if mode not in ("omit","short","direct"):
+        raise ValueError("冻结稿文末链接设置无效")
+    if mode!="omit":
+        url=link["short"] if mode=="short" else link["destination"]
+        dest=html.escape(url,quote=True)
+        if not url or not re.search(r'<a href="'+re.escape(dest)+r'">[^<]*</a></p>\s*$',markup):
+            raise ValueError("冻结稿文末链接校验失败")
     for ref in dict.fromkeys(refs):
         if not re.fullmatch(r"/api/distribution/media/[0-9a-f]{64}",ref):
             raise ValueError("冻结稿含未归档的图片")

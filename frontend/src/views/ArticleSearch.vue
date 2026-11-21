@@ -11,6 +11,8 @@
           <option value="pending_reprint">待审转载</option><option value="returned_reprint">审核退回</option>
           <option value="queued_delivery">冻结稿待交付</option>
           <option value="confirmed_delivery">冻结稿已模拟交付</option></select></label>
+        <label>模拟排期状态<select v-model="form.schedule_state"><option value="">全部状态</option>
+          <option v-for="s in ['ready','running','done','failed','paused','cancelled']" :key="s" :value="s">{{label(s)}}</option></select></label>
         <label v-if="showZhihu">知乎接收账号<input v-model.trim="form.draft_recipient" type="search" placeholder="锁定的昵称或完整账号 ID"></label>
         <label v-if="showZhihu">知乎草稿状态<select v-model="form.draft_review"><option value="">全部</option>
           <option value="waiting">等待保存</option><option value="saving">正在准备或保存</option><option value="failed">准备失败</option>
@@ -27,16 +29,16 @@
     <el-table :data="result.items" v-loading="loading" empty-text="没有匹配记录，请调整查询条件">
       <el-table-column label="文章 / 批次" min-width="235"><template #default="{row}">
         <strong>{{row.title}}</strong><div v-if="row.edition && row.edition!==row.title" class="secondary">平台稿 · {{row.edition}}</div>
-        <div class="secondary">{{kinds[row.stage]}} · 批次 {{row.batch.slice(0,8)}} · 导入 {{date(row.created)}}</div></template></el-table-column>
+        <div class="secondary">{{kinds[row.stage]}} · <router-link :to="{query:{batch:row.batch}}">批次 {{row.batch.slice(0,8)}}</router-link> · 导入 {{date(row.created)}}</div></template></el-table-column>
       <el-table-column label="平台 / 账号" min-width="135"><template #default="{row}">{{names[row.platform] || '—'}}<div class="secondary">{{row.account || '待分配'}}</div>
         <div v-if="row.recipient_id" class="secondary">知乎接收账号　{{row.recipient_name}}<br>ID　{{row.recipient_id}}</div></template></el-table-column>
       <el-table-column label="计划交付" min-width="147"><template #default="{row}">{{date(row.slot)}}
         <small v-if="row.execution_slot>row.slot" class="secondary">顺延至 {{date(row.execution_slot)}}</small></template></el-table-column>
       <el-table-column label="实际模拟交付" min-width="137"><template #default="{row}">{{date(row.received)}}</template></el-table-column>
-      <el-table-column label="交付状态" width="116"><template #default="{row}"><el-tag :type="colors[row.state] || 'info'">{{states[row.state] || label(row.state)}}</el-tag>
+      <el-table-column label="交付状态" width="116"><template #default="{row}"><el-tag :type="colors[row.schedule_state || row.state] || 'info'">{{states[row.schedule_state || row.state] || label(row.schedule_state || row.state)}}</el-tag>
         <div v-if="row.draft_state" class="secondary">知乎草稿 · {{draftStates[row.draft_state] || row.draft_state}}</div>
         <div v-if="row.draft_updated" class="secondary">草稿更新 {{date(row.draft_updated)}}</div>
-        <div v-if="row.control==='paused' && ['ready','unscheduled','pending','returned','scheduling'].includes(row.state)" class="secondary">批次已暂停</div>
+        <div v-if="row.control==='paused' && !row.schedule_state && ['unscheduled','preparing','pending','returned','scheduling'].includes(row.state)" class="secondary">批次已暂停</div>
         <el-button v-if="row.job_id" link @click="$emit('job',row.job_id)">任务详情</el-button>
         <router-link v-if="row.stage==='review' && row.state==='pending' && row.control==='active'"
           :to="{query:{batch:row.batch,review_row:String(row.row_id)}}">审核这篇</router-link>
@@ -56,7 +58,7 @@ import {useRoute,useRouter} from 'vue-router'
 const props=defineProps({api:Function,names:Object,date:Function,label:Function,version:Number})
 const emit=defineEmits(['job','platforms'])
 const route=useRoute(),router=useRouter()
-const defaults={title:'',platform:'',account:'',draft_review:'',draft_recipient:'',work:'',date_field:'scheduled',start:'',end:''}
+const defaults={title:'',platform:'',account:'',draft_review:'',draft_recipient:'',work:'',schedule_state:'',date_field:'scheduled',start:'',end:''}
 const draftStates={queued:'待保存',preparing:'准备中',sending:'保存中',saved:'待核对',unknown:'回执待核对',
   needs_review:'发现问题',verified:'已核对通过',failed:'准备失败',cancelled:'已取消'}
 const form=reactive({...defaults}),choices=ref([]),error=ref(''),loading=ref(false),loaded=ref(false)
@@ -76,7 +78,7 @@ function syncAccount(){
   }
 }
 function switchWork(){
-  if(['pending_reprint','returned_reprint'].includes(form.work)){form.date_field='imported';form.platform='';form.account='';form.draft_review='';form.draft_recipient=''}
+  if(['pending_reprint','returned_reprint'].includes(form.work)){form.date_field='imported';form.platform='';form.account='';form.draft_review='';form.draft_recipient='';form.schedule_state=''}
   if(form.work==='queued_delivery')form.date_field='execution'
   if(form.work==='confirmed_delivery')form.date_field='delivered'
 }

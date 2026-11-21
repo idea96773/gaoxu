@@ -10,6 +10,7 @@ const admission = {account_routing:z.enum(["rotate","all"]).optional(),request_i
 const batchId = z.string().regex(/^[a-f0-9]{32}$/)
 const jobId = z.number().int().positive()
 const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+const scheduleState = z.enum(['ready','running','done','failed','paused','cancelled']).optional().describe('模拟排期状态，paused 表示所属批次暂停的排队任务')
 const selectionKey = z.string().regex(/^(url|file)-[a-f0-9]{64}$/)
 const selectionTitle = z.string().min(1).max(8192)
 const reprintRule = z.object({
@@ -80,6 +81,7 @@ tool('publish_plan','只读试算本批所选待审转载稿的分稿账号及�
     expected_prior:z.record(z.string(),jobId).optional()})).min(1).max(100)
 },({batch,items})=>api('reprints/'+batch+'/plan',{items}))
 tool('article_search','按标题、平台、账号以及北京时间日期跨批次查询模拟记录',{
+  schedule_state:scheduleState,
   title:z.string().optional(),platform:target.shape.platform.optional(),account:z.string().optional(),
   draft_recipient:z.string().optional().describe('已锁定的知乎接收账号昵称或完整 ID'),
   draft_review:z.enum(['waiting','saving','failed','awaiting','uncertain','issue','verified','cancelled']).optional(),
@@ -89,6 +91,7 @@ tool('article_search','按标题、平台、账号以及北京时间日期跨批
 tool('scheduler_status','读取服务心跳、活动批次积压、过期租约与待核对的草稿回执',{},()=>api('runtime-status'))
 tool('account_list','按平台列出已有分稿目标的账号别名',{},()=>api('article-search/accounts'))
 tool('schedule_calendar','按北京时间月份查看每天的任务状态及数量，可选原排期或预计执行日',{
+  schedule_state:scheduleState,
   month:z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),date_field:z.enum(['scheduled','execution']).optional(),
   platform:target.shape.platform.optional(),account:target.shape.account.optional()
 },args=>api('schedule-calendar?'+new URLSearchParams(args)))

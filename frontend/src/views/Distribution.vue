@@ -196,7 +196,7 @@ const searching=computed(()=>route.query.view==='search')
 const calendarView=computed(()=>route.query.view==='calendar')
 function openCalendar(){
   const query={view:'calendar'}
-  for(const k of ['batch','platform','account'])if(route.query[k])query[k]=route.query[k]
+  for(const k of ['batch','platform','account','schedule_state'])if(route.query[k])query[k]=route.query[k]
   if(searching.value && route.query.start)query.month=String(route.query.start).slice(0,7)
   if(searching.value && ['scheduled','execution'].includes(route.query.date_field))query.date_field=route.query.date_field
   router.push({query})
@@ -332,13 +332,17 @@ async function submit(){
   }catch(e){formError.value=e.message}finally{submitting.value=false}
 }
 async function action(fn){try{await fn();await refresh()}catch(e){ElMessage.error(e.message)}}
-const control=a=>action(()=>api('batches/'+bid.value+'/'+a,{}))
+const control=(a,id=batch.value.id)=>action(()=>api('batches/'+id+'/'+a,{}))
 async function generateBatch(){
   const id=bid.value
   try{await ElMessageBox.confirm('确认此批全部本地文章均已获授权，可发送正文给 DeepSeek？将为所选账号生成缺少的成稿。','批量成稿')}catch{return}
   await action(async()=>{const result=await api('batches/'+id+'/editorial',{authorized:true});ElMessage.success('已新增 '+result.created+' 项成稿任务')})
 }
-async function cancelBatch(){try{await ElMessageBox.confirm('取消本批次未完成的任务？已完成的模拟回执将保留。','取消批次');await control('cancel')}catch{}}
+async function cancelBatch(){
+  const id=batch.value.id
+  try{await ElMessageBox.confirm('取消批次 '+id.slice(0,8)+' 中未完成的任务？已完成的模拟回执将保留。','取消批次')}catch{return}
+  await control('cancel',id)
+}
 async function openArticle(id){await action(async()=>{article.value=await api('articles/'+id);articleOpen.value=true})}
 async function openJob(id){await action(async()=>{job.value=await api('jobs/'+id);jobOpen.value=true})}
 async function retry(id,attempt){await action(async()=>{await api('jobs/'+id+'/retry',attempt===undefined?{}:{expected_attempt:attempt});retryVersion.value++;if(jobOpen.value)job.value=await api('jobs/'+id);ElMessage.success('已重新排队')})}

@@ -57,6 +57,24 @@ class ScopedScheduling(unittest.TestCase):
             self.assertEqual(data["days"],{DAY:{"paused":1}})
             search=client.get(root+"article-search",query_string=dict(start=DAY,end=DAY,platform="zhihu",account="甲")).json
             self.assertEqual(search["total"],sum(data["days"][DAY].values()))
+            job_id=search["items"][0]["job_id"]
+            common=dict(date_field="execution",platform="zhihu",account="甲")
+            def check(state,expected):
+                filters=dict(common,schedule_state=state)
+                calendar=client.get(root+"schedule-calendar",query_string=dict(filters,month=DAY[:7])).json
+                records=client.get(root+"article-search",query_string=dict(filters,start=DAY,end=DAY)).json
+                self.assertEqual(calendar["days"],{DAY:{state:1}} if expected else {})
+                self.assertEqual(records["total"],int(expected))
+                self.assertEqual([(r["job_id"],r["schedule_state"]) for r in records["items"]],
+                                 [(job_id,state)] if expected else [])
+            check("paused",True)
+            check("ready",False)
+            self.assertEqual(client.post(root+"batches/b/resume",json={}).status_code,200)
+            check("ready",True)
+            check("paused",False)
+            self.assertEqual(client.post(root+"batches/b/cancel",json={}).status_code,200)
+            check("cancelled",True)
+            check("ready",False)
 
     def test_moving_one_job_can_use_gap_before_future_reservation(self):
         with tempfile.TemporaryDirectory() as directory:

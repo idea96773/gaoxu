@@ -8,6 +8,16 @@ from .platform_draft import local_console_request
 from .store import BEIJING, EXECUTION_SLOT, PLATFORMS, transaction
 
 
+SCHEDULE_STATE = "CASE WHEN {control}='paused' AND {state}='ready' THEN 'paused' ELSE {state} END"
+
+
+def selected_schedule_state(args):
+    state=args.get("schedule_state","")
+    if state not in ("","ready","running","done","failed","paused","cancelled"):
+        raise ValueError("未知的模拟排期状态")
+    return state
+
+
 # row_targets was introduced with rotation. Older all-account imports use batches.targets.
 TARGETS = """
     SELECT r.id AS row_id, json_extract(t.value,'$.platform') AS platform,
@@ -50,7 +60,8 @@ records AS (
 )
 SELECT a.row_id,a.batch,a.created,a.control,a.title,x.edition,x.stage,x.platform,x.account,
        x.job_id,x.state,x.slot,x.execution_slot,x.received,p.state AS draft_state,p.updated AS draft_updated,
-       coalesce(pin.user_id,p.user_id) AS recipient_id,coalesce(pin.name,p.name) AS recipient_name
+       coalesce(pin.user_id,p.user_id) AS recipient_id,coalesce(pin.name,p.name) AS recipient_name,
+       CASE WHEN x.job_id IS NOT NULL THEN """+SCHEDULE_STATE.format(control="a.control",state="x.state")+""" END AS schedule_state
        FROM records x JOIN articles a ON a.row_id=x.row_id LEFT JOIN platform_drafts p ON p.job=x.job_id
        LEFT JOIN zhihu_draft_recipients pin ON pin.job=x.job_id
 """
@@ -92,6 +103,10 @@ def search(db, args, *, include_recipients=False):
     if not field:
         raise ValueError("未知的日期类型")
     filters, values = [], []
+    schedule_state=selected_schedule_state(args)
+    if schedule_state:
+        filters.append("schedule_state=?")
+        values.append(schedule_state)
     if field=="draft_updated":
         filters.append("draft_updated IS NOT NULL")
     recipient=args.get("draft_recipient","").strip()
@@ -148,7 +163,7 @@ def search(db, args, *, include_recipients=False):
     total = db.execute("SELECT count(*)"+sql,values).fetchone()[0]
     page = min(page,max(1,(total+PAGE_SIZE-1)//PAGE_SIZE))
     columns="*" if include_recipients else ("row_id,batch,created,control,title,edition,stage,platform,account,"
-        "job_id,state,slot,execution_slot,received,draft_state,draft_updated")
+        "job_id,state,slot,execution_slot,received,draft_state,draft_updated,schedule_state")
     rows = db.execute("SELECT "+columns+sql+" ORDER BY "+field+" DESC, created DESC,row_id DESC,"
                       "job_id DESC,platform,account LIMIT ? OFFSET ?",values+[PAGE_SIZE,(page-1)*PAGE_SIZE])
     return dict(items=[dict(r) for r in rows],total=total,page=page,page_size=PAGE_SIZE)
@@ -205,6 +220,11 @@ def register(api,path):
         mark=EXECUTION_SLOT if calendar_field=="execution" else "j.slot"
         filters=["stage IN ('deliver','publish')",mark+">=?",mark+"<?"]
         values=[start,start+size*86400]
+        state=selected_schedule_state(request.args)
+        status=SCHEDULE_STATE.format(control="b.control",state="j.state")
+        if state:
+            filters.append(status+"=?")
+            values.append(state)
         platform=request.args.get("platform","")
         if platform and platform not in PLATFORMS:
             raise ValueError("未知的平台")
@@ -214,7 +234,7 @@ def register(api,path):
                 values.append(value)
         with transaction(path,False) as db:
             counts=db.execute(f"""SELECT date({mark},'unixepoch','+8 hours') day,
-                CASE WHEN b.control='paused' AND j.state='ready' THEN 'paused' ELSE j.state END status,
+                {status} status,
                 count(*) n FROM jobs j JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch
                 WHERE """+" AND ".join(filters)+" GROUP BY day,status",values)
             days={}

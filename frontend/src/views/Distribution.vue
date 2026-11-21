@@ -8,7 +8,7 @@
     </header>
     <el-alert v-if="error" :title="error" type="error" show-icon @close="error=''" />
     <ScheduleCalendar v-if="calendarView" :api="api" :names="names" :label="label" @platforms="names=$event" />
-    <ArticleSearch v-else-if="searching" :api="api" :names="names" :date="date" :label="label" @job="openJob" @platforms="names=$event" />
+    <ArticleSearch v-else-if="searching" :api="api" :names="names" :date="date" :label="label" :version="retryVersion" @job="openJob" @platforms="names=$event" />
     <template v-else>
     <div class="batchbar">
       <label>当前批次</label>
@@ -131,6 +131,8 @@
         <p>状态 {{label(job.job.state)}} · 执行 {{job.job.attempts}} 次</p>
         <p>计划 {{date(job.job.slot)}}　完成 {{date(job.job.finished)}}</p><p>模拟回执 {{job.job.receipt||'—'}}</p><p>{{job.job.failure}}</p>
         <p v-if="job.job.slot && job.job.due>job.job.slot">顺延执行时间　{{date(job.job.due)}}</p>
+        <p v-if="job.cancellation">{{job.cancellation.scope==='task'?'单项取消':'随批次取消'}}于 {{date(job.cancellation.cancelled_at)}}</p>
+        <el-button v-if="job.cancel_guard" plain type="danger" :loading="cancellingJob" @click="cancelJob">取消此账号的排期</el-button>
         <div v-if="['publish','deliver'].includes(job.job.stage) && job.job.state==='ready'"><label>改期（北京时间） <input v-model="newTime" type="datetime-local"></label> <el-button @click="reschedule">保存改期</el-button></div>
         <el-button v-if="job.job.state==='failed'" @click="retry(job.job.id,job.job.attempts)">仅重试此项</el-button>
         <div v-for="h in job.history" :key="h.seq" class="record"><span>#{{h.seq}}　{{date(h.started)}}</span><span>{{label(h.outcome)}} {{h.reason}}</span></div>
@@ -156,6 +158,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 const accountsOpen=ref(false),draftAlias=ref(''),bindingVersion=ref(0)
 function openDraftAccounts(alias){draftAlias.value=alias;accountsOpen.value=true}
 const runtimeOpen=ref(false),failuresOpen=ref(false),retryVersion=ref(0)
+const cancellingJob=ref(false)
 const route=useRoute(),router=useRouter()
 const searching=computed(()=>route.query.view==='search')
 const calendarView=computed(()=>route.query.view==='calendar')
@@ -241,7 +244,26 @@ async function cancelBatch(){try{await ElMessageBox.confirm('取消本批次未�
 async function openArticle(id){await action(async()=>{article.value=await api('articles/'+id);articleOpen.value=true})}
 async function openJob(id){await action(async()=>{job.value=await api('jobs/'+id);newTime.value='';jobOpen.value=true})}
 async function retry(id,attempt){await action(async()=>{await api('jobs/'+id+'/retry',attempt===undefined?{}:{expected_attempt:attempt});retryVersion.value++;if(jobOpen.value)job.value=await api('jobs/'+id);ElMessage.success('已重新排队')})}
-async function reschedule(){await action(async()=>{const t=Date.parse(newTime.value+':00+08:00')/1000;if(!Number.isFinite(t))throw Error('请选择北京时间');const j=job.value.job;await api('jobs/'+j.id+'/reschedule',{time:t,expected_slot:j.slot,expected_execution:Math.max(j.slot,j.due)});job.value=await api('jobs/'+j.id)})}
+async function reschedule(){await action(async()=>{const t=Date.parse(newTime.value+':00+08:00')/1000;if(!Number.isFinite(t))throw Error('请选择北京时间');const j=job.value.job;await api('jobs/'+j.id+'/reschedule',{time:t,expected_slot:j.slot,expected_execution:Math.max(j.slot,j.due)});retryVersion.value++;job.value=await api('jobs/'+j.id)})}
+async function cancelJob(){
+  if(cancellingJob.value)return
+  const item=job.value,j=item.job
+  const channel=(names.value[j.platform] || j.platform)+' · '+j.account
+  cancellingJob.value=true
+  try{await ElMessageBox.confirm('取消 '+channel+' 在 '+date(j.slot)+' 的排期？该任务下等待发送的草稿也会撤出队列。','取消任务 #'+j.id,{confirmButtonText:'取消该排期',cancelButtonText:'保留排期'})}
+  catch{cancellingJob.value=false;return}
+  try{
+    const result=await api('jobs/'+j.id+'/cancel',{expected:item.cancel_guard})
+    ElMessage.success(result.state==='done'?'已核对模拟交付回执，任务已完成':'已取消 '+channel+' 的排期')
+  }catch(e){ElMessage.error(e.message)}
+  finally{
+    cancellingJob.value=false
+    if(jobOpen.value && job.value?.job.id===j.id){
+      await action(async()=>{const latest=await api('jobs/'+j.id);if(job.value?.job.id===j.id)job.value=latest})
+    }
+    retryVersion.value++
+  }
+}
 let timer,closed=false
 async function poll(){await refresh();if(!closed)timer=setTimeout(poll,3000)}
 onMounted(poll)

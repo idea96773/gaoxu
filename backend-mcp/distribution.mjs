@@ -71,6 +71,10 @@ tool('batch_status','查询三级任务进度及独立失败项',{id:batchId},a=
 tool('batch_control','暂停、继续或取消模拟批次',{id:batchId,action:z.enum(['pause','resume','cancel'])},a=>api('batches/'+a.id+'/'+a.action,{}))
 tool('article_detail','读取指定文章来源、已保存正文、版本及阶段',{id:jobId},a=>api('articles/'+a.id))
 tool('publish_status','查看单个步骤、模拟回执及尝试记录',{id:jobId},a=>api('jobs/'+a.id))
+tool('publish_cancel','取消指定平台账号的一项排期。先调用 publish_status，将返回的 cancel_guard 原样作为 expected。已收到回执时返回 done',{
+  id:jobId,expected:z.object({state:z.enum(['ready','running','failed']),attempts:z.number().int().nonnegative(),
+    slot:z.number().int(),due:z.number().int()})
+},({id,expected})=>api('jobs/'+id+'/cancel',{expected}))
 tool('failed_jobs','按批次、步骤或北京时间失败日期查看当前失败的后台任务',{
   batch:batchId.optional(),stage:z.string().optional(),day:day.optional(),page:jobId.optional()
 },args=>api('failed-jobs?'+new URLSearchParams(args)))

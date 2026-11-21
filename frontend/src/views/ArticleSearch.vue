@@ -37,7 +37,7 @@
 <script setup>
 import {computed, onMounted, onBeforeUnmount, reactive, ref, watch} from 'vue'
 import {useRoute,useRouter} from 'vue-router'
-const props=defineProps({api:Function,names:Object,date:Function,label:Function})
+const props=defineProps({api:Function,names:Object,date:Function,label:Function,version:Number})
 const emit=defineEmits(['job','platforms'])
 const route=useRoute(),router=useRouter()
 const defaults={title:'',platform:'',account:'',date_field:'scheduled',start:'',end:''}
@@ -79,7 +79,7 @@ function submit(){
 }
 function reset(){return show(defaults)}
 function move(step){return show(paramsFromRoute(),result.value.page+step)}
-watch(()=>route.fullPath,()=>{if(route.query.view==='search')load()},{immediate:true})
+watch([()=>route.fullPath,()=>props.version],()=>{if(route.query.view==='search')load()},{immediate:true})
 onMounted(async()=>{try{const data=await props.api('article-search/accounts');choices.value=data.items;emit('platforms',data.platforms)}catch(e){error.value=e.message}})
 onBeforeUnmount(()=>{sequence++})
 </script>

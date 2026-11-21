@@ -113,6 +113,37 @@ def batch_view(db, bid, detail=True):
             result["target_limits"]=[t|asdict(effective_limits(result["rules"],t["platform"],t["account"])) for t in targets]
     return result
 
+def cancel_pending(path,db,job,now,scope):
+    jid=job["id"]
+    stage=job["stage"]
+    prior=None
+    if stage=="publish":
+        prior=lookup_receipt(path,operation_key(job))
+    elif stage=="deliver":
+        prior=delivery.receipt(path,db,job)
+    if job["receipt"] and (not prior or prior["remote_id"]!=job["receipt"]):
+        raise ValueError("本地回执与接收记录无法核对，请先核对任务")
+    if prior:
+        db.execute("""UPDATE jobs SET state='done',receipt=?,finished=?,failure='',token=NULL,
+                   lease_until=NULL WHERE id=?""",(prior["remote_id"],prior["submitted"],jid))
+        db.execute("UPDATE attempts SET outcome='done',reason='',ended=? WHERE job=? AND ended IS NULL",(now,jid))
+        return "done"
+    db.execute("UPDATE jobs SET state='cancelled',token=NULL,lease_until=NULL WHERE id=?",(jid,))
+    db.execute("UPDATE attempts SET outcome='cancelled',ended=? WHERE job=? AND ended IS NULL",(now,jid))
+    if stage in ("publish","deliver"):
+        db.execute("INSERT INTO publish_cancellations VALUES(?,?,?)",(jid,now,scope))
+    if stage=="deliver" and scope=="task":
+        db.execute("""UPDATE platform_drafts SET state='cancelled',reason='关联排期已取消',updated=?
+                   WHERE job=? AND state IN ('queued','preparing')""",(now,jid))
+    return "cancelled"
+
+
+def cancel_guard(job):
+    if job["stage"] in ("publish","deliver") and job["state"] in ("ready","running","failed"):
+        return {key:job[key] for key in ("state","attempts","slot","due")}
+    return None
+
+
 def control_batch(path,bid,action,now):
     if action not in ("pause","resume","cancel"):
         raise ValueError("未知操作")
@@ -129,22 +160,13 @@ def control_batch(path,bid,action,now):
             affected=db.execute("""SELECT j.*,r.canonical FROM jobs j JOIN rows r ON r.id=j.row_id
                   WHERE r.batch=? AND j.state IN ('ready','running','failed')""",(bid,)).fetchall()
             for j in affected:
-                prior=lookup_receipt(path,operation_key(j)) if j["stage"]=="publish" else None
-                if j["stage"] == "deliver":
-                    try:
-                        prior = delivery.receipt(path,db,j)
-                    except ValueError as exc:
-                        if j["state"]=="running":
-                            close_attempt(db,j,now,"failed",str(exc))
-                        else:
-                            db.execute("UPDATE jobs SET state='failed',failure=? WHERE id=?",(str(exc),j["id"]))
-                        continue
-                if prior:
-                    db.execute("UPDATE jobs SET receipt=? WHERE id=?",(prior["remote_id"],j["id"]))
-                    close_attempt(db,j,now,"done",received_at=prior["submitted"])
-                else:
-                    db.execute("UPDATE jobs SET state='cancelled',token=NULL,lease_until=NULL WHERE id=?",(j["id"],))
-                    db.execute("UPDATE attempts SET outcome='cancelled',ended=? WHERE job=? AND ended IS NULL",(now,j["id"]))
+                try:
+                    cancel_pending(path,db,j,now,"batch")
+                except ValueError as exc:
+                    if j["state"]=="running":
+                        close_attempt(db,j,now,"failed",str(exc))
+                    else:
+                        db.execute("UPDATE jobs SET state='failed',failure=? WHERE id=?",(str(exc),j["id"]))
 
 def job_action(path,jid,action,data,now):
     with transaction(path) as db:
@@ -152,6 +174,17 @@ def job_action(path,jid,action,data,now):
              JOIN batches b ON b.id=r.batch WHERE j.id=?""",(jid,)).fetchone()
         if not j:
             raise KeyError("找不到任务")
+        if action=="cancel":
+            if j["stage"] not in ("publish","deliver"):
+                raise ValueError("只能单独取消平台发布或冻结稿交付任务")
+            if j["state"] in ("done","cancelled"):
+                return {"state":j["state"]}
+            expected=data.get("expected")
+            guard=cancel_guard(j)
+            if (not guard or not isinstance(expected,dict) or expected!=guard
+                    or any(type(expected[k]) is not type(v) for k,v in guard.items())):
+                raise ValueError("任务状态、排期或执行次数已变化，请刷新任务后确认")
+            return {"state":cancel_pending(path,db,j,now,"task")}
         if j["control"]=="cancelled":
             raise ValueError("批次已取消")
         if action=="retry":
@@ -279,7 +312,10 @@ def make_blueprint(path,root):
             if not j:
                 raise KeyError("找不到任务")
             history=db.execute("SELECT seq,started,ended,outcome,reason FROM attempts WHERE job=? ORDER BY seq",(jid,)).fetchall()
-            return jsonify(job=dict(j),delivery=delivery.details(path,db,j) if j["stage"]=="deliver" else None,history=[dict(r) for r in history],mode="dry-run")
+            cancelled=db.execute("SELECT cancelled_at,scope FROM publish_cancellations WHERE job=?",(jid,)).fetchone()
+            return jsonify(job=dict(j),delivery=delivery.details(path,db,j) if j["stage"]=="deliver" else None,
+                           history=[dict(r) for r in history],cancel_guard=cancel_guard(j),
+                           cancellation=dict(cancelled) if cancelled else None,mode="dry-run")
     @api.post("/failed-jobs/retry")
     def retry_failed_jobs():
         items=body().get("items")
@@ -300,8 +336,8 @@ def make_blueprint(path,root):
 
     @api.post("/jobs/<int:jid>/<action>")
     def change_job(jid,action):
-        job_action(path,jid,action,body(),int(time.time()))
-        return jsonify(ok=True)
+        result=job_action(path,jid,action,body(),int(time.time()))
+        return jsonify(ok=True,**(result or {}))
     from .editorial import register
     register(api,path,body)
     reprint.register(api,path,root,body)

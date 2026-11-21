@@ -124,6 +124,42 @@ class FrozenDelivery(unittest.TestCase):
         self.assertTrue(self.detail(jid)["delivery"]["received"]["matches"])
         self.assertEqual(self.detail(jid)["job"]["state"],"done")
 
+    def test_cancel_one_account_preserves_peer_freeze_and_rejects_stale_schedule(self):
+        first,_=self.freeze(self.targets[0])
+        peer,_=self.freeze(self.targets[1])
+        jid=self.schedule(first,self.slot)["id"]
+        other=self.schedule(peer,self.slot+86400)["id"]
+        before=self.detail(jid)
+        sibling=self.detail(other)
+        url=f"jobs/{jid}/cancel"
+        stale=dict(before["cancel_guard"],due=before["cancel_guard"]["due"]+1)
+        self.assertEqual(self.client.post(BASE+url,json={"expected":stale}).status_code,400)
+        self.assertEqual(self.detail(jid)["job"]["state"],"ready")
+        self.post("batches/"+self.bid+"/pause",{})
+        for _ in range(2):
+            self.assertEqual(self.post(url,{"expected":before["cancel_guard"]})["state"],"cancelled")
+        after=self.detail(jid)
+        self.assertEqual(after["cancellation"]["scope"],"task")
+        self.assertIsNone(after["cancel_guard"])
+        self.assertEqual(after["delivery"],before["delivery"])
+        self.assertEqual(self.detail(other),sibling)
+        self.post("batches/"+self.bid+"/resume",{})
+        drain(self.path,self.slot+3*86400)
+        self.assertEqual(self.detail(jid)["job"]["state"],"cancelled")
+        self.assertIsNone(self.detail(jid)["job"]["receipt"])
+        self.assertEqual(self.detail(other)["job"]["state"],"done")
+
+    def test_cancel_one_recovers_existing_receipt_after_crash(self):
+        draft,_=self.freeze(self.targets[0])
+        jid=self.schedule(draft,self.slot)["id"]
+        self.crash(self.slot)
+        detail=self.detail(jid)
+        self.assertEqual(detail["job"]["state"],"running")
+        self.assertEqual(self.post(f"jobs/{jid}/cancel",{"expected":detail["cancel_guard"]})["state"],"done")
+        reconciled=self.detail(jid)
+        self.assertIsNone(reconciled["cancellation"])
+        self.assertTrue(reconciled["delivery"]["received"]["matches"])
+
     def test_resume_preserves_future_booking_and_displays_execution_day(self):
         overdue,_=self.freeze(self.targets[0])
         booked,_=self.freeze(self.targets[1])

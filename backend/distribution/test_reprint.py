@@ -54,6 +54,46 @@ class Reprint(unittest.TestCase):
             self.assertEqual(result.status_code, 200)
             return result.json["items"]
 
+    def test_plan_matches_rotation_and_quota_without_reserving_work(self):
+        bid=self.create([self.source(i) for i in range(5)])
+        self.prepare()
+        rows=self.batch(bid)["reviews"]
+        items=[dict(id=r["id"],revision=r["revision"],sha=r["sha"],expected_prior={}) for r in rows]
+        items[1]["sha"]="stale"
+        stamp=int(datetime(2030,1,7,9,tzinfo=BEIJING).timestamp())
+        with patch("distribution.reprint.time.time",return_value=stamp):
+            def forecast():
+                response=self.client.post(BASE+f"reprints/{bid}/plan",json=dict(items=items))
+                self.assertEqual(response.status_code,200,response.json)
+                return response.json["items"]
+            plans=forecast()
+            self.assertEqual(plans,forecast())
+            self.assertIn("error",plans[1])
+            self.assertEqual(self.batch(bid)["deliveries"],[])
+            planned=[a for r in plans for a in r.get("assignments",[]) if a["platform"]=="zhihu"]
+            self.assertEqual([a["account"] for a in planned],["模拟A","模拟B","模拟A","模拟B"])
+            self.assertEqual([a["slot"] for a in planned],[stamp,stamp+30,stamp+60,stamp+86400])
+            guarded=[item|dict(expected_accounts={a["platform"]:a["account"] for a in plan["assignments"]})
+                     for item,plan in zip(items,plans) if "assignments" in plan]
+            scheduled=self.client.post(BASE+f"reprints/{bid}/approve",json=dict(approved=True,items=guarded))
+            self.assertTrue(all(r.get("state")=="approved" for r in scheduled.json["items"]))
+            jobs=self.batch(bid)["deliveries"]
+            self.assertEqual(sorted((j["row_id"],j["platform"],j["account"],j["slot"]) for j in jobs),
+                             sorted((r["id"],a["platform"],a["account"],a["slot"]) for r in plans for a in r.get("assignments",[])))
+
+    def test_account_rotation_change_after_preview_leaves_article_pending(self):
+        bid=self.create([self.source(1),self.source(2)])
+        self.prepare()
+        first,other=self.batch(bid)["reviews"]
+        item=dict(id=first["id"],revision=first["revision"],sha=first["sha"],expected_prior={})
+        plan=self.client.post(BASE+f"reprints/{bid}/plan",json={"items":[item]}).json["items"][0]
+        item["expected_accounts"]={a["platform"]:a["account"] for a in plan["assignments"]}
+        self.approve(bid,[other])
+        result=self.client.post(BASE+f"reprints/{bid}/approve",json=dict(approved=True,items=[item]))
+        self.assertIn("账号已变化",result.json["items"][0]["error"])
+        unchanged=self.batch(bid)["reviews"][0]
+        self.assertEqual((unchanged["state"],unchanged["assignments"]),("pending",[]))
+
     def test_saved_settings_are_bound_once_and_replay_survives_rule_change(self):
         directory=self.source(14)
         catalog=self.client.get(BASE+"library").json
@@ -452,6 +492,11 @@ class Reprint(unittest.TestCase):
         self.assertEqual(ok["state"],"approved")
         self.assertIn("error",self.approve(second,[row])[0])
         original=self.batch(first)["reviews"][0]["assignments"][0]["id"]
+        plan=self.client.post(BASE+f"reprints/{second}/plan",json={"items":[item(row,{"zhihu":original})]})
+        projected={a["platform"]:a for a in plan.json["items"][0]["assignments"]}
+        self.assertEqual(projected["zhihu"]["prior_job"],original)
+        self.assertEqual(projected["zhihu"]["slot"],self.batch(first)["deliveries"][0]["slot"])
+        self.assertIsNone(projected["toutiao"]["prior_job"])
         before=self.client.get(url).json
         self.assertEqual((before["job"],before["account"],before["reused"]),(original,"甲",True))
         self.assertEqual(before["approval"]["batch"],first)

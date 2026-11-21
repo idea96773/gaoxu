@@ -13,7 +13,7 @@ TOOLS = frozenset("""
     library_list reprint_settings reprint_prepare reprint_prepare_saved reprint_preview article_search scheduler_status
     library_import article_batch_import dashboard_summary batch_status batch_control article_detail
     publish_status publish_cancel failed_jobs failed_jobs_retry stage_retry publish_reschedule draft_list draft_submit
-    draft_schedule schedule_calendar account_list publish_available_slot
+    draft_schedule schedule_calendar account_list publish_available_slot publish_plan
 """.split())
 IMPORTS = {"reprint_prepare", "reprint_prepare_saved", "article_batch_import", "library_import"}
 

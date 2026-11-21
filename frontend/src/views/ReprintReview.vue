@@ -12,7 +12,18 @@
     <p>本批新稿的目标公众号文章　{{batch.destination}}</p>
     <p v-for="p in previewPlatforms" :key="p">{{names[p]}}新稿文末　{{batch.links?.[p]?.mode==='omit'?'不追加延伸阅读':batch.links?.[p]?.short || batch.destination}}</p>
     <div class="bar"><label><input type="checkbox" :checked="pending.length>0 && checked.length===pending.length" :disabled="!active || !pending.length" @change="selectAll"> 全选待审核</label>
-      <el-button type="primary" :loading="busy" :disabled="!active || !checked.length" @click="approve">审核通过并自动排期（{{checked.length}}）</el-button></div>
+      <el-button :loading="planning" :disabled="busy || !active || !checked.length" @click="plan">预览分稿与排期</el-button>
+      <el-button type="primary" :loading="busy" :disabled="planning || !active || !approvable.length" @click="approve">审核通过并自动排期（{{approvable.length}}）</el-button></div>
+    <section v-if="forecast" aria-label="分稿与排期预览">
+      <p>预计排期 · 北京时间，试算于 {{date(forecast.calculated_at)}}。正式时段以审核时可用名额为准。</p>
+      <p v-for="r in forecast.items.filter(r=>r.error)" :key="r.id" role="alert">《{{r.title}}》暂缓审核：{{r.error}}</p>
+      <el-table v-if="planRows.length" :data="planRows" max-height="340">
+        <el-table-column prop="title" label="文章" min-width="180" />
+        <el-table-column label="平台 / 分稿账号" min-width="140"><template #default="{row}">{{names[row.platform]}} · {{row.account}}</template></el-table-column>
+        <el-table-column label="预计排期" min-width="155"><template #default="{row}">{{date(row.slot)}}</template></el-table-column>
+        <el-table-column label="任务" width="125"><template #default="{row}">{{row.prior_job?'沿用 #'+row.prior_job:'审核后新建'}}</template></el-table-column>
+      </el-table>
+    </section>
     <el-alert v-if="error" :title="error" type="error" :closable="false"/>
     <el-table :data="batch.reviews" row-key="id">
       <el-table-column width="50"><template #default="{row}"><input type="checkbox" :aria-label="'选择审核 '+row.title" :disabled="row.state!=='pending'||!active" v-model="ids" :value="reviewKey(row)"></template></el-table-column>
@@ -70,6 +81,22 @@ const priorIds=r=>Object.fromEntries((r.prior_jobs || []).map(job=>[job.platform
 const reviewKey=r=>[r.id,r.revision,r.sha,JSON.stringify(r.expected_prior || priorIds(r))].join(':')
 const checked=computed(()=>pending.value.filter(r=>ids.value.includes(reviewKey(r))))
 const active=computed(()=>props.batch.control==='active')
+const planning=ref(false),forecast=ref(null)
+const selection=computed(()=>JSON.stringify([props.batch.id,active.value,checked.value.map(reviewKey)]))
+const planRows=computed(()=>(forecast.value?.items||[]).flatMap(r=>(r.assignments||[]).map(a=>({...a,title:r.title}))))
+const plannedAssignments=computed(()=>new Map((forecast.value?.items||[]).filter(r=>!r.error).map(r=>[r.id,r.assignments])))
+const approvable=computed(()=>forecast.value?checked.value.filter(r=>plannedAssignments.value.has(r.id)):checked.value)
+const reviewItem=row=>({id:row.id,sha:row.sha,revision:row.revision,expected_prior:priorIds(row)})
+watch(selection,()=>{forecast.value=null},{flush:'sync'})
+async function plan(){
+  const key=selection.value
+  planning.value=true;error.value=''
+  try{
+    const result=await props.api('reprints/'+props.batch.id+'/plan',{items:checked.value.map(reviewItem)})
+    if(selection.value===key)forecast.value=result
+  }catch(e){if(selection.value===key){forecast.value=null;error.value=e.message}}
+  finally{planning.value=false}
+}
 const pool=computed(()=>Object.entries(props.names).flatMap(([p,label])=>{
   const accounts=props.batch.targets.filter(t=>t.platform===p).map(t=>t.account)
   return accounts.length?[label+' · '+accounts.join('、')]:[]
@@ -138,13 +165,20 @@ async function preview(r,platform){
   }catch(e){if(seq===previewRequest)error.value=e.message}
 }
 async function approve(){
-  const items=checked.value.map(row=>({id:row.id,sha:row.sha,revision:row.revision,expected_prior:priorIds(row)})),bid=props.batch.id
+  const key=selection.value,bid=props.batch.id
+  const items=approvable.value.map(row=>{
+    const item=reviewItem(row),assignments=plannedAssignments.value.get(row.id)
+    if(assignments)item.expected_accounts=Object.fromEntries(assignments.map(a=>[a.platform,a.account]))
+    return item
+  })
   try{await ElMessageBox.confirm('确认已审核这 '+items.length+' 篇原文、配图和文末链接，可在本地试稿并按规则模拟交付？新冻结稿的授权范围为「仅本地试稿」。','确认转载审核',{confirmButtonText:'确认模拟排期',cancelButtonText:'返回'})}catch{return}
-  if(props.batch.id!==bid || !active.value){error.value='当前批次已变化，请在目标批次中重新选择';return}
+  if(selection.value!==key || !active.value){error.value='当前选稿或批次已变化，请重新核对';return}
   busy.value=true;error.value=''
   try{const result=await props.api('reprints/'+bid+'/approve',{approved:true,items})
     const failed=new Set(result.items.filter(x=>x.error).map(x=>x.id))
-    ids.value=items.filter(x=>failed.has(x.id)).map(reviewKey)
+    const completed=new Set(items.filter(x=>!failed.has(x.id)).map(reviewKey))
+    ids.value=ids.value.filter(id=>!completed.has(id))
+    forecast.value=null
     error.value=result.items.filter(x=>x.error).map(x=>'#'+x.id+' '+x.error).join('；')
     if(!error.value)ElMessage.success('审核已记录，分稿与排期结果已更新')
     emit('refresh')

@@ -75,6 +75,10 @@ tool('reprint_preview','按平台读取转载待审稿或已有任务绑定的�
   if(!snapshot)throw new Error('该条目的原始资料异常，请先查看批次详情')
   return {sha,edition_sha,revision,platform:a.platform,job,account,reused,title:snapshot.title,text:snapshot.text,images:snapshot.images,link:snapshot.link}
 })
+tool('publish_plan','只读试算本批所选待审转载稿的分稿账号及北京时间排期。按传入顺序计算；从 batch_status 取每行 id、sha、revision。prior_job 表示沿用已有排期，时间为 Unix 秒。审核时按当时的可用名额正式排期。',{
+  batch:batchId,items:z.array(z.object({id:jobId,sha:z.string().regex(/^[a-f0-9]{64}$/),revision:jobId,
+    expected_prior:z.record(z.string(),jobId).optional()})).min(1).max(100)
+},({batch,items})=>api('reprints/'+batch+'/plan',{items}))
 tool('article_search','按标题、平台、账号以及北京时间日期跨批次查询模拟记录',{
   title:z.string().optional(),platform:target.shape.platform.optional(),account:z.string().optional(),
   draft_recipient:z.string().optional().describe('已锁定的知乎接收账号昵称或完整 ID'),

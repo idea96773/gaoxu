@@ -366,15 +366,19 @@ def unrecorded_receipts(db, stage, platform, exclude):
     return accepted
 
 
-def booked_slot(db, stage, platform, account, now, rules, exclude=-1):
+def current_bookings(db, stage, platform, now, exclude=-1):
     mark = f"coalesce(j.finished,{EXECUTION_SLOT})"
     accepted = unrecorded_receipts(db,stage,platform,exclude)
     reservations = db.execute(f"""SELECT {mark} mark,j.id,j.account,b.rules FROM jobs j
         JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch WHERE j.stage=?
         AND j.platform=? AND j.id!=? AND j.state IN ('ready','running','done') AND {mark}>=?""",
         (stage,platform,exclude,now-86400))
-    bookings = chain((r for r in accepted.values() if r["mark"]>=now-86400),
-                     (r for r in reservations if r["id"] not in accepted))
+    return chain((r for r in accepted.values() if r["mark"]>=now-86400),
+                 (r for r in reservations if r["id"] not in accepted))
+
+
+def booked_slot(db, stage, platform, account, now, rules, exclude=-1):
+    bookings=current_bookings(db,stage,platform,now,exclude)
     # Legacy automatic planning appends to the queue. When moving an existing
     # job, an earlier gap between two reservations is a valid choice.
     return available_slot(now,platform,account,rules,bookings,

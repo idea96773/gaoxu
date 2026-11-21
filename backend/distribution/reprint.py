@@ -13,7 +13,8 @@ from .editorial import checked_link
 from .library import check_library_root, read_folder, selected_header, selection_key, validate_directories
 from .markdown_media import MARKDOWN, inline_tokens, local_path
 from .reprint_approval import REVIEW_REVISION, origin, reviewed_snapshot
-from .store import canonicalize, clean_rules, compact, digest, enqueue, transaction
+from .scheduling import available_slot
+from .store import canonicalize, clean_rules, compact, current_bookings, digest, enqueue, transaction
 
 DESTINATION = "https://mp.weixin.qq.com/s/YFkz4nZBTLm-GHtqz_5lUw"
 CHANNELS = ("zhihu", "toutiao")
@@ -311,7 +312,69 @@ def prepare_one(path,ticket,now):
         close_attempt(db,job,now,"done")
 
 
-def approve_one(path,bid,rid,sha,now,revision=1,expected_prior=None):
+def rotation(db,platform,accounts):
+    pool=compact(["reprint",platform,accounts])
+    cursor=db.execute("SELECT position FROM account_rotation WHERE pool=?",(pool,)).fetchone()
+    return pool,(cursor[0] if cursor else 0)
+
+
+def check_prior(history,pools,expected):
+    current={p:history[p]["id"] for p in pools if p in history}
+    if expected is not None and (not isinstance(expected,dict) or
+            any(type(v) is not int for v in expected.values()) or expected!=current):
+        raise ValueError("计划沿用的任务已变化，请刷新后重新核对需排期的平台")
+
+
+def plan_selection(db,bid,items,now):
+    if not isinstance(items,list) or not 1<=len(items)<=100:
+        raise ValueError("请选择 1 至 100 篇待审转载稿")
+    batch=db.execute("""SELECT b.targets,b.control,b.rules FROM batches b JOIN reprint_batches rb ON rb.batch=b.id
+        WHERE b.id=?""",(bid,)).fetchone()
+    if not batch or batch["control"]!="active":
+        raise ValueError("请选择运行中的转载批次")
+    pools=pools_for(json.loads(batch["targets"]))
+    rules=json.loads(batch["rules"])
+    rows={row["id"]:row for row in db.execute(f"""SELECT r.id,r.canonical,q.title,q.state,q.sha,{REVIEW_REVISION} revision
+        FROM rows r JOIN reprint_reviews q ON q.row_id=r.id LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'
+        WHERE r.batch=?""",(bid,))}
+    history=existing_deliveries(db,[r["canonical"] for r in rows.values()])
+    positions={p:rotation(db,p,accounts)[1] for p,accounts in pools.items()}
+    bookings={p:list(current_bookings(db,"deliver",p,now)) for p in pools}
+    new_sources=set()
+    result=[]
+    for item in items:
+        rid=item.get("id") if isinstance(item,dict) else None
+        row=rows.get(rid) if type(rid) is int else None
+        try:
+            if (not row or row["state"]!="pending" or item.get("sha")!=row["sha"] or
+                    type(item.get("revision")) is not int or item["revision"]!=row["revision"]):
+                raise ValueError("待审稿或审核版次已变化，请刷新后重新选择")
+            prior=history.get(row["canonical"],{})
+            check_prior(prior,pools,item.get("expected_prior"))
+            if row["canonical"] in new_sources:
+                raise ValueError("本次已选同一原文，请先审核其中一条，再核对其余条目可沿用的任务")
+            assignments=[]
+            for p,accounts in pools.items():
+                if p in prior:
+                    job=prior[p]
+                    assignments.append(dict(platform=p,account=job["account"],slot=job["slot"],prior_job=job["id"]))
+                    continue
+                account=accounts[positions[p]%len(accounts)]
+                slot=available_slot(now,p,account,rules,bookings[p])
+                assignments.append(dict(platform=p,account=account,slot=slot,prior_job=None))
+            # Apply this article to the in-memory forecast only after all its platforms succeeded.
+            for a in assignments:
+                if a["prior_job"] is None:
+                    new_sources.add(row["canonical"])
+                    positions[a["platform"]]+=1
+                    bookings[a["platform"]].append(dict(account=a["account"],mark=a["slot"],rules=batch["rules"]))
+            result.append(dict(id=rid,title=row["title"],assignments=assignments))
+        except ValueError as exc:
+            result.append(dict(id=rid,title=row["title"] if row else "",error=str(exc)))
+    return dict(calculated_at=now,items=result)
+
+
+def approve_one(path,bid,rid,sha,now,revision=1,expected_prior=None,expected_accounts=None):
     with transaction(path) as db:
         row=db.execute(f"""SELECT q.*,r.canonical,b.targets,b.control,{REVIEW_REVISION} revision
             FROM reprint_reviews q JOIN rows r ON r.id=q.row_id LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'
@@ -326,14 +389,16 @@ def approve_one(path,bid,rid,sha,now,revision=1,expected_prior=None):
         assigned=[]
         history=existing_deliveries(db,[row["canonical"]]).get(row["canonical"],{})
         pools=pools_for(json.loads(row["targets"]))
-        if expected_prior is not None:
-            current={p:history[p]["id"] for p in pools if p in history}
-            if (not isinstance(expected_prior,dict) or any(type(v) is not int for v in expected_prior.values())
-                    or expected_prior!=current):
-                raise ValueError("计划沿用的任务已变化，请刷新后重新核对需排期的平台")
+        check_prior(history,pools,expected_prior)
+        if expected_accounts is not None and (not isinstance(expected_accounts,dict) or expected_accounts.keys()!=pools.keys()):
+            raise ValueError("预览的平台与本批次不一致，请重新预览排期")
         for p,accounts in pools.items():
             prior=history.get(p)
             view=reviewed["editions"][p] if "editions" in reviewed else reviewed
+            pool,position=rotation(db,p,accounts)
+            account=prior["account"] if prior else accounts[position%len(accounts)]
+            if expected_accounts is not None and expected_accounts[p]!=account:
+                raise ValueError("预计分稿账号已变化，请重新预览后再审核")
             if prior:
                 if expected_prior is None:
                     frozen_sha=db.execute("SELECT sha FROM frozen_deliveries WHERE job=?",(prior["id"],)).fetchone()[0]
@@ -341,10 +406,6 @@ def approve_one(path,bid,rid,sha,now,revision=1,expected_prior=None):
                         raise ValueError("已有任务与本次送审稿不同，请按平台核对冻结稿并确认沿用任务")
                 db.execute("INSERT INTO reprint_assignments VALUES(?,?,?,1)",(rid,p,prior["id"]))
                 continue
-            pool=compact(["reprint",p,accounts])
-            cursor=db.execute("SELECT position FROM account_rotation WHERE pool=?",(pool,)).fetchone()
-            position=cursor[0] if cursor else 0
-            account=accounts[position%len(accounts)]
             did=db.execute("""INSERT INTO drafts(row_id,platform,account,rev,state,title,body,provider,frozen)
                 VALUES(?,?,?,?,'approved',?,?,'reprint',?)""",(rid,p,account,revision,view["title"],view["text"],compact(view))).lastrowid
             job=schedule_in(db,did,{},now)
@@ -537,6 +598,12 @@ def register(api,path,current_root,body):
             return jsonify(snapshot=view,platform=platform,edition_sha=digest(compact(view)),sha=r["sha"],
                            revision=r["revision"],job=None,account=None,reused=False)
 
+    @api.post("/reprints/<bid>/plan")
+    def preview_plan(bid):
+        items=body().get("items")
+        with transaction(path,False) as db:
+            return jsonify(plan_selection(db,bid,items,int(time.time()))),200,{"Cache-Control":"no-store"}
+
     @api.post("/reprints/<bid>/approve")
     def approve_reprints(bid):
         data=body()
@@ -550,7 +617,7 @@ def register(api,path,current_root,body):
                 if type(rid) is not int:
                     raise ValueError("审核条目无效")
                 state=approve_one(path,bid,rid,review.get("sha"),int(time.time()),
-                                  review.get("revision",1),review.get("expected_prior"))
+                                  review.get("revision",1),review.get("expected_prior"),review.get("expected_accounts"))
                 result.append(dict(id=rid,state=state))
             except ValueError as exc:
                 result.append(dict(id=rid,error=str(exc)))

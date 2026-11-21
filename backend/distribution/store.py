@@ -69,6 +69,15 @@ CREATE TABLE IF NOT EXISTS attempts (
  id INTEGER PRIMARY KEY, job INTEGER NOT NULL REFERENCES jobs(id), seq INTEGER NOT NULL,
  started INTEGER NOT NULL, ended INTEGER, outcome TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '',
  UNIQUE(job,seq));
+CREATE TABLE IF NOT EXISTS draft_bridge (
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), user_id TEXT NOT NULL, name TEXT NOT NULL, seen INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS platform_drafts (
+ id INTEGER PRIMARY KEY, job INTEGER NOT NULL REFERENCES frozen_deliveries(job), canonical TEXT NOT NULL,
+ sha TEXT NOT NULL, user_id TEXT NOT NULL, name TEXT NOT NULL, state TEXT NOT NULL,
+ updated INTEGER NOT NULL, reason TEXT NOT NULL DEFAULT '', url TEXT NOT NULL DEFAULT '',
+ UNIQUE(canonical,user_id));
+CREATE UNIQUE INDEX IF NOT EXISTS platform_drafts_job ON platform_drafts(job);
+CREATE INDEX IF NOT EXISTS platform_drafts_queue ON platform_drafts(state,user_id,id);
 CREATE TABLE IF NOT EXISTS health (name TEXT PRIMARY KEY, seen INTEGER NOT NULL);
 """
 def compact(value):

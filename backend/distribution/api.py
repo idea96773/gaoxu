@@ -9,7 +9,7 @@ from pathlib import Path
 from flask import Blueprint, Flask, Response, jsonify, request, send_from_directory
 from waitress import serve
 
-from . import delivery, reprint, search
+from . import delivery, reprint, search, platform_draft
 from .engine import close_attempt, lookup_receipt, operation_key
 from .store import DEFAULT_DB, PLATFORMS, import_batch, initialize, next_slot, transaction
 from .library import DEFAULT_LIBRARY, catalog, read_selected
@@ -118,6 +118,8 @@ def control_batch(path,bid,action,now):
             raise ValueError("已取消的批次无法继续")
         db.execute("UPDATE batches SET control=? WHERE id=?",({"pause":"paused","resume":"active","cancel":"cancelled"}[action],bid))
         if action=="cancel":
+            db.execute("""UPDATE platform_drafts SET state='cancelled',updated=? WHERE state IN ('queued','preparing')
+                AND job IN (SELECT j.id FROM jobs j JOIN rows r ON r.id=j.row_id WHERE r.batch=?)""",(now,bid))
             affected=db.execute("""SELECT j.*,r.canonical FROM jobs j JOIN rows r ON r.id=j.row_id
                   WHERE r.batch=? AND j.state IN ('ready','running','failed')""",(bid,)).fetchall()
             for j in affected:
@@ -250,6 +252,7 @@ def make_blueprint(path,root):
     register(api,path,body)
     reprint.register(api,path,root,body)
     search.register(api,path)
+    platform_draft.register(api,path,body)
     return api
 
 def create_app(path=DEFAULT_DB,library_root=None):

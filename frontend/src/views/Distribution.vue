@@ -110,6 +110,7 @@
           <p>快照 SHA-256　<code style="overflow-wrap:anywhere">{{job.delivery.sha}}</code></p>
           <p v-if="job.delivery.received">模拟接收端核对　{{job.delivery.received.matches?'与冻结稿一致':'内容不一致'}}</p>
         </div>
+        <PlatformDraftPanel v-if="jobOpen && job.job.platform==='zhihu' && job.delivery?.snapshot.kind==='reprint'" :key="job.job.id" :job="job" :api="api" />
         <p>状态 {{label(job.job.state)}} · 执行 {{job.job.attempts}} 次</p>
         <p>计划 {{date(job.job.slot)}}　完成 {{date(job.job.finished)}}</p><p>模拟回执 {{job.job.receipt||'—'}}</p><p>{{job.job.failure}}</p>
         <div v-if="job.job.stage==='publish' && job.job.state==='ready'"><label>改期（北京时间） <input v-model="newTime" type="datetime-local"></label> <el-button @click="reschedule">保存改期</el-button></div>
@@ -123,6 +124,7 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import ArticleSearch from "./ArticleSearch.vue"
+import PlatformDraftPanel from './PlatformDraftPanel.vue'
 import ReprintCreate from "./ReprintCreate.vue"
 import ReprintReview from "./ReprintReview.vue"
 import EditorialPanel from "./EditorialPanel.vue"

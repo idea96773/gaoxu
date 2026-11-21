@@ -24,23 +24,22 @@
     </p>
     <el-button v-if="canSend" type="primary" :loading="busy" @click="enqueue">保存到 {{account.name}} 的草稿箱</el-button>
     <el-button v-if="record && ['queued','preparing'].includes(record.state)" :disabled="busy" @click="change({action:'cancel'})">取消草稿任务</el-button>
-    <template v-if="record && ['saved','unknown'].includes(record.state)">
-      <el-input v-if="record.state==='unknown'" v-model.trim="found" placeholder="在该账号草稿箱找到的知乎编辑页地址"/>
-      <el-checkbox v-model="checked">我已在「{{record.name}}」的草稿箱核对标题、正文、配图和文末链接</el-checkbox>
-      <el-button :disabled="busy || !checked || !(record.url||found)" @click="change({action:'confirm',checked:true,url:record.url||found})">记录人工核对结果</el-button>
-    </template>
+    <DraftInspection v-if="record && ['saved','unknown','needs_review','verified'].includes(record.state)"
+      :key="record.id" :api="api" :path="path" :record="record" :entries="inspections" :snapshot="job.delivery.snapshot"
+      :date="date" @refresh="load" @recorded="$emit('inspected')" />
     <el-alert v-if="error" :title="error" type="error" :closable="false"/>
   </section>
 </template>
 <script setup>
 import {ref,computed,onMounted,onBeforeUnmount,watch} from 'vue'
 import {ElMessageBox} from 'element-plus'
+import DraftInspection from './DraftInspection.vue'
 const props=defineProps({api:Function,job:Object,bindingsVersion:Number,date:Function})
-defineEmits(['accounts'])
+defineEmits(['accounts','inspected'])
 const recipient=ref(null),recipientSource=ref(''),control=ref('')
 const grant=ref(null),history=ref([]),permitted=ref(false)
-const connected=ref(false),account=ref(null),record=ref(null),busy=ref(false),error=ref(''),checked=ref(false),found=ref('')
-const labels={queued:'等待保存',preparing:'准备配图',sending:'正在请求保存',saved:'平台已返回草稿，待核对',verified:'已人工核对',unknown:'回执不确定，需核对草稿箱',failed:'准备失败',cancelled:'已取消'}
+const connected=ref(false),account=ref(null),record=ref(null),inspections=ref([]),busy=ref(false),error=ref('')
+const labels={queued:'等待保存',preparing:'准备配图',sending:'正在请求保存',saved:'已找到草稿，待核对',verified:'已人工核对',needs_review:'核对发现问题',unknown:'回执不确定，需核对草稿箱',failed:'准备失败',cancelled:'已取消'}
 const path='jobs/'+props.job.job.id+'/platform-draft'
 const canSend=computed(()=>permitted.value && recipient.value && account.value && control.value==='active' && recipient.value.user_id===account.value.user_id && props.job.job.state!=='cancelled' && (!record.value ||
     (['failed','cancelled'].includes(record.value.state) && record.value.user_id===account.value.user_id)))
@@ -48,13 +47,13 @@ let stopped=false,timer,sequence=0
 async function load(){
   const n=++sequence
   try{const info=await props.api(path);if(!stopped && n===sequence){connected.value=info.connected;account.value=info.account;record.value=info.record;recipient.value=info.recipient;recipientSource.value=info.recipient_source;control.value=info.control
-    grant.value=info.rights;permitted.value=info.permitted;history.value=info.rights_history}}
+    grant.value=info.rights;permitted.value=info.permitted;history.value=info.rights_history;inspections.value=info.inspections || []}}
   catch(e){if(!stopped && n===sequence){connected.value=false;account.value=null;grant.value=null;permitted.value=false;error.value=e.message}}
 }
 async function poll(){await load();if(!stopped)timer=setTimeout(poll,4000)}
 async function change(data){
   busy.value=true;error.value=''
-  try{await props.api(path,data);checked.value=false;found.value=''}catch(e){error.value=e.message}
+  try{await props.api(path,data)}catch(e){error.value=e.message}
   finally{await load();busy.value=false}
 }
 async function enqueue(){

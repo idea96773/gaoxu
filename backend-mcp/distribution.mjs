@@ -57,6 +57,7 @@ tool('reprint_preview','按平台读取转载待审稿或已有任务绑定的�
 })
 tool('article_search','按标题、平台、账号以及北京时间日期跨批次查询模拟记录',{
   title:z.string().optional(),platform:target.shape.platform.optional(),account:z.string().optional(),
+  draft_review:z.enum(['awaiting','issue','verified']).optional(),
   date_field:z.enum(['scheduled','execution','delivered','imported']).optional(),start:day.optional(),end:day.optional(),page:jobId.optional()
 },a=>api('article-search?'+new URLSearchParams(a)))
 tool('scheduler_status','读取服务心跳、活动批次积压、过期租约与待核对的草稿回执',{},()=>api('runtime-status'))

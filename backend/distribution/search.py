@@ -48,7 +48,8 @@ records AS (
     FROM reprint_reviews q JOIN articles a ON a.row_id=q.row_id WHERE q.state IN ('preparing','pending','invalid')
 )
 SELECT a.row_id,a.batch,a.created,a.control,a.title,x.edition,x.stage,x.platform,x.account,
-       x.job_id,x.state,x.slot,x.execution_slot,x.received FROM records x JOIN articles a ON a.row_id=x.row_id
+       x.job_id,x.state,x.slot,x.execution_slot,x.received,p.state AS draft_state
+       FROM records x JOIN articles a ON a.row_id=x.row_id LEFT JOIN platform_drafts p ON p.job=x.job_id
 """
 DATE_FIELDS = {"scheduled":"slot", "execution":"execution_slot", "delivered":"received", "imported":"created"}
 PAGE_SIZE = 25
@@ -71,6 +72,13 @@ def search(db, args):
     if not field:
         raise ValueError("未知的日期类型")
     filters, values = [], []
+    review=args.get("draft_review","")
+    if review:
+        conditions={"awaiting":"draft_state IN ('saved','unknown')","issue":"draft_state='needs_review'",
+                    "verified":"draft_state='verified'"}
+        if review not in conditions:
+            raise ValueError("未知的平台草稿核对状态")
+        filters.append(conditions[review])
     keyword = args.get("title","").strip()
     if keyword:
         filters.append("(instr(lower(title),lower(?))>0 OR instr(lower(edition),lower(?))>0)")

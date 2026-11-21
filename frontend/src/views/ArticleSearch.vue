@@ -7,6 +7,8 @@
       <label>账号<select v-model="form.account"><option value="">全部账号</option>
         <option v-for="a in accounts" :key="a">{{a}}</option></select></label>
       <div class="date-row">
+        <label>知乎草稿核对<select v-model="form.draft_review"><option value="">全部</option>
+          <option value="awaiting">待核对</option><option value="issue">发现问题</option><option value="verified">已核对通过</option></select></label>
         <label>日期类型<select v-model="form.date_field"><option value="scheduled">计划排期日</option><option value="execution">预计执行日</option><option value="delivered">实际交付日期</option><option value="imported">导入日期</option></select></label>
         <label>开始日期<input type="date" v-model="form.start"></label>
         <label>结束日期<input type="date" v-model="form.end"></label>
@@ -24,6 +26,7 @@
         <small v-if="row.execution_slot>row.slot" class="secondary">顺延至 {{date(row.execution_slot)}}</small></template></el-table-column>
       <el-table-column label="实际交付" min-width="137"><template #default="{row}">{{date(row.received)}}</template></el-table-column>
       <el-table-column label="交付状态" width="116"><template #default="{row}"><el-tag :type="colors[row.state] || 'info'">{{states[row.state] || label(row.state)}}</el-tag>
+        <div v-if="row.draft_state" class="secondary">知乎草稿 · {{draftStates[row.draft_state] || row.draft_state}}</div>
         <div v-if="row.control==='paused' && ['ready','unscheduled','pending'].includes(row.state)" class="secondary">批次已暂停</div>
         <el-button v-if="row.job_id" link @click="$emit('job',row.job_id)">任务详情</el-button></template></el-table-column>
     </el-table>
@@ -40,7 +43,9 @@ import {useRoute,useRouter} from 'vue-router'
 const props=defineProps({api:Function,names:Object,date:Function,label:Function,version:Number})
 const emit=defineEmits(['job','platforms'])
 const route=useRoute(),router=useRouter()
-const defaults={title:'',platform:'',account:'',date_field:'scheduled',start:'',end:''}
+const defaults={title:'',platform:'',account:'',draft_review:'',date_field:'scheduled',start:'',end:''}
+const draftStates={queued:'待保存',preparing:'准备中',sending:'保存中',saved:'待核对',unknown:'回执待核对',
+  needs_review:'发现问题',verified:'已核对通过',failed:'准备失败',cancelled:'已取消'}
 const form=reactive({...defaults}),choices=ref([]),error=ref(''),loading=ref(false),loaded=ref(false)
 const empty=()=>({items:[],total:0,page:1,page_size:25})
 const result=ref(empty())

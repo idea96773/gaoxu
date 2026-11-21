@@ -124,7 +124,7 @@
           <p>快照 SHA-256　<code style="overflow-wrap:anywhere">{{job.delivery.sha}}</code></p>
           <p v-if="job.delivery.received">模拟接收端核对　{{job.delivery.received.matches?'与冻结稿一致':'内容不一致'}}</p>
         </div>
-        <PlatformDraftPanel v-if="jobOpen && job.job.platform==='zhihu' && job.delivery?.snapshot.kind==='reprint'" :key="job.job.id" :job="job" :api="api" :date="date" :bindings-version="bindingVersion" @accounts="openDraftAccounts" />
+        <PlatformDraftPanel v-if="jobOpen && job.job.platform==='zhihu' && job.delivery?.snapshot.kind==='reprint'" :key="job.job.id" :job="job" :api="api" :date="date" :bindings-version="bindingVersion" @accounts="openDraftAccounts" @inspected="retryVersion++" />
         <div v-for="entry in job.delivery?.reschedules" :key="entry.changed+'-'+entry.after_slot" class="record">
           <small>改期于 {{date(entry.changed)}}<br>{{date(entry.before_slot)}} → {{date(entry.after_slot)}}</small>
         </div>

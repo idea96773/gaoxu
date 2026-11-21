@@ -8,13 +8,50 @@ from urllib.parse import urlsplit
 from flask import jsonify, request
 
 from . import rights
-from .store import digest, transaction
+from .store import compact, digest, transaction
 
 
 def edit_url(value):
     if not isinstance(value,str) or not re.fullmatch(r"https://zhuanlan\.zhihu\.com/p/[1-9]\d{0,24}/edit",value):
         raise ValueError("请输入知乎草稿编辑页地址")
     return value
+
+
+def checked_url(db,record,value):
+    url=edit_url(value)
+    if record["url"] and record["url"]!=url:
+        raise ValueError("编辑地址与已有回执不一致")
+    if db.execute("SELECT 1 FROM platform_drafts WHERE url=? AND id!=?",(url,record["id"])).fetchone():
+        raise ValueError("该知乎编辑地址已关联其他任务，请核对账号与稿件")
+    return url
+
+
+def record_inspection(db,job,record,data,now):
+    if not record or record["state"] not in ("saved","unknown","needs_review","verified"):
+        raise ValueError("请先在指定账号草稿箱找到对应草稿")
+    row=source(db,job)
+    target,_=recipient(db,job,row["account"],record)
+    if (row["sha"]!=record["sha"] or data.get("sha")!=row["sha"] or data.get("user_id")!=record["user_id"]
+            or target["user_id"]!=record["user_id"]):
+        raise ValueError("冻结稿或草稿接收账号已变化")
+    url=checked_url(db,record,data.get("url"))
+    checks=data.get("checks")
+    if (not isinstance(checks,dict) or set(checks)!={"title","layout","images","footer"}
+            or any(v not in ("pass","issue","pending") for v in checks.values())
+            or all(v=="pending" for v in checks.values())):
+        raise ValueError("请填写至少一个核对结果，并保留其余待核对项")
+    payload=compact(checks)
+    last=db.execute("SELECT id,checks FROM draft_inspections WHERE outbox=? ORDER BY id DESC LIMIT 1",
+                    (record["id"],)).fetchone()
+    if last and last["checks"]==payload and record["url"]==url:
+        return
+    if (type(data.get("revision")) is not int or data["revision"]!=(last["id"] if last else 0)
+            or data.get("expected_state")!=record["state"]):
+        raise ValueError("已有新的草稿回执或核对记录，请重新打开核对表")
+    state="needs_review" if "issue" in checks.values() else ("saved" if "pending" in checks.values() else "verified")
+    db.execute("""INSERT INTO draft_inspections(outbox,sha,user_id,url,checks,checked_at)
+               VALUES(?,?,?,?,?,?)""",(record["id"],row["sha"],record["user_id"],url,payload,now))
+    db.execute("UPDATE platform_drafts SET state=?,url=?,reason='',updated=? WHERE id=?",(state,url,now,record["id"]))
 
 
 def source(db, job):
@@ -106,10 +143,13 @@ def register(api,path,body):
             grant=rights.current(db,job)
             changes=db.execute("""SELECT scope,user_id,confirmed FROM reprint_rights WHERE job=?
                 ORDER BY id DESC LIMIT 10""",(job,))
+            inspections=[] if not record else [dict(r)|{"checks":json.loads(r["checks"])} for r in db.execute(
+                "SELECT id,checks,checked_at,sha,user_id,url FROM draft_inspections WHERE outbox=? ORDER BY id DESC LIMIT 10",
+                (record["id"],))]
             return jsonify(**bridge_status(db),recipient=target,recipient_source=via,control=row["control"],
                            rights=grant,permitted=bool(target and rights.permits(grant,row["sha"],target["user_id"])),
                            rights_history=[dict(event) for event in changes],
-                           record=dict(record) if record else None)
+                           record=dict(record) if record else None,inspections=inspections)
 
     @api.post("/jobs/<int:job>/platform-draft")
     def change_platform_draft(job):
@@ -171,12 +211,14 @@ def register(api,path,body):
                     db.execute("INSERT OR IGNORE INTO zhihu_draft_recipients VALUES(?,?,?)",(job,account["user_id"],account["name"]))
             elif action=="cancel" and existing and existing["state"] in ("queued","preparing"):
                 db.execute("UPDATE platform_drafts SET state='cancelled',updated=? WHERE job=?",(now,job))
+            elif action=="inspect":
+                record_inspection(db,job,existing,data,now)
             elif action=="confirm" and existing and existing["state"] in ("saved","unknown","verified"):
+                if db.execute("SELECT 1 FROM draft_inspections WHERE outbox=?",(existing["id"],)).fetchone():
+                    raise ValueError("此稿已有逐项核对记录，请使用当前核对表")
                 if data.get("checked") is not True:
                     raise ValueError("请先在指定账号的草稿箱核对正文、图片与文末链接")
-                url=edit_url(data.get("url"))
-                if existing["url"] and existing["url"]!=url:
-                    raise ValueError("编辑地址与已有回执不一致")
+                url=checked_url(db,existing,data.get("url"))
                 db.execute("UPDATE platform_drafts SET state='verified',url=?,reason='',updated=? WHERE job=?",(url,now,job))
             else:
                 raise ValueError("当前状态无法执行此操作，请刷新")
@@ -217,6 +259,11 @@ def require_rights(db,task):
 
 def transition(path,task,old,new,reason="",url=""):
     with transaction(path) as db:
+        if new=="saved":
+            record=db.execute("SELECT id,url FROM platform_drafts WHERE id=? AND state=?",(task["id"],old)).fetchone()
+            if not record:
+                return False
+            url=checked_url(db,record,url)
         if new=="sending":
             require_rights(db,task)
             row=source(db,task["job"])

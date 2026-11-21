@@ -379,6 +379,39 @@ class Reprint(unittest.TestCase):
         self.assertEqual(current[1]["state"],"pending")
         self.assertEqual(current[2],invalid)
 
+    def test_platform_draft_inspection_tracks_cases_without_resending(self):
+        from .store import transaction
+        self.targets=[dict(platform="zhihu",account="模拟")]
+        bid=self.create([self.source(61),self.source(62)])
+        self.prepare()
+        self.approve(bid,self.batch(bid)["reviews"])
+        one,two=self.batch(bid)["deliveries"]
+        with transaction(self.path) as db:
+            for entry in (one,two):
+                db.execute("""INSERT INTO platform_drafts(job,canonical,sha,user_id,name,state,updated)
+                    SELECT ?,canonical,?,'test-account','模拟','unknown',0 FROM rows WHERE id=?""",
+                    (entry["id"],entry["sha"],entry["row_id"]))
+        url=BASE+f"jobs/{one['id']}/platform-draft"
+        checks=dict(title="pass",layout="pass",images="issue",footer="pending")
+        initial=dict(action="inspect",revision=0,expected_state="unknown",sha=one["sha"],user_id="test-account",
+                     url="https://zhuanlan.zhihu.com/p/62001/edit",checks=checks)
+        self.assertEqual(self.client.post(url,json=initial|{"user_id":"different"}).status_code,400)
+        for _ in range(2):
+            self.assertEqual(self.client.post(url,json=initial).status_code,200)
+        info=self.client.get(url).json
+        self.assertEqual(info["record"]["state"],"needs_review")
+        self.assertEqual(len(info["inspections"]),1)
+        self.assertEqual(info["inspections"][0]["checks"],checks)
+        self.assertEqual(self.client.get(BASE+"article-search?draft_review=issue").json["items"][0]["job_id"],one["id"])
+        passed=initial|{"checks":dict.fromkeys(checks,"pass")}
+        self.assertEqual(self.client.post(url,json=passed).status_code,400)
+        guarded=passed|dict(revision=info["inspections"][0]["id"],expected_state="needs_review")
+        self.assertEqual(self.client.post(url,json=guarded).status_code,200)
+        self.assertEqual(self.client.get(url).json["record"]["state"],"verified")
+        self.assertEqual(self.client.post(BASE+f"jobs/{two['id']}/platform-draft",
+                                          json=initial|{"sha":two["sha"]}).status_code,400)
+        self.assertEqual(self.client.get(BASE+"article-search?draft_review=issue").json["total"],0)
+
     def test_selected_source_survives_restart_and_folder_replacement(self):
         dirs=[self.source(i) for i in (51,52)]
         items=self.client.get(BASE+"library").json["items"]

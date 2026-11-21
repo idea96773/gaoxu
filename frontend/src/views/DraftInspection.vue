@@ -1,0 +1,59 @@
+<template>
+  <section aria-label="知乎草稿人工核对">
+    <p v-if="latest">最近核对　{{date(latest.checked_at)}}<br>{{summary(latest.checks)}}</p>
+    <p v-else-if="record.state==='verified'">此前已记录整体核对，尚无分项结果。</p>
+    <el-button v-if="!editing" @click="start">{{latest?'更新核对结果':'逐项核对平台草稿'}}</el-button>
+    <form v-else @submit.prevent="save">
+      <p>请在「{{record.name}}」（{{record.user_id}}）的草稿编辑页核对。</p>
+      <label v-if="!record.url">找到的编辑页地址 <el-input v-model.trim="url" placeholder="https://zhuanlan.zhihu.com/p/…/edit"/></label>
+      <label v-for="field in fields" :key="field.key" class="item">
+        <span>{{field.label}}<small>{{field.hint}}</small></span>
+        <select v-model="checks[field.key]"><option value="pending">待核对</option>
+          <option value="pass">符合冻结稿</option><option value="issue">发现问题</option></select>
+      </label>
+      <p v-if="stale" role="alert">核对记录已变化。请重新读取后填写。 <el-button link @click="start">重新读取</el-button></p>
+      <el-button type="primary" native-type="submit" :loading="busy" :disabled="stale || !url || !hasResult">保存核对结果</el-button>
+      <el-button :disabled="busy" @click="editing=false">返回</el-button>
+    </form>
+    <el-alert v-if="error" :title="error" type="error" :closable="false"/>
+    <details v-if="entries.length>1"><summary>近期核对记录</summary>
+      <p v-for="entry in entries" :key="entry.id">{{date(entry.checked_at)}}　{{summary(entry.checks)}}</p>
+    </details>
+  </section>
+</template>
+<script setup>
+import {computed,ref} from 'vue'
+const props=defineProps({api:Function,path:String,record:Object,entries:Array,snapshot:Object,date:Function})
+const emit=defineEmits(['refresh','recorded'])
+const editing=ref(false),busy=ref(false),error=ref(''),checks=ref({}),url=ref(''),revision=ref(0),state=ref('')
+const latest=computed(()=>props.entries[0])
+const fields=computed(()=>{
+  const {title,images,link}=props.snapshot
+  const footer=link.mode==='omit'?'冻结稿未追加延伸阅读链接':(link.short?link.short+' → ':'')+link.destination
+  return [{key:'title',label:'标题',hint:title},{key:'layout',label:'正文与排版',hint:'核对段落顺序、完整性和署名'},
+    {key:'images',label:'配图',hint:'冻结稿正文共 '+images.length+' 处，核对显示和位置'},
+    {key:'footer',label:'文末链接',hint:footer}]
+})
+const labels={pass:'符合',issue:'有问题',pending:'待核对'}
+const summary=values=>fields.value.map(f=>f.label+' '+labels[values[f.key]]).join(' · ')
+const hasResult=computed(()=>Object.values(checks.value).some(x=>x!=='pending'))
+const stale=computed(()=>revision.value!==(latest.value?.id || 0) || state.value!==props.record.state)
+function start(){
+  revision.value=latest.value?.id || 0;state.value=props.record.state;url.value=props.record.url || ''
+  checks.value=Object.fromEntries(fields.value.map(f=>[f.key,latest.value?.checks[f.key] || 'pending']))
+  error.value='';editing.value=true
+}
+async function save(){
+  if(busy.value || stale.value || !hasResult.value)return
+  busy.value=true;error.value=''
+  try{
+    await props.api(props.path,{action:'inspect',user_id:props.record.user_id,sha:props.record.sha,
+      url:url.value,expected_state:state.value,revision:revision.value,checks:checks.value})
+    editing.value=false;emit('recorded')
+  }catch(e){error.value=e.message}
+  finally{busy.value=false;emit('refresh')}
+}
+</script>
+<style scoped>
+.item{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:10px 0}.item small{display:block;color:var(--el-text-color-secondary);overflow-wrap:anywhere}.item select{flex-shrink:0;padding:4px}
+</style>

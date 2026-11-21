@@ -5,6 +5,7 @@ from datetime import datetime
 import io
 import json
 from pathlib import Path
+from unittest.mock import patch
 import tempfile
 import time
 import unittest
@@ -102,6 +103,71 @@ class Reprint(unittest.TestCase):
         self.client.post(BASE+f"batches/{bid}/resume", json={})
         self.approve(bid,[third])
         self.assertEqual(self.batch(bid)["reviews"][2]["assignments"][0]["account"], "模拟A")
+
+    def test_catalog_partial_coverage_and_fast_duplicate(self):
+        path=self.source(31)
+        self.targets=[dict(platform="zhihu",account="甲")]
+        original=self.create([path],"zhihu-only")
+        self.prepare()
+        self.approve(original,self.batch(original)["reviews"])
+        def catalog_item():
+            return next(i for i in self.client.get(BASE+"library").json["items"] if i["directory"]==path)
+        first=catalog_item()
+        self.assertEqual(first["title"],"样本第31篇")
+        self.assertEqual(set(first["deliveries"]),{"zhihu"})
+        old=first["deliveries"]["zhihu"]["id"]
+        self.targets.append(dict(platform="toutiao",account="乙"))
+        partial=self.create([path],"fill-toutiao")
+        self.prepare()
+        row=self.batch(partial)["reviews"][0]
+        self.assertEqual(row["missing_platforms"],["toutiao"])
+        self.assertEqual([j["id"] for j in row["prior_jobs"]],[old])
+        self.approve(partial,[row])
+        assigned=self.batch(partial)["reviews"][0]["assignments"]
+        self.assertEqual({j["platform"]:j["reused"] for j in assigned},{"zhihu":1,"toutiao":0})
+        duplicate=self.create([path],"already-covered")
+        with patch("distribution.reprint.read_folder",side_effect=AssertionError("重复稿不应读取正文配图")):
+            self.prepare()
+        skipped=self.batch(duplicate)
+        self.assertEqual(skipped["counts"],{"duplicate":1})
+        self.assertEqual(skipped["expected"],0)
+        self.assertEqual(skipped["reviews"][0]["sha"],"")
+        self.assertEqual({j["id"] for j in skipped["reviews"][0]["assignments"]},{j["id"] for j in assigned})
+        self.client.post(BASE+f"batches/{original}/cancel",json={})
+        self.assertEqual(set(catalog_item()["deliveries"]),{"toutiao"})
+
+    def test_approval_detects_cancelled_prior_job(self):
+        directory=self.source(32)
+        self.targets=[dict(platform="zhihu",account="甲")]
+        first=self.create([directory],"first")
+        self.prepare()
+        self.approve(first,self.batch(first)["reviews"])
+        self.targets.append(dict(platform="toutiao",account="乙"))
+        second=self.create([directory],"second")
+        self.prepare()
+        row=self.batch(second)["reviews"][0]
+        expected={j["platform"]:j["id"] for j in row["prior_jobs"]}
+        self.client.post(BASE+f"batches/{first}/cancel",json={})
+        result=self.client.post(BASE+f"reprints/{second}/approve",json=dict(approved=True,items=[
+            dict(id=row["id"],sha=row["sha"],revision=row["revision"],expected_prior=expected)]))
+        self.assertIn("error",result.json["items"][0])
+        self.assertEqual(self.batch(second)["deliveries"],[])
+        self.assertEqual(set(self.batch(second)["reviews"][0]["missing_platforms"]),{"toutiao","zhihu"})
+
+    def test_duplicate_directories_count_input_rows_but_share_work(self):
+        dirs=[self.source(i) for i in range(90)]
+        bid=self.create(dirs+dirs[:10])
+        before=self.batch(bid)
+        self.assertEqual(before["rows_total"],100)
+        self.assertEqual(before["counts"],{"preparing":90,"duplicate":10})
+        self.assertEqual(sum(bool(r["prepare_job"]) for r in before["reviews"]),90)
+        self.prepare()
+        self.approve(bid,self.batch(bid)["reviews"][:1])
+        batch=self.batch(bid)
+        shared=batch["reviews"][90]["assignments"]
+        self.assertEqual(len(shared),2)
+        self.assertTrue(all(job["reused"] for job in shared))
+        self.assertEqual(batch["expected"],2)
 
     def test_zhihu_draft_recipient_follows_frozen_identity(self):
         # All identities and heartbeats are fixtures in this test's temporary database.

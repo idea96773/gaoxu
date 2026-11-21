@@ -10,9 +10,9 @@ from urllib.parse import unquote
 from flask import jsonify, request
 from markdown_it import MarkdownIt
 
-from .delivery import schedule_in
+from .delivery import existing_deliveries, schedule_in
 from .editorial import checked_link
-from .library import read_folder, selected_directories
+from .library import read_folder, selected_header, validate_directories
 from .store import canonicalize, clean_rules, compact, digest, enqueue, transaction
 
 DESTINATION = "https://mp.weixin.qq.com/s/YFkz4nZBTLm-GHtqz_5lUw"
@@ -133,7 +133,7 @@ def create(path,root,data):
         if row and row["digest"]!=fingerprint:
             raise ValueError("请求编号已用于不同的批次")
         return row["id"] if row else None
-    directories=selected_directories(dirs)
+    validate_directories(dirs)
     now=int(time.time())
     with transaction(path) as db:
         old=previous(db)
@@ -145,14 +145,51 @@ def create(path,root,data):
         db.execute("INSERT INTO reprint_batches VALUES(?,?)",(bid,destination))
         if "links" in settings:
             db.execute("INSERT INTO reprint_link_rules VALUES(?,?)",(bid,compact(settings["links"])))
-        for line,directory in enumerate(directories,1):
+        owners={}
+        for line,directory in enumerate(dirs,1):
+            if directory in owners:
+                original,original_line=owners[directory]
+                rid=db.execute("""INSERT INTO rows(batch,line,url,kind,owner,note)
+                    VALUES(?,?,?,'duplicate',?,?)""",
+                    (bid,line,directory,original,f"同一目录重复提交，处理进度见第 {original_line} 行。")).lastrowid
+                db.execute("INSERT INTO reprint_reviews VALUES(?,?,'duplicate','','null')",
+                           (rid,PurePosixPath(directory).name or directory))
+                continue
             rid=db.execute("INSERT INTO rows(batch,line,url,kind) VALUES(?,?,?,'reprint')",
                            (bid,line,directory)).lastrowid
+            owners[directory]=(rid,line)
             db.execute("INSERT INTO reprint_sources VALUES(?,?,?)",(rid,str(Path(root).absolute()),directory))
             db.execute("INSERT INTO reprint_reviews VALUES(?,?, 'preparing','','null')",
                        (rid,PurePosixPath(directory).name or directory))
             enqueue(db,rid,"reprint_prepare",now)
         return bid
+
+
+def reuse_existing(path,ticket,platforms,header,now):
+    from .engine import close_attempt
+    title,url,ref=header
+    if not ref:
+        return False
+    identity="folder:"+ref
+    with transaction(path) as db:
+        job=db.execute("""SELECT j.*,b.control FROM jobs j JOIN rows r ON r.id=j.row_id
+            JOIN batches b ON b.id=r.batch WHERE j.id=? AND j.token=? AND j.state='running'""",ticket).fetchone()
+        if not job:
+            return True
+        if job["control"]!="active":
+            close_attempt(db,job,now,"cancelled" if job["control"]=="cancelled" else "ready")
+            return True
+        prior=existing_deliveries(db,[identity]).get(identity,{})
+        if not all(p in prior for p in platforms):
+            return False
+        rid=job["row_id"]
+        db.executemany("INSERT INTO reprint_assignments VALUES(?,?,?,1)",
+                       [(rid,p,prior[p]["id"]) for p in platforms])
+        db.execute("UPDATE rows SET url=?,canonical=?,note=? WHERE id=?",
+                   (url,identity,"所选平台均已有任务，可在原任务中查看冻结稿和回执。",rid))
+        db.execute("UPDATE reprint_reviews SET title=?,state='duplicate',sha='',snapshot='null' WHERE row_id=?",(title,rid))
+        close_attempt(db,job,now,"done")
+        return True
 
 
 def prepare_one(path,ticket,now):
@@ -172,10 +209,13 @@ def prepare_one(path,ticket,now):
     read_started=source["control"]=="active"
     if read_started:
         try:
+            platforms=pools_for(json.loads(source["targets"]))
+            header=selected_header(source["root"],source["directory"])
+            if reuse_existing(path,ticket,platforms,header,now):
+                return
             item,_=read_folder(source["root"],source["directory"])
             if item["error"]:
                 raise ValueError(item["error"])
-            platforms=pools_for(json.loads(source["targets"]))
             view=review_snapshot(item["doc"],source["destination"],platforms,json.loads(source["links"] or "{}"))
             payload=compact(view)
             sha=digest(payload)
@@ -214,7 +254,7 @@ def prepare_one(path,ticket,now):
         close_attempt(db,job,now,"done")
 
 
-def approve_one(path,bid,rid,sha,now,revision=1):
+def approve_one(path,bid,rid,sha,now,revision=1,expected_prior=None):
     with transaction(path) as db:
         row=db.execute("""SELECT q.*,r.canonical,b.targets,b.control,coalesce(j.revision,1) revision
             FROM reprint_reviews q JOIN rows r ON r.id=q.row_id LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'
@@ -227,10 +267,13 @@ def approve_one(path,bid,rid,sha,now,revision=1):
             raise ValueError("仅运行中批次的待审文章可通过")
         reviewed=json.loads(row["snapshot"])
         assigned=[]
+        history=existing_deliveries(db,[row["canonical"]]).get(row["canonical"],{})
+        if expected_prior is not None:
+            if not isinstance(expected_prior,dict) or any(type(v) is not int or history.get(p,{}).get("id")!=v
+                                                          for p,v in expected_prior.items()):
+                raise ValueError("计划沿用的任务已变化，请刷新后重新核对需排期的平台")
         for p,accounts in pools_for(json.loads(row["targets"])).items():
-            prior=db.execute("""SELECT j.id FROM jobs j JOIN rows r ON r.id=j.row_id
-                    WHERE r.canonical=? AND j.platform=? AND j.stage='deliver' AND j.state!='cancelled'
-                    ORDER BY j.id LIMIT 1""",(row["canonical"],p)).fetchone()
+            prior=history.get(p)
             if prior:
                 db.execute("INSERT INTO reprint_assignments VALUES(?,?,?,1)",(rid,p,prior["id"]))
                 continue
@@ -251,8 +294,8 @@ def approve_one(path,bid,rid,sha,now,revision=1):
         return state
 
 
-def overview(db,bid):
-    items=db.execute("""SELECT r.id,r.line,r.note,q.title,q.state,q.sha,j.id AS prepare_job,
+def overview(db,bid,platforms=()):
+    items=db.execute("""SELECT r.id,r.line,r.note,r.canonical,r.owner,q.title,q.state,q.sha,j.id AS prepare_job,
         coalesce(j.revision,1) revision,j.state AS prepare_state,j.attempts AS prepare_attempts FROM rows r
         JOIN reprint_reviews q ON r.id=q.row_id
         LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare' WHERE r.batch=? ORDER BY r.line""",(bid,)).fetchall()
@@ -264,7 +307,18 @@ def overview(db,bid):
     by_row={}
     for a in assignments:
         by_row.setdefault(a["row_id"],[]).append(dict(a))
-    return [dict(r)|{"assignments":by_row.get(r["id"],[])} for r in items]
+    prior=existing_deliveries(db,[r["canonical"] for r in items if r["state"]=="pending"]) if platforms else {}
+    result=[]
+    for r in items:
+        row=dict(r)
+        history=prior.get(row.pop("canonical"),{})
+        row["assignments"]=([dict(job,reused=1) for job in by_row.get(row["owner"],[])]
+                            if row["owner"] else by_row.get(r["id"],[]))
+        if platforms and row["state"]=="pending":
+            row["prior_jobs"]=[history[p] for p in platforms if p in history]
+            row["missing_platforms"]=[p for p in platforms if p not in history]
+        result.append(row)
+    return result
 
 
 def register(api,path,root,body):
@@ -325,6 +379,8 @@ def register(api,path,root,body):
                 raise KeyError("找不到转载稿")
             if r["state"] not in ("pending","approved","duplicate"):
                 return jsonify(error="这篇文章尚无可审核的稿件"),409
+            if not r["sha"]:
+                return jsonify(error="本条沿用了已有任务，请从原任务查看冻结稿"),409
             platform=request.args.get("platform")
             platforms=pools_for(json.loads(r["targets"]))
             if platform is not None and platform not in platforms:
@@ -347,7 +403,8 @@ def register(api,path,root,body):
             try:
                 if type(rid) is not int:
                     raise ValueError("审核条目无效")
-                state=approve_one(path,bid,rid,review.get("sha"),int(time.time()),review.get("revision",1))
+                state=approve_one(path,bid,rid,review.get("sha"),int(time.time()),
+                                  review.get("revision",1),review.get("expected_prior"))
                 result.append(dict(id=rid,state=state))
             except ValueError as exc:
                 result.append(dict(id=rid,error=str(exc)))

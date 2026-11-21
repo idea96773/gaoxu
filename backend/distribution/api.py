@@ -81,7 +81,7 @@ def batch_view(db, bid, detail=True):
         result.update(rows=items,failures=failures,publishes=tasks)
     spec=db.execute("SELECT rb.destination,lr.payload FROM reprint_batches rb LEFT JOIN reprint_link_rules lr ON lr.batch=rb.batch WHERE rb.batch=?",(bid,)).fetchone()
     if spec:
-        reviews=reprint.overview(db,bid)
+        reviews=reprint.overview(db,bid,sorted({t["platform"] for t in targets}) if detail else ())
         counts=Counter()
         platforms=defaultdict(Counter)
         for review in reviews:

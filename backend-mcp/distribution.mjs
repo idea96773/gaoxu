@@ -32,7 +32,7 @@ function tool(name,description,inputSchema,call) {
     catch(error){return {isError:true,content:[{type:'text',text:String(error.message)}]}}
   })
 }
-tool('library_list','只读查看配置的本地保存目录及已入库标记',{},()=>api('library'))
+tool('library_list','查看下载目录、原文标识、入库标记及各平台已有的冻结稿模拟任务。选择文章时可按缺少的目标平台补排',{},()=>api('library'))
 tool('reprint_settings','读取管理台保存的常用转载账号、文末链接和排期规则',{},()=>api('reprint-settings'))
 tool('reprint_prepare','按选定目录创建转载批次并返回批次编号。后台逐篇读取资料，使用 batch_status 查询进度，request_id 用于去重',{
   request_id:admission.request_id,directories:z.array(z.string()).min(1).max(100),

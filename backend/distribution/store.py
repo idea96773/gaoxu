@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS rows (
  owner INTEGER REFERENCES rows(id), UNIQUE(batch,line));
 CREATE UNIQUE INDEX IF NOT EXISTS owner_url ON rows(canonical) WHERE kind='article';
 CREATE INDEX IF NOT EXISTS rows_batch ON rows(batch);
+CREATE INDEX IF NOT EXISTS rows_source ON rows(canonical) WHERE canonical IS NOT NULL;
 CREATE TABLE IF NOT EXISTS account_rotation (pool TEXT PRIMARY KEY, position INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS row_targets (
  row_id INTEGER PRIMARY KEY REFERENCES rows(id), targets TEXT NOT NULL);

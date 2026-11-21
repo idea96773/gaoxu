@@ -8,6 +8,7 @@ from pathlib import PurePosixPath
 from urllib.parse import unquote, urlsplit
 from .store import canonicalize, compact, digest
 
+SOURCE_LINK = re.compile(r"(?m)^原文地址[：:]\s*.*?(https://mp\.weixin\.qq\.com/[^\s)<>]+)")
 MEDIA = {".png",".jpg",".jpeg",".gif",".webp",".other"}
 def image_type(data):
     if data.startswith(b"\xff\xd8\xff"):
@@ -68,7 +69,7 @@ def parse_folders(parts):
             if not lines:
                 raise ValueError("Markdown 为空")
             title=lines[0].strip("# ").strip() or label
-            source=re.search(r"(?m)^原文地址[：:]\s*.*?(https://mp\.weixin\.qq\.com/[^\s)<>]+)",md)
+            source=SOURCE_LINK.search(md)
             url=source[1] if source else ""
             canonical=canonicalize(url) if url else None
             if url and not canonical:

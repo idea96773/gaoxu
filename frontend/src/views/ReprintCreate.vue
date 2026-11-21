@@ -3,12 +3,31 @@
   <el-dialog v-model="visible" append-to-body title="从固定目录选择转载文章" width="min(780px, 95vw)" :close-on-click-modal="false">
     <small>{{root}}</small>
     <p><el-input v-model="filter" placeholder="搜索文章标题或目录" clearable /></p>
+    <div class="coverage-tools">
+      <label>筛选文章 <select v-model="coverageFilter">
+        <option value="all">全部</option><option value="missing" :disabled="!selectedPlatforms.length">所选平台有缺项</option>
+        <option value="covered" :disabled="!selectedPlatforms.length">所选平台均有任务</option>
+        <option value="unknown">待识别原文链接</option>
+      </select></label>
+      <el-button size="small" :disabled="loading || !additions.length" @click="addMissing">补选缺排文章（{{additions.length}}）</el-button>
+      <small v-if="!selectedPlatforms.length">勾选下方平台账号后可按缺项补选</small>
+    </div>
     <div class="articles" v-loading="loading">
-      <label v-for="item in filtered" :key="item.directory" :title="item.directory">
-        <input type="checkbox" v-model="dirs" :value="item.directory" :disabled="dirs.length>=100 && !dirs.includes(item.directory)"> {{item.title}}
-      </label>
+      <div v-for="item in pageItems" :key="item.directory" class="catalog-row">
+        <label :title="item.directory"><input type="checkbox" v-model="dirs" :value="item.directory" :disabled="dirs.length>=100 && !dirs.includes(item.directory)"> {{item.title}}</label>
+        <small v-if="!item.source">原文链接待识别，可手动勾选</small>
+        <small v-else-if="selectedPlatforms.length">{{missing(item).length?'待补排　'+missing(item).map(p=>channels[p]).join('、'):'所选平台均已有任务'}}</small>
+        <el-button v-for="job in item.deliveries" :key="job.id" type="primary" link @click="$emit('job',job.id)">
+          {{channels[job.platform] || job.platform}} · {{job.account}} · {{job.control==='paused' && job.state==='ready'?'批次暂停':states[job.state] || job.state}} ›
+        </el-button>
+      </div>
       <p v-if="!filtered.length && !loading">没有找到符合条件的文章。</p>
     </div>
+    <nav v-if="pageCount>1" class="coverage-tools" aria-label="文章目录翻页">
+      <el-button size="small" :disabled="page<=1" @click="page--">上一页</el-button>
+      <span>{{page}} / {{pageCount}} 页 · 共 {{filtered.length}} 篇</span>
+      <el-button size="small" :disabled="page>=pageCount" @click="page++">下一页</el-button>
+    </nav>
     <p>已选 {{dirs.length}} 篇 / 最多 100 篇</p>
     <fieldset><legend>参与轮流分稿的模拟账号</legend>
       <div v-for="(title,p) in channels" :key="p" class="pool"><strong>{{title}}</strong>
@@ -50,7 +69,7 @@
 import {ref, computed, reactive, watch} from 'vue'
 import ScopeSchedule from './ScopeSchedule.vue'
 const props=defineProps({api:Function})
-const emit=defineEmits(['created'])
+const emit=defineEmits(['created','job'])
 const visible=ref(false),busy=ref(false),loading=ref(false),error=ref(''),root=ref(''),items=ref([]),dirs=ref([]),filter=ref('')
 const destination=ref('https://mp.weixin.qq.com/s/YFkz4nZBTLm-GHtqz_5lUw')
 const channels={zhihu:'知乎',toutiao:'今日头条'}
@@ -65,9 +84,36 @@ const rules=reactive({gap:900,account_cap:3,platform_cap:6,start_hour:9,end_hour
 const holidays=ref(''),workdays=ref(''),revision=ref(0),saving=ref(false),notice=ref('')
 const overrides=ref([])
 const fields=[['gap','平台间隔（秒）',1,86400],['account_cap','账号每日上限',1,1000],['platform_cap','平台每日上限',1,10000],['start_hour','开始小时',0,23],['end_hour','结束小时（不含）',1,24]]
-const filtered=computed(()=>items.value.filter(i=>i.directory.includes(filter.value.trim())))
+const coverageFilter=ref('all')
+const states={ready:'已排期',running:'交付中',done:'已模拟交付',failed:'交付失败'}
 const targets=computed(()=>Object.keys(channels).flatMap(platform=>chosen[platform].map(account=>({platform,account}))))
 const selectedPlatforms=computed(()=>Object.keys(channels).filter(p=>chosen[p].length))
+const missing=item=>selectedPlatforms.value.filter(p=>!item.deliveries?.[p])
+const filtered=computed(()=>items.value.filter(item=>{
+  const query=filter.value.trim().toLowerCase()
+  if(!item.directory.toLowerCase().includes(query) && !item.title.toLowerCase().includes(query))return false
+  if(coverageFilter.value==='unknown')return !item.source
+  if(!selectedPlatforms.value.length || coverageFilter.value==='all')return true
+  return item.source && (coverageFilter.value==='missing'?missing(item).length>0:missing(item).length===0)
+}))
+const additions=computed(()=>{
+  if(!selectedPlatforms.value.length || dirs.value.length>=100)return []
+  const selected=new Set(dirs.value)
+  const sources=new Set(items.value.filter(item=>selected.has(item.directory)).map(item=>item.source))
+  const result=[]
+  for(const item of filtered.value){
+    if(!item.source || sources.has(item.source) || !missing(item).length)continue
+    sources.add(item.source);result.push(item.directory)
+    if(selected.size+result.length>=100)break
+  }
+  return result
+})
+const page=ref(1),pageSize=30
+const pageCount=computed(()=>Math.max(1,Math.ceil(filtered.value.length/pageSize)))
+const pageItems=computed(()=>filtered.value.slice((page.value-1)*pageSize,page.value*pageSize))
+watch([filter,coverageFilter,selectedPlatforms,items],()=>{page.value=1})
+function addMissing(){dirs.value=[...dirs.value,...additions.value]}
+watch(selectedPlatforms,platforms=>{if(!platforms.length && ['missing','covered'].includes(coverageFilter.value))coverageFilter.value='all'})
 const links=reactive(Object.fromEntries(Object.keys(channels).map(p=>[p,{mode:'direct',short:'',verified:false}])))
 for(const p of Object.keys(channels)){
   watch(()=>[destination.value,links[p].mode,links[p].short,JSON.stringify(chosen[p])],()=>{links[p].verified=false},{flush:'sync'})
@@ -152,6 +198,7 @@ async function submit(){
 }
 </script>
 <style scoped>
+.coverage-tools{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px}.catalog-row{padding:4px 0;border-bottom:1px solid var(--el-border-color-lighter)}.catalog-row small{margin:0 8px 0 24px;color:var(--el-text-color-secondary)}.catalog-row .el-button{font-size:12px}
 .link-rule{display:grid;gap:6px;margin:10px 0}.link-rule select{margin-left:8px;padding:4px}.articles{max-height:208px;min-height:50px;overflow:auto;border-block:1px solid var(--border);padding:6px 0}
 .articles label{display:block;padding:5px;cursor:pointer}.pool,.rules{display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px;margin:8px 0}.pool>input{width:95px}
 .calendar{margin-top:8px}.calendar label{display:block;margin:6px 0}.defaults{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.defaults small{color:var(--el-text-color-secondary)}

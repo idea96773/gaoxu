@@ -15,8 +15,8 @@
     <el-alert v-if="error" :title="error" type="error" :closable="false"/>
     <el-table :data="batch.reviews" row-key="id">
       <el-table-column width="50"><template #default="{row}"><input type="checkbox" :aria-label="'选择审核 '+row.title" :disabled="row.state!=='pending'||!active" v-model="ids" :value="reviewKey(row)"></template></el-table-column>
-      <el-table-column label="转载文章" min-width="190"><template #default="{row}"><b>{{row.title}}</b><p v-if="row.note">{{row.note}}</p>
-        <template v-if="['pending','approved','duplicate'].includes(row.state)">
+      <el-table-column label="转载文章" min-width="190"><template #default="{row}"><b>{{row.line}} · {{row.title}}</b><p v-if="row.note">{{row.note}}</p>
+        <template v-if="row.sha && ['pending','approved','duplicate'].includes(row.state)">
           <el-button v-for="p in previewPlatforms" :key="p" type="primary" link @click="preview(row,p)">预览{{names[p]}}稿</el-button>
           <el-button v-if="!previewPlatforms.length" type="primary" link @click="preview(row)">预览转载稿</el-button>
         </template>
@@ -25,11 +25,15 @@
         <el-button v-if="row.prepare_state==='failed' && active" link type="primary" @click="$emit('retry',row.prepare_job,row.prepare_attempts)">重新读取这篇</el-button></template></el-table-column>
       <el-table-column label="进度" width="98"><template #default="{row}">{{row.progress==='pending'?'待审核':label(row.progress)}}</template></el-table-column>
       <el-table-column label="模拟账号、排期和回执" min-width="230"><template #default="{row}">
+        <template v-if="row.state==='pending'">
+          <small v-if="row.missing_platforms?.length">审核后排期　{{row.missing_platforms.map(p=>names[p]).join('、')}}</small>
+          <div v-for="job in row.prior_jobs" :key="job.id"><el-button link @click="$emit('job',job.id)">已有任务 · {{names[job.platform]}} · {{job.account}} · {{label(job.state)}} ›</el-button></div>
+        </template>
         <div v-for="a in row.assignments" :key="a.platform" class="assignment"><el-button link @click="$emit('job',a.id)">{{names[a.platform]}} · {{a.account}} · {{label(a.state)}} ›</el-button>
           <small>{{date(a.slot)}}　{{a.reused?'沿用原冻结稿及排期，本批跳过':''}}</small>
           <small v-if="a.draft_recipient_id">知乎草稿接收账号　{{a.draft_recipient}}（{{a.draft_recipient_id}}）</small>
           <a :href="'/api/distribution/editorial/'+a.draft+'/export'">下载冻结稿</a></div>
-        <span v-if="!row.assignments.length">—</span></template></el-table-column>
+        <span v-if="!row.assignments.length && row.state!=='pending'">—</span></template></el-table-column>
     </el-table>
     <el-drawer v-model="opened" append-to-body :title="(names[previewPlatform] || '转载稿')+'审核预览'" size="min(820px, 96vw)">
       <template v-if="view"><p>{{view.images.length}} 处配图 · {{view.link.mode==='omit'?'不追加延伸阅读':'读者链接　'+(view.link.short || view.link.destination)}}</p>
@@ -46,7 +50,8 @@ const clock=m=>[Math.floor(m/60),m%60].map(n=>String(n).padStart(2,'0')).join(':
 const emit=defineEmits(['job','refresh','retry'])
 const ids=ref([]),error=ref(''),busy=ref(false),opened=ref(false),view=ref(null)
 const pending=computed(()=>props.batch.reviews.filter(r=>r.state==='pending'))
-const reviewKey=r=>[r.id,r.revision,r.sha].join(':')
+const priorIds=r=>Object.fromEntries((r.prior_jobs || []).map(job=>[job.platform,job.id]))
+const reviewKey=r=>[r.id,r.revision,r.sha,JSON.stringify(r.expected_prior || priorIds(r))].join(':')
 const checked=computed(()=>pending.value.filter(r=>ids.value.includes(reviewKey(r))))
 const active=computed(()=>props.batch.control==='active')
 const pool=computed(()=>Object.entries(props.names).flatMap(([p,label])=>{
@@ -81,7 +86,7 @@ async function preview(r,platform=''){
   }catch(e){error.value=e.message}
 }
 async function approve(){
-  const items=checked.value.map(({id,sha,revision})=>({id,sha,revision})),bid=props.batch.id
+  const items=checked.value.map(row=>({id:row.id,sha:row.sha,revision:row.revision,expected_prior:priorIds(row)})),bid=props.batch.id
   try{await ElMessageBox.confirm('确认已审核这 '+items.length+' 篇原文、配图和文末链接，可按本批账号与规则模拟交付？','确认转载审核',{confirmButtonText:'确认模拟排期',cancelButtonText:'返回'})}catch{return}
   busy.value=true;error.value=''
   try{const result=await props.api('reprints/'+bid+'/approve',{approved:true,items})

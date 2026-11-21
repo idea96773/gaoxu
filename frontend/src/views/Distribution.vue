@@ -4,7 +4,7 @@
       <div><h1>{{calendarView?'排期日历':searching?'跨批次查询':'文章分发'}}</h1><p v-if="!searching && !calendarView">本地导入 · 平台成稿审核 · 模拟排期与发布 · 北京时间</p></div>
       <div v-if="searching || calendarView" class="actions"><el-button v-if="searching" @click="openCalendar">排期日历</el-button><el-button @click="leaveSearch">返回批次管理</el-button></div>
       <div v-else class="actions"><el-button @click="failuresOpen=true">跨批次失败待办</el-button><el-button @click="openCalendar">排期日历</el-button><el-button @click="router.push({query:{...route.query,view:'search'}})">跨批次查询</el-button><el-button :type="online ? 'success' : 'warning'" plain @click="runtimeOpen=true">{{online ? '调度器在线' : '查看调度器状态'}}</el-button>
-        <el-button @click="openDraftAccounts('')">知乎草稿账号</el-button><ReprintCreate :api="api" @created="openReprint" /><el-button @click="showImport=true">导入文章</el-button></div>
+        <el-button @click="openDraftAccounts('')">知乎草稿账号</el-button><ReprintCreate :api="api" @created="openReprint" @job="openJob" /><el-button @click="showImport=true">导入文章</el-button></div>
     </header>
     <el-alert v-if="error" :title="error" type="error" show-icon @close="error=''" />
     <ScheduleCalendar v-if="calendarView" :api="api" :names="names" :label="label" @platforms="names=$event" />

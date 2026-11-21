@@ -10,6 +10,22 @@ def delivery_key(job):
     return digest(compact(["frozen-dry-run", job["canonical"], job["platform"], job["account"]]))
 
 
+def existing_deliveries(db, identities):
+    """Return the earliest uncancelled frozen job for each source and platform."""
+    keys=list(dict.fromkeys(key for key in identities if key))
+    by_source={}
+    for start in range(0,len(keys),400):
+        group=keys[start:start+400]
+        placeholders=",".join("?" for _ in group)
+        rows=db.execute(f"""SELECT r.canonical,r.batch,j.id,j.platform,j.account,j.state,j.slot,b.control
+            FROM rows r JOIN jobs j ON j.row_id=r.id JOIN frozen_deliveries f ON f.job=j.id
+            JOIN batches b ON b.id=r.batch WHERE r.canonical IN ({placeholders})
+            AND j.stage='deliver' AND j.state!='cancelled' ORDER BY j.id""",group)
+        for row in rows:
+            by_source.setdefault(row["canonical"],{}).setdefault(row["platform"],dict(row))
+    return by_source
+
+
 def schedule(path, draft_id, data, now):
     with transaction(path) as db:
         return schedule_in(db, draft_id, data, now)

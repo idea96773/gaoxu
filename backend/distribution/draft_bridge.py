@@ -7,6 +7,14 @@ from contextlib import contextmanager
 from .store import transaction
 
 
+def local_component_ready():
+    try:
+        from websockets.sync.server import serve
+    except (ImportError, OSError):
+        return False
+    return callable(serve)
+
+
 def status(db):
     now=int(time.time())
     runtime=db.execute("""SELECT r.port,r.check_only,r.phase,r.seen,s.job FROM zhihu_bridge_runtime r
@@ -24,7 +32,8 @@ def status(db):
     if phase=="connected" and not identity:
         phase="checking"
     return dict(connected=connected,account=dict(identity) if identity and identity["user_id"] else None,
-                bridge=dict(online=online or bool(identity),phase=phase,port=runtime["port"] if online else None,
+                bridge=dict(component_ready=local_component_ready(),
+                            online=online or bool(identity),phase=phase,port=runtime["port"] if online else None,
                             check_only=bool(online and runtime["check_only"]),job_id=runtime["job"] if online else None))
 
 

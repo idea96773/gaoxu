@@ -70,11 +70,15 @@ def recipient(db,job,alias,existing):
     return (dict(binding),"binding") if binding else (None,"unbound")
 
 
+def local_console_request():
+    host=urlsplit(request.host_url).hostname
+    origin=request.headers.get("Origin")
+    return host in ("127.0.0.1","localhost","::1") and (not origin or origin==request.host_url.rstrip("/"))
+
+
 def register(api,path,body):
     def require_local():
-        host=urlsplit(request.host_url).hostname
-        origin=request.headers.get("Origin")
-        if host not in ("127.0.0.1","localhost","::1") or (origin and origin!=request.host_url.rstrip("/")):
+        if not local_console_request():
             raise ValueError("请从本机稿序管理台操作")
 
     @api.get("/zhihu-draft-accounts")

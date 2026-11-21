@@ -4,6 +4,7 @@ from calendar import monthrange
 
 from flask import jsonify, request
 
+from .platform_draft import local_console_request
 from .store import BEIJING, EXECUTION_SLOT, PLATFORMS, transaction
 
 
@@ -48,10 +49,13 @@ records AS (
     FROM reprint_reviews q JOIN articles a ON a.row_id=q.row_id WHERE q.state IN ('preparing','pending','invalid','returned')
 )
 SELECT a.row_id,a.batch,a.created,a.control,a.title,x.edition,x.stage,x.platform,x.account,
-       x.job_id,x.state,x.slot,x.execution_slot,x.received,p.state AS draft_state
+       x.job_id,x.state,x.slot,x.execution_slot,x.received,p.state AS draft_state,p.updated AS draft_updated,
+       coalesce(pin.user_id,p.user_id) AS recipient_id,coalesce(pin.name,p.name) AS recipient_name
        FROM records x JOIN articles a ON a.row_id=x.row_id LEFT JOIN platform_drafts p ON p.job=x.job_id
+       LEFT JOIN zhihu_draft_recipients pin ON pin.job=x.job_id
 """
-DATE_FIELDS = {"scheduled":"slot", "execution":"execution_slot", "delivered":"received", "imported":"created"}
+DATE_FIELDS = {"scheduled":"slot", "execution":"execution_slot", "delivered":"received", "imported":"created",
+               "draft_updated":"draft_updated"}
 PAGE_SIZE = 25
 
 
@@ -83,11 +87,19 @@ def day_start(value, following=False):
         raise ValueError("日期应为有效的年-月-日") from None
 
 
-def search(db, args):
+def search(db, args, *, include_recipients=False):
     field = DATE_FIELDS.get(args.get("date_field", "scheduled"))
     if not field:
         raise ValueError("未知的日期类型")
     filters, values = [], []
+    if field=="draft_updated":
+        filters.append("draft_updated IS NOT NULL")
+    recipient=args.get("draft_recipient","").strip()
+    if recipient:
+        if not include_recipients:
+            raise ValueError("请从本机稿序管理台查询知乎接收账号")
+        filters.append("(recipient_id=? OR instr(lower(recipient_name),lower(?))>0)")
+        values.extend((recipient,recipient))
     work=args.get("work","")
     if work:
         scopes={"pending_reprint":"stage='review' AND state='pending' AND control='active'",
@@ -100,7 +112,9 @@ def search(db, args):
     review=args.get("draft_review","")
     if review:
         conditions={"awaiting":"draft_state IN ('saved','unknown')","issue":"draft_state='needs_review'",
-                    "verified":"draft_state='verified'"}
+                    "verified":"draft_state='verified'","waiting":"draft_state='queued'",
+                    "saving":"draft_state IN ('preparing','sending')","failed":"draft_state='failed'",
+                    "uncertain":"draft_state='unknown'","cancelled":"draft_state='cancelled'"}
         if review not in conditions:
             raise ValueError("未知的平台草稿核对状态")
         filters.append(conditions[review])
@@ -133,7 +147,9 @@ def search(db, args):
     sql = " FROM ("+RECORDS+")" + (" WHERE "+" AND ".join(filters) if filters else "")
     total = db.execute("SELECT count(*)"+sql,values).fetchone()[0]
     page = min(page,max(1,(total+PAGE_SIZE-1)//PAGE_SIZE))
-    rows = db.execute("SELECT *"+sql+" ORDER BY "+field+" DESC, created DESC,row_id DESC,"
+    columns="*" if include_recipients else ("row_id,batch,created,control,title,edition,stage,platform,account,"
+        "job_id,state,slot,execution_slot,received,draft_state,draft_updated")
+    rows = db.execute("SELECT "+columns+sql+" ORDER BY "+field+" DESC, created DESC,row_id DESC,"
                       "job_id DESC,platform,account LIMIT ? OFFSET ?",values+[PAGE_SIZE,(page-1)*PAGE_SIZE])
     return dict(items=[dict(r) for r in rows],total=total,page=page,page_size=PAGE_SIZE)
 
@@ -209,7 +225,7 @@ def register(api,path):
     @api.get("/article-search")
     def search_articles():
         with transaction(path,False) as db:
-            return jsonify(search(db,request.args))
+            return jsonify(search(db,request.args,include_recipients=local_console_request()))
 
     @api.get("/article-search/accounts")
     def search_accounts():

@@ -4,16 +4,19 @@
       <label class="title-filter">文章标题<input v-model.trim="form.title" type="search" placeholder="输入原文或平台稿标题关键词"></label>
       <label>平台<select v-model="form.platform" @change="syncAccount"><option value="">全部平台</option>
         <option v-for="p in platforms" :value="p" :key="p">{{names[p] || p}}</option></select></label>
-      <label>账号<select v-model="form.account"><option value="">全部账号</option>
+      <label>分稿账号<select v-model="form.account"><option value="">全部账号</option>
         <option v-for="a in accounts" :key="a">{{a}}</option></select></label>
       <div class="date-row">
         <label>工作进度<select v-model="form.work" @change="switchWork"><option value="">全部进度</option>
           <option value="pending_reprint">待审转载</option><option value="returned_reprint">审核退回</option>
           <option value="queued_delivery">冻结稿待交付</option>
           <option value="confirmed_delivery">冻结稿已模拟交付</option></select></label>
-        <label>知乎草稿核对<select v-model="form.draft_review"><option value="">全部</option>
-          <option value="awaiting">待核对</option><option value="issue">发现问题</option><option value="verified">已核对通过</option></select></label>
-        <label>日期类型<select v-model="form.date_field"><option value="scheduled">计划排期日</option><option value="execution">预计执行日</option><option value="delivered">实际交付日期</option><option value="imported">导入日期</option></select></label>
+        <label v-if="showZhihu">知乎接收账号<input v-model.trim="form.draft_recipient" type="search" placeholder="锁定的昵称或完整账号 ID"></label>
+        <label v-if="showZhihu">知乎草稿状态<select v-model="form.draft_review"><option value="">全部</option>
+          <option value="waiting">等待保存</option><option value="saving">正在准备或保存</option><option value="failed">准备失败</option>
+          <option value="awaiting">待人工核对</option><option value="uncertain">回执不确定</option>
+          <option value="issue">核对发现问题</option><option value="verified">已核对通过</option><option value="cancelled">已取消</option></select></label>
+        <label>日期类型<select v-model="form.date_field"><option value="scheduled">计划排期日</option><option value="execution">预计执行日</option><option value="delivered">模拟交付日</option><option value="imported">导入日期</option><option v-if="showZhihu" value="draft_updated">知乎草稿最近更新日</option></select></label>
         <label>开始日期<input type="date" v-model="form.start"></label>
         <label>结束日期<input type="date" v-model="form.end"></label>
         <div class="commands"><el-button type="primary" native-type="submit">查询</el-button><el-button @click="reset">重置</el-button></div>
@@ -25,12 +28,14 @@
       <el-table-column label="文章 / 批次" min-width="235"><template #default="{row}">
         <strong>{{row.title}}</strong><div v-if="row.edition && row.edition!==row.title" class="secondary">平台稿 · {{row.edition}}</div>
         <div class="secondary">{{kinds[row.stage]}} · 批次 {{row.batch.slice(0,8)}} · 导入 {{date(row.created)}}</div></template></el-table-column>
-      <el-table-column label="平台 / 账号" min-width="105"><template #default="{row}">{{names[row.platform] || '—'}}<div class="secondary">{{row.account || '待分配'}}</div></template></el-table-column>
+      <el-table-column label="平台 / 账号" min-width="135"><template #default="{row}">{{names[row.platform] || '—'}}<div class="secondary">{{row.account || '待分配'}}</div>
+        <div v-if="row.recipient_id" class="secondary">知乎接收账号　{{row.recipient_name}}<br>ID　{{row.recipient_id}}</div></template></el-table-column>
       <el-table-column label="计划交付" min-width="147"><template #default="{row}">{{date(row.slot)}}
         <small v-if="row.execution_slot>row.slot" class="secondary">顺延至 {{date(row.execution_slot)}}</small></template></el-table-column>
-      <el-table-column label="实际交付" min-width="137"><template #default="{row}">{{date(row.received)}}</template></el-table-column>
+      <el-table-column label="实际模拟交付" min-width="137"><template #default="{row}">{{date(row.received)}}</template></el-table-column>
       <el-table-column label="交付状态" width="116"><template #default="{row}"><el-tag :type="colors[row.state] || 'info'">{{states[row.state] || label(row.state)}}</el-tag>
         <div v-if="row.draft_state" class="secondary">知乎草稿 · {{draftStates[row.draft_state] || row.draft_state}}</div>
+        <div v-if="row.draft_updated" class="secondary">草稿更新 {{date(row.draft_updated)}}</div>
         <div v-if="row.control==='paused' && ['ready','unscheduled','pending','returned'].includes(row.state)" class="secondary">批次已暂停</div>
         <el-button v-if="row.job_id" link @click="$emit('job',row.job_id)">任务详情</el-button>
         <router-link v-if="row.stage==='review' && row.state==='pending' && row.control==='active'"
@@ -50,7 +55,7 @@ import {useRoute,useRouter} from 'vue-router'
 const props=defineProps({api:Function,names:Object,date:Function,label:Function,version:Number})
 const emit=defineEmits(['job','platforms'])
 const route=useRoute(),router=useRouter()
-const defaults={title:'',platform:'',account:'',draft_review:'',work:'',date_field:'scheduled',start:'',end:''}
+const defaults={title:'',platform:'',account:'',draft_review:'',draft_recipient:'',work:'',date_field:'scheduled',start:'',end:''}
 const draftStates={queued:'待保存',preparing:'准备中',sending:'保存中',saved:'待核对',unknown:'回执待核对',
   needs_review:'发现问题',verified:'已核对通过',failed:'准备失败',cancelled:'已取消'}
 const form=reactive({...defaults}),choices=ref([]),error=ref(''),loading=ref(false),loaded=ref(false)
@@ -61,9 +66,16 @@ const colors={done:'success',failed:'danger',blocked:'danger',invalid:'danger',r
 const states={preparing:'准备转载资料',done:'已模拟交付',pending:'待审核',returned:'审核退回',invalid:'资料异常',blocked:'排期前失败',unscheduled:'待排期'}
 const platforms=computed(()=>[...new Set([...Object.keys(props.names),...choices.value.map(x=>x.platform)])])
 const accounts=computed(()=>[...new Set(choices.value.filter(x=>!form.platform || x.platform===form.platform).map(x=>x.account))].sort())
-function syncAccount(){if(!accounts.value.includes(form.account))form.account=''}
+const showZhihu=computed(()=>!form.platform || form.platform==='zhihu')
+function syncAccount(){
+  if(!accounts.value.includes(form.account))form.account=''
+  if(!showZhihu.value){
+    form.draft_recipient='';form.draft_review=''
+    if(form.date_field==='draft_updated')form.date_field='scheduled'
+  }
+}
 function switchWork(){
-  if(['pending_reprint','returned_reprint'].includes(form.work)){form.date_field='imported';form.platform='';form.account='';form.draft_review=''}
+  if(['pending_reprint','returned_reprint'].includes(form.work)){form.date_field='imported';form.platform='';form.account='';form.draft_review='';form.draft_recipient=''}
   if(form.work==='queued_delivery')form.date_field='execution'
   if(form.work==='confirmed_delivery')form.date_field='delivered'
 }

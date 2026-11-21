@@ -512,6 +512,17 @@ class Reprint(unittest.TestCase):
         self.assertEqual(grant(frozen,sha,"fixture-a").status_code,200)
         self.assertEqual(queue(frozen,sha,"fixture-a").status_code,200)
         self.assertEqual(self.client.get(frozen).json["record"]["user_id"],"fixture-a")
+        query=BASE+"article-search"
+        def by_recipient(value):
+            return self.client.get(query,query_string={"draft_recipient":value,"draft_review":"waiting"}).json["items"]
+        self.assertEqual({item["job_id"] for item in by_recipient("fixture-a")},
+                         {int(url.split("/")[-2]) for url in (early,frozen)})
+        self.assertEqual([item["job_id"] for item in by_recipient("fixture-b")],[int(later.split("/")[-2])])
+        self.assertEqual({item["recipient_id"] for item in by_recipient("相同昵称")},{"fixture-a","fixture-b"})
+        self.assertFalse(by_recipient("fixture-"))
+        external={"Origin":"https://example.invalid"}
+        self.assertNotIn("recipient_id",self.client.get(query,headers=external).json["items"][0])
+        self.assertEqual(self.client.get(query,query_string={"draft_recipient":"fixture-a"},headers=external).status_code,400)
 
     def test_withdraw_recipient_rights_before_send(self):
         from . import platform_draft
@@ -651,6 +662,14 @@ class Reprint(unittest.TestCase):
         self.assertEqual(self.client.post(BASE+f"jobs/{two['id']}/platform-draft",
                                           json=initial|{"sha":two["sha"]}).status_code,400)
         self.assertEqual(self.client.get(BASE+"article-search?draft_review=issue").json["total"],0)
+        # Older records without a pin keep the account recorded at submission.
+        updated=self.client.get(url).json["record"]["updated"]
+        day=datetime.fromtimestamp(updated,BEIJING).date().isoformat()
+        args=dict(draft_recipient="test-account",date_field="draft_updated",start=day,end=day)
+        row,=self.client.get(BASE+"article-search",query_string=args).json["items"]
+        self.assertEqual((row["job_id"],row["recipient_id"],row["draft_updated"]),(one["id"],"test-account",updated))
+        uncertain=self.client.get(BASE+"article-search",query_string=dict(draft_review="uncertain")).json["items"]
+        self.assertEqual([r["job_id"] for r in uncertain],[two["id"]])
 
     def test_selected_source_survives_restart_and_folder_replacement(self):
         dirs=[self.source(i) for i in (51,52)]

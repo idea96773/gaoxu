@@ -62,6 +62,10 @@
 
 ## Agent 入口与复验
 
+在管理台点「调度器在线」（离线时显示「查看调度器状态」），打开「Agent 调用日志」。这里保留最近 5000 次带稿序 MCP 标记、已到达本机服务的业务请求，可查看工具名、北京时间、相关批次或任务编号和接口结果。批量重试列出实际重新排队数。接口已接收请求后，交付进度仍以批次或任务详情为准。「尚无结束记录」表示结果待核对，重新操作前可先查任务。查询日志本身、客户端参数校验失败和连接本机服务前的失败不计入日志。记录字段仅包含操作元数据。
+
+Agent 可先用 `account_list` 查分稿账号，再用 `schedule_calendar` 按年月、平台和账号看每日任务数，用 `article_search` 查明细。使用 `agent_runs` 可读取与管理台相同的调用记录，传回 `next` 作为 `before` 可读取更早一页。
+
 可选的 backend-mcp/distribution.mjs 使用 QianFan 的 MCP SDK，通过 stdio 暴露本地分发与编辑工具。使用前在 backend-mcp 下 npm.cmd ci，启动命令为 node 后接该文件的绝对路径。library_list 可列固定目录，library_import 只接受清单中的相对目录。此阶段没有修改任何现用 DSH Profile，也没有启用 QianFan 的真实发布 MCP。
 
 ```powershell

@@ -1,8 +1,10 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
+import { AsyncLocalStorage } from 'node:async_hooks'
 
 const server = new McpServer({ name: 'gaoxu-distribution', version: '1.0.0' })
+const activeTool = new AsyncLocalStorage()
 const target = z.object({platform:z.enum(['zhihu','xiaohongshu','weixin','toutiao','weibo','baijiahao','sohu']),account:z.string().min(1).max(40)})
 const admission = {account_routing:z.enum(["rotate","all"]).optional(),request_id:z.string().min(1).max(128),targets:z.array(target).min(1).max(28)}
 const batchId = z.string().regex(/^[a-f0-9]{32}$/)
@@ -21,14 +23,15 @@ const reprintRule = z.object({
 })
 async function api(path, body) {
   const options = body === undefined ? {} : {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}
-  const response = await fetch('http://127.0.0.1:5419/api/distribution/'+path,{...options,signal:AbortSignal.timeout(60000)})
+  const headers = {...options.headers, 'X-Gaoxu-MCP-Tool':activeTool.getStore()}
+  const response = await fetch('http://127.0.0.1:5419/api/distribution/'+path,{...options,headers,signal:AbortSignal.timeout(60000)})
   const data = await response.json()
   if (!response.ok) throw new Error(data.error || response.statusText)
   return data
 }
 function tool(name,description,inputSchema,call) {
   server.registerTool(name,{description,inputSchema},async args=>{
-    try {return {content:[{type:'text',text:JSON.stringify(await call(args))}]}}
+    try {return {content:[{type:'text',text:JSON.stringify(await activeTool.run(name,call,args))}]}}
     catch(error){return {isError:true,content:[{type:'text',text:String(error.message)}]}}
   })
 }
@@ -53,6 +56,14 @@ tool('article_search','按标题、平台、账号以及北京时间日期跨批
   date_field:z.enum(['scheduled','execution','delivered','imported']).optional(),start:day.optional(),end:day.optional(),page:jobId.optional()
 },a=>api('article-search?'+new URLSearchParams(a)))
 tool('scheduler_status','读取服务心跳、活动批次积压、过期租约与待核对的草稿回执',{},()=>api('runtime-status'))
+tool('account_list','按平台列出已有分稿目标的账号别名',{},()=>api('article-search/accounts'))
+tool('schedule_calendar','按北京时间月份查看每天的任务状态及数量，可选原排期或预计执行日',{
+  month:z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),date_field:z.enum(['scheduled','execution']).optional(),
+  platform:target.shape.platform.optional(),account:target.shape.account.optional()
+},args=>api('schedule-calendar?'+new URLSearchParams(args)))
+tool('agent_runs','查看最近到达管理台的 Agent 调用记录，使用 next 向前翻页',{
+  before:jobId.optional()
+},args=>api('agent-runs?'+new URLSearchParams(args)))
 tool('library_import','导入最多 100 个已列出的本地文章目录并开始模拟处理',{...admission,directories:z.array(z.string()).min(1).max(100)},a=>api('library',a))
 tool('article_batch_import','以模拟正文处理手工提交的微信链接',{...admission,urls:z.array(z.string()).min(1).max(1000)},a=>api('batches',a))
 tool('dashboard_summary','模拟批次及调度器心跳',{},()=>api('batches'))

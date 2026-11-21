@@ -71,6 +71,9 @@ CREATE TABLE IF NOT EXISTS reprint_assignments (
  reused INTEGER NOT NULL, PRIMARY KEY(row_id,platform));
 CREATE INDEX IF NOT EXISTS reprint_identity ON rows(canonical) WHERE kind='reprint';
 CREATE INDEX IF NOT EXISTS ready_jobs ON jobs(state,due,id);
+CREATE TABLE IF NOT EXISTS agent_runs (
+ id INTEGER PRIMARY KEY, tool TEXT NOT NULL, started INTEGER NOT NULL, finished INTEGER,
+ status_code INTEGER, subject TEXT NOT NULL, applied INTEGER, requested INTEGER);
 CREATE INDEX IF NOT EXISTS calendar ON jobs(stage,platform,slot);
 CREATE TABLE IF NOT EXISTS attempts (
  id INTEGER PRIMARY KEY, job INTEGER NOT NULL REFERENCES jobs(id), seq INTEGER NOT NULL,

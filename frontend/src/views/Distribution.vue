@@ -74,8 +74,11 @@
     <el-dialog v-model="accountsOpen" title="知乎草稿账号" append-to-body width="min(650px, 95vw)">
       <DraftAccounts v-if="accountsOpen" :api="api" :initial-alias="draftAlias" @changed="bindingVersion++" />
     </el-dialog>
-    <el-dialog v-model="runtimeOpen" title="调度器运行状态" width="min(580px, 95vw)">
-      <RuntimeStatus v-if="runtimeOpen" :api="api" :date="date" />
+    <el-dialog v-model="runtimeOpen" title="运行记录" width="min(920px, 95vw)">
+      <el-tabs v-if="runtimeOpen" model-value="runtime">
+        <el-tab-pane label="调度器状态" name="runtime"><RuntimeStatus :api="api" :date="date" /></el-tab-pane>
+        <el-tab-pane label="Agent 调用日志" name="agent" lazy><AgentRuns :api="api" :date="date" /></el-tab-pane>
+      </el-tabs>
     </el-dialog>
     <el-dialog v-model="showImport" title="导入文章" width="min(660px, 94vw)" :close-on-click-modal="false">
       <el-radio-group v-model="source"><el-radio-button value="library">固定保存目录</el-radio-button><el-radio-button value="folder">另选文件夹</el-radio-button><el-radio-button value="url">链接模拟</el-radio-button></el-radio-group>
@@ -144,6 +147,7 @@ import DraftAccounts from './DraftAccounts.vue'
 import PlatformDraftPanel from './PlatformDraftPanel.vue'
 import FailedJobs from "./FailedJobs.vue"
 import RuntimeStatus from "./RuntimeStatus.vue"
+import AgentRuns from "./AgentRuns.vue"
 import ReprintCreate from "./ReprintCreate.vue"
 import ReprintReview from "./ReprintReview.vue"
 import EditorialPanel from "./EditorialPanel.vue"

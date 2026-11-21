@@ -306,6 +306,8 @@ def make_blueprint(path,root):
     register(api,path,body)
     reprint.register(api,path,root,body)
     search.register(api,path)
+    from . import agent_runs
+    agent_runs.register(api,path)
     platform_draft.register(api,path,body)
     return api
 

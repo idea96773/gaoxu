@@ -46,10 +46,10 @@ tool('reprint_prepare','按选定目录创建转载批次并返回批次编号�
     z.object({mode:z.literal('short'),short:z.string().url(),verified:z.literal(true)})
   ]).optional()]))).optional()
 },a=>api('reprints',a))
-tool('reprint_preview','读取转载预览。使用平台专属文末链接时请指定平台，edition_sha 可用于核对该平台冻结稿',{batch:batchId,row:jobId,platform:z.enum(['zhihu','toutiao']).optional()},async a=>{
-  const {sha,snapshot,revision,edition_sha}=await api('reprints/'+a.batch+'/'+a.row+(a.platform?'?platform='+a.platform:''))
+tool('reprint_preview','按平台读取转载待审稿或已有任务绑定的冻结稿；job、account、reused 标明原任务和接收账号，edition_sha 可用于核对版本。存在沿用任务或专属文末链接时须指定平台',{batch:batchId,row:jobId,platform:z.enum(['zhihu','toutiao']).optional()},async a=>{
+  const {sha,snapshot,revision,edition_sha,job,account,reused}=await api('reprints/'+a.batch+'/'+a.row+(a.platform?'?platform='+a.platform:''))
   if(!snapshot)throw new Error('该条目的原始资料异常，请先查看批次详情')
-  return {sha,edition_sha,revision,platform:a.platform,title:snapshot.title,text:snapshot.text,images:snapshot.images,link:snapshot.link}
+  return {sha,edition_sha,revision,platform:a.platform,job,account,reused,title:snapshot.title,text:snapshot.text,images:snapshot.images,link:snapshot.link}
 })
 tool('article_search','按标题、平台、账号以及北京时间日期跨批次查询模拟记录',{
   title:z.string().optional(),platform:target.shape.platform.optional(),account:z.string().optional(),

@@ -268,20 +268,26 @@ def approve_one(path,bid,rid,sha,now,revision=1,expected_prior=None):
         reviewed=json.loads(row["snapshot"])
         assigned=[]
         history=existing_deliveries(db,[row["canonical"]]).get(row["canonical"],{})
+        pools=pools_for(json.loads(row["targets"]))
         if expected_prior is not None:
-            if not isinstance(expected_prior,dict) or any(type(v) is not int or history.get(p,{}).get("id")!=v
-                                                          for p,v in expected_prior.items()):
+            current={p:history[p]["id"] for p in pools if p in history}
+            if (not isinstance(expected_prior,dict) or any(type(v) is not int for v in expected_prior.values())
+                    or expected_prior!=current):
                 raise ValueError("计划沿用的任务已变化，请刷新后重新核对需排期的平台")
-        for p,accounts in pools_for(json.loads(row["targets"])).items():
+        for p,accounts in pools.items():
             prior=history.get(p)
+            view=reviewed["editions"][p] if "editions" in reviewed else reviewed
             if prior:
+                if expected_prior is None:
+                    frozen_sha=db.execute("SELECT sha FROM frozen_deliveries WHERE job=?",(prior["id"],)).fetchone()[0]
+                    if frozen_sha!=digest(compact(view)):
+                        raise ValueError("已有任务与本次送审稿不同，请按平台核对冻结稿并确认沿用任务")
                 db.execute("INSERT INTO reprint_assignments VALUES(?,?,?,1)",(rid,p,prior["id"]))
                 continue
             pool=compact(["reprint",p,accounts])
             cursor=db.execute("SELECT position FROM account_rotation WHERE pool=?",(pool,)).fetchone()
             position=cursor[0] if cursor else 0
             account=accounts[position%len(accounts)]
-            view=reviewed["editions"][p] if "editions" in reviewed else reviewed
             did=db.execute("""INSERT INTO drafts(row_id,platform,account,rev,state,title,body,provider,frozen)
                 VALUES(?,?,?,1,'approved',?,?,'reprint',?)""",(rid,p,account,view["title"],view["text"],compact(view))).lastrowid
             job=schedule_in(db,did,{},now)
@@ -372,7 +378,7 @@ def register(api,path,root,body):
     @api.get("/reprints/<bid>/<int:rid>")
     def preview_reprint(bid,rid):
         with transaction(path,False) as db:
-            r=db.execute("""SELECT q.*,coalesce(j.revision,1) revision,b.targets FROM reprint_reviews q JOIN rows r ON r.id=q.row_id
+            r=db.execute("""SELECT q.*,coalesce(j.revision,1) revision,b.targets,r.canonical,r.owner FROM reprint_reviews q JOIN rows r ON r.id=q.row_id
                 JOIN batches b ON b.id=r.batch
                 LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'
                 WHERE r.batch=? AND r.id=?""",(bid,rid)).fetchone()
@@ -380,17 +386,35 @@ def register(api,path,root,body):
                 raise KeyError("找不到转载稿")
             if r["state"] not in ("pending","approved","duplicate"):
                 return jsonify(error="这篇文章尚无可审核的稿件"),409
-            if not r["sha"]:
-                return jsonify(error="本条沿用了已有任务，请从原任务查看冻结稿"),409
             platform=request.args.get("platform")
             platforms=pools_for(json.loads(r["targets"]))
             if platform is not None and platform not in platforms:
                 raise ValueError("该平台不在本批次中")
+            if r["state"]=="pending":
+                history=existing_deliveries(db,[r["canonical"]]).get(r["canonical"],{})
+                jobs={p:(history[p]["id"],True) for p in platforms if p in history}
+            else:
+                jobs={a["platform"]:(a["job"],bool(a["reused"] or r["owner"])) for a in db.execute(
+                    "SELECT platform,job,reused FROM reprint_assignments WHERE row_id=?", (r["owner"] or rid,))}
+            if not platform and any(reused for _,reused in jobs.values()):
+                raise ValueError("已有平台任务，请选择平台核对对应冻结稿")
+            if platform in jobs:
+                job,reused=jobs[platform]
+                frozen=db.execute("""SELECT f.snapshot,f.sha,j.account FROM frozen_deliveries f
+                    JOIN jobs j ON j.id=f.job WHERE f.job=?""",(job,)).fetchone()
+                if not frozen or digest(frozen["snapshot"])!=frozen["sha"]:
+                    return jsonify(error="任务绑定的冻结稿校验失败，请核对任务记录"),409
+                return jsonify(snapshot=json.loads(frozen["snapshot"]),platform=platform,
+                               edition_sha=frozen["sha"],sha=r["sha"],revision=r["revision"],
+                               job=job,account=frozen["account"],reused=reused)
+            if not r["sha"]:
+                return jsonify(error="该条目暂无可预览的平台稿件"),409
             reviewed=json.loads(r["snapshot"])
             if "editions" in reviewed and not platform:
                 raise ValueError("此稿使用平台专属文末链接，请选择平台预览")
             view=reviewed["editions"][platform] if "editions" in reviewed else reviewed
-            return jsonify(snapshot=view,platform=platform,edition_sha=digest(compact(view)),sha=r["sha"],revision=r["revision"])
+            return jsonify(snapshot=view,platform=platform,edition_sha=digest(compact(view)),sha=r["sha"],
+                           revision=r["revision"],job=None,account=None,reused=False)
 
     @api.post("/reprints/<bid>/approve")
     def approve_reprints(bid):

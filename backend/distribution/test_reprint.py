@@ -154,6 +154,38 @@ class Reprint(unittest.TestCase):
         self.assertEqual(self.batch(second)["deliveries"],[])
         self.assertEqual(set(self.batch(second)["reviews"][0]["missing_platforms"]),{"toutiao","zhihu"})
 
+    def test_new_prior_after_preview_uses_actual_frozen_footer_and_isolates_approval(self):
+        directory,other=self.source(41),self.source(42)
+        self.targets=[dict(platform="zhihu",account="甲")]
+        first=self.create([directory],"earlier")
+        self.targets.append(dict(platform="toutiao",account="乙"))
+        response=self.client.post(BASE+"reprints",json=dict(request_id="later",directories=[directory,other],
+            targets=self.targets,links={"zhihu":{"mode":"omit"}}))
+        second=response.json["id"]
+        self.prepare()
+        row,independent=self.batch(second)["reviews"]
+        url=BASE+f"reprints/{second}/{row['id']}?platform=zhihu"
+        self.assertEqual(self.client.get(url).json["snapshot"]["link"]["mode"],"omit")
+        self.approve(first,self.batch(first)["reviews"])
+        def confirm(items):
+            return self.client.post(BASE+f"reprints/{second}/approve",json=dict(approved=True,items=items)).json["items"]
+        def item(r,prior):
+            return dict(id=r["id"],sha=r["sha"],revision=r["revision"],expected_prior=prior)
+        conflict,ok=confirm([item(row,{}),item(independent,{})])
+        self.assertIn("error",conflict)
+        self.assertEqual(ok["state"],"approved")
+        self.assertIn("error",self.approve(second,[row])[0])
+        original=self.batch(first)["reviews"][0]["assignments"][0]["id"]
+        before=self.client.get(url).json
+        self.assertEqual((before["job"],before["account"],before["reused"]),(original,"甲",True))
+        self.assertEqual(before["snapshot"]["link"]["destination"],DESTINATION)
+        self.assertEqual(confirm([item(row,{"zhihu":original})])[0]["state"],"approved")
+        self.assertEqual(self.client.get(url).json,before)
+        toutiao=self.client.get(url.replace("=zhihu","=toutiao")).json
+        self.assertFalse(toutiao["reused"])
+        self.assertEqual(toutiao["account"],"乙")
+        self.assertEqual(toutiao["edition_sha"],self.client.get(BASE+"jobs/"+str(toutiao["job"])).json["delivery"]["sha"])
+
     def test_duplicate_directories_count_input_rows_but_share_work(self):
         dirs=[self.source(i) for i in range(90)]
         bid=self.create(dirs+dirs[:10])

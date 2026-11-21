@@ -12,7 +12,12 @@ const reprintRule = z.object({
   gap:z.number().int().min(1).max(86400), account_cap:z.number().int().min(1).max(1000),
   platform_cap:z.number().int().min(1).max(10000), start_hour:z.number().int().min(0).max(23),
   end_hour:z.number().int().min(1).max(24), weekdays_only:z.boolean().optional(),
-  holidays:z.array(day).max(366).optional(), workdays:z.array(day).max(366).optional()
+  holidays:z.array(day).max(366).optional(), workdays:z.array(day).max(366).optional(),
+  overrides:z.array(z.object({
+    platform:z.enum(['zhihu','toutiao']),account:target.shape.account.optional(),
+    start:z.string().optional(),end:z.string().optional(),daily_cap:z.number().int().positive().optional(),
+    gap:z.number().int().min(1).max(86400).optional()
+  })).max(35).optional()
 })
 async function api(path, body) {
   const options = body === undefined ? {} : {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}

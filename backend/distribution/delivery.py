@@ -2,7 +2,8 @@
 import json
 from datetime import datetime
 
-from .store import BEIJING, available_time, compact, digest, ledger_path, transaction
+from .scheduling import available_slot
+from .store import BEIJING, booked_slot, compact, digest, ledger_path, transaction
 
 
 def delivery_key(job):
@@ -53,9 +54,7 @@ def schedule_in(db, draft_id, data, now):
 
 
 def free_slot(db, platform, account, stamp, limits, exclude=0):
-    bookings=db.execute("""SELECT coalesce(finished,slot) mark,account FROM jobs WHERE stage='deliver'
-        AND platform=? AND state!='cancelled' AND id!=? ORDER BY mark""",(platform,exclude)).fetchall()
-    return available_time(stamp,account,limits,bookings,check_gaps=True)
+    return booked_slot(db,"deliver",platform,account,stamp,limits,exclude)
 
 
 def move_slot(path, db, job, data, now):
@@ -104,9 +103,17 @@ def deliver(path, db, job, now):
             if (existing["sha"],existing["draft"],existing["planned"]) != (bound["sha"],bound["draft"],bound["planned"]):
                 raise ValueError("模拟接收端记录与本次交付不一致")
             return existing["remote_id"], existing["submitted"]
-        confirmed = remote.execute("""SELECT submitted mark,account FROM delivered_drafts
-            WHERE platform=? ORDER BY submitted""", (job["platform"],)).fetchall()
-        due = available_time(max(job["slot"],now),job["account"],json.loads(job["rules"]),confirmed,check_gaps=True)
+        stamp=max(job["slot"],now)
+        confirmed=remote.execute("""SELECT row_id,submitted mark,account FROM delivered_drafts
+            WHERE platform=? AND submitted>=?""",(job["platform"],stamp-86400)).fetchall()
+        ids=[r["row_id"] for r in confirmed]
+        rule_rows=db.execute("""SELECT r.id,b.rules FROM rows r JOIN batches b ON b.id=r.batch
+            WHERE r.id IN (SELECT value FROM json_each(?))""",(compact(ids),))
+        prior_rules=dict(rule_rows)
+        if any(rid not in prior_rules for rid in ids):
+            raise ValueError("模拟回执关联的批次缺失，请核对数据库与备份")
+        bookings=(dict(r)|{"rules":prior_rules[r["row_id"]]} for r in confirmed)
+        due=available_slot(stamp,job["platform"],job["account"],json.loads(job["rules"]),bookings)
         if due>now:
             return None,due
         remote_id = "draft-sim-"+key[:24]

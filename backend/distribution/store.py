@@ -7,11 +7,11 @@ import sqlite3
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 
-BEIJING = timezone(timedelta(hours=8), "Asia/Shanghai")
+from .scheduling import BEIJING, available_slot, validate_overrides
 PLATFORMS = {"zhihu": "知乎", "xiaohongshu": "小红书", "toutiao": "今日头条",
              "baijiahao": "百家号", "weibo": "微博", "sohu": "搜狐号", "weixin": "微信公众号"}
 DEFAULT_DB = Path(__file__).resolve().parents[2] / "data" / "distribution" / "dry-run.sqlite"
@@ -150,8 +150,8 @@ def canonicalize(url):
         pass
     return None
 
-def clean_rules(raw):
-    if not isinstance(raw, dict) or set(raw) - DEFAULT_RULE.keys():
+def clean_rules(raw, targets=()):
+    if not isinstance(raw, dict) or set(raw) - DEFAULT_RULE.keys() - {"overrides"}:
         raise ValueError("排期规则格式无效")
     rules = DEFAULT_RULE | raw
     for k, low, high in [("gap", 1, 86400), ("account_cap", 1, 1000), ("platform_cap", 1, 10000),
@@ -168,6 +168,12 @@ def clean_rules(raw):
             if not isinstance(day, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
                 raise ValueError("日历日期无效")
             datetime.strptime(day, "%Y-%m-%d")
+    if "overrides" in rules:
+        validate_overrides(rules,targets)
+        if rules["overrides"]:
+            rules["overrides"]=sorted(rules["overrides"],key=lambda s:(s["platform"],s.get("account","")))
+        else:
+            del rules["overrides"]
     return rules
 
 def enqueue(db, row_id, stage, now, platform="", account="", slot=None):
@@ -194,7 +200,7 @@ def import_batch(path, data, now=None, folders=None):
         pair = {"platform": t["platform"], "account": t["account"]}
         if pair not in selected:
             selected.append(pair)
-    rules = clean_rules(data.get("rules", {}))
+    rules = clean_rules(data.get("rules", {}), selected)
     manifest = [digest(compact(f.get("doc", f["error"]))) for f in folders] if folders is not None else []
     routing = data.get("account_routing", "all")
     if routing not in ("rotate", "all"):
@@ -249,34 +255,15 @@ def import_batch(path, data, now=None, folders=None):
                            (pool_key,(offsets[p]+article_index)%len(pools[p])))
     return bid
 
-def next_slot(db, platform, account, now, rules, exclude=-1, actual_only=False):
-    predicate = "state='done'" if actual_only else "state!='cancelled'"
-    mark = "finished" if actual_only else "coalesce(finished,slot)"
-    reservations = db.execute(f"""SELECT {mark} AS mark,account FROM jobs WHERE stage='publish'
-        AND platform=? AND id!=? AND {predicate} AND {mark} IS NOT NULL ORDER BY mark""",
-                              (platform, exclude)).fetchall()
-    # Append behind existing reservations. Actual dispatch only considers confirmed sends.
-    stamp = max(now, reservations[-1]["mark"] + rules["gap"]) if reservations else now
-    return available_time(stamp, account, rules, reservations)
+def booked_slot(db, stage, platform, account, now, rules, exclude=-1, actual_only=False):
+    predicate = "j.state='done'" if actual_only else "j.state!='cancelled'"
+    mark = "j.finished" if actual_only else "coalesce(j.finished,j.slot)"
+    reservations = db.execute(f"""SELECT {mark} mark,j.account,b.rules FROM jobs j
+        JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch WHERE j.stage=?
+        AND j.platform=? AND j.id!=? AND {predicate} AND {mark}>=?""",(stage,platform,exclude,now-86400))
+    return available_slot(now,platform,account,rules,reservations,
+                          append=stage=="publish" and not rules.get("overrides"))
 
-def available_time(stamp, account, rules, reservations, check_gaps=False):
-    day = datetime.fromtimestamp(stamp, BEIJING)
-    while True:
-        start = day.replace(hour=0,minute=0,second=0,microsecond=0)
-        date = start.date().isoformat()
-        calendar_open = date in rules["workdays"] or (date not in rules["holidays"] and
-                        (not rules["weekdays_only"] or day.weekday() < 5))
-        first = int((start + timedelta(hours=rules["start_hour"])).timestamp())
-        last = int((start + timedelta(hours=rules["end_hour"])).timestamp())
-        today = [r for r in reservations if start.timestamp() <= r["mark"] < start.timestamp()+86400]
-        if (calendar_open and max(first,stamp)<last and len(today)<rules["platform_cap"]
-                and sum(r["account"]==account for r in today)<rules["account_cap"]):
-            candidate = max(first,stamp)
-            if check_gaps:
-                for row in reservations:
-                    if abs(candidate-row["mark"]) < rules["gap"]:
-                        candidate = row["mark"] + rules["gap"]
-            if candidate < last:
-                return candidate
-        day = start + timedelta(days=1)
-        stamp = int(day.timestamp())
+
+def next_slot(db, platform, account, now, rules, exclude=-1, actual_only=False):
+    return booked_slot(db,"publish",platform,account,now,rules,exclude,actual_only)

@@ -19,6 +19,7 @@
     <p><label>文末公众号链接 <el-input v-model.trim="destination" /></label></p>
     <fieldset><legend>排期规则（北京时间）</legend>
       <div class="rules"><label v-for="r in fields" :key="r[0]">{{r[1]}} <input type="number" v-model.number="rules[r[0]]" :min="r[2]" :max="r[3]"></label></div>
+      <ScopeSchedule v-model="overrides" :targets="targets" :channels="channels" />
       <label><input type="checkbox" v-model="rules.weekdays_only"> 仅在周一至周五排期</label>
       <details class="calendar"><summary>节假日与补班日期</summary>
         <label>停排日期 <el-input type="textarea" v-model="holidays" placeholder="YYYY-MM-DD，每行一个或用逗号分隔"/></label>
@@ -34,6 +35,7 @@
 </template>
 <script setup>
 import {ref, computed, reactive} from 'vue'
+import ScopeSchedule from './ScopeSchedule.vue'
 const props=defineProps({api:Function})
 const emit=defineEmits(['created'])
 const visible=ref(false),busy=ref(false),loading=ref(false),error=ref(''),root=ref(''),items=ref([]),dirs=ref([]),filter=ref('')
@@ -48,6 +50,7 @@ try{
 const chosen=reactive({zhihu:[],toutiao:[]}),custom=reactive({zhihu:'',toutiao:''})
 const rules=reactive({gap:900,account_cap:3,platform_cap:6,start_hour:9,end_hour:18,weekdays_only:false})
 const holidays=ref(''),workdays=ref(''),revision=ref(0),saving=ref(false),notice=ref('')
+const overrides=ref([])
 const fields=[['gap','平台间隔（秒）',1,86400],['account_cap','账号每日上限',1,1000],['platform_cap','平台每日上限',1,10000],['start_hour','开始小时',0,23],['end_hour','结束小时（不含）',1,24]]
 const filtered=computed(()=>items.value.filter(i=>i.directory.includes(filter.value.trim())))
 const targets=computed(()=>Object.keys(channels).flatMap(platform=>chosen[platform].map(account=>({platform,account}))))
@@ -63,7 +66,8 @@ function options(){
   const dates=t=>[...new Set(t.split(/[\s,，;；]+/).filter(Boolean))].sort()
   const off=dates(holidays.value),on=dates(workdays.value)
   if(on.some(day=>off.includes(day)))throw Error('同一日期不能同时设为停排和补班')
-  return {targets:targets.value,destination:destination.value,rules:{...rules,holidays:off,workdays:on}}
+  const active=overrides.value.filter(r=>targets.value.some(t=>t.platform===r.platform && (!r.account || t.account===r.account)))
+  return {targets:targets.value,destination:destination.value,rules:{...rules,holidays:off,workdays:on,overrides:active}}
 }
 function applyDefaults(data){
   revision.value=data.revision
@@ -75,6 +79,7 @@ function applyDefaults(data){
   }
   destination.value=saved.destination
   for(const key of Object.keys(rules))rules[key]=saved.rules[key]
+  overrides.value=saved.rules.overrides ?? []
   holidays.value=saved.rules.holidays.join('\n');workdays.value=saved.rules.workdays.join('\n')
   notice.value='已读取常用设置'
 }

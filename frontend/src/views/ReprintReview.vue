@@ -1,6 +1,13 @@
 <template>
   <section>
-    <p>{{pool}}　·　平台间隔 {{batch.rules.gap}} 秒　·　账号每日 {{batch.rules.account_cap}} 篇　·　平台每日 {{batch.rules.platform_cap}} 篇　·　北京时间 {{batch.rules.start_hour}}–{{batch.rules.end_hour}} 时</p>
+    <p>{{pool}}</p>
+    <details><summary>查看各账号排期规则（北京时间）</summary>
+      <p v-for="r in batch.target_limits" :key="r.platform+'-'+r.account">
+        {{names[r.platform]}} · {{r.account}}　{{clock(r.start)}}–{{clock(r.end)}}　平台每日 {{r.platform_cap}} 篇，间隔 {{r.platform_gap}} 秒；
+        本账号每日最多 {{Math.min(r.platform_cap,r.account_cap)}} 篇，间隔至少 {{Math.max(r.platform_gap,r.account_gap)}} 秒
+      </p>
+      <p>{{batch.rules.weekdays_only?'仅周一至周五':'含周末'}}<span v-if="batch.rules.holidays.length">　停排 {{batch.rules.holidays.join('、')}}</span><span v-if="batch.rules.workdays.length">　补班 {{batch.rules.workdays.join('、')}}</span></p>
+    </details>
     <p>文末延伸阅读　{{batch.destination}}</p>
     <div class="bar"><label><input type="checkbox" :checked="pending.length>0 && checked.length===pending.length" :disabled="!active || !pending.length" @change="selectAll"> 全选待审核</label>
       <el-button type="primary" :loading="busy" :disabled="!active || !checked.length" @click="approve">审核通过并自动排期（{{checked.length}}）</el-button></div>
@@ -26,6 +33,7 @@
 import {ref,computed} from 'vue'
 import {ElMessageBox,ElMessage} from 'element-plus'
 const props=defineProps({batch:Object,api:Function,names:Object,label:Function,date:Function})
+const clock=m=>[Math.floor(m/60),m%60].map(n=>String(n).padStart(2,'0')).join(':')
 const emit=defineEmits(['job','refresh'])
 const ids=ref([]),error=ref(''),busy=ref(false),opened=ref(false),view=ref(null)
 const pending=computed(()=>props.batch.reviews.filter(r=>r.state==='pending'))

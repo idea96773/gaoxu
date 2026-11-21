@@ -4,12 +4,14 @@ import json
 import os
 import time
 from collections import Counter, defaultdict
+from dataclasses import asdict
 from pathlib import Path
 
 from flask import Blueprint, Flask, Response, jsonify, request, send_from_directory
 from waitress import serve
 
 from . import delivery, reprint, search, platform_draft
+from .scheduling import effective_limits
 from .engine import close_attempt, lookup_receipt, operation_key
 from .store import DEFAULT_DB, PLATFORMS, import_batch, initialize, next_slot, transaction
 from .library import DEFAULT_LIBRARY, catalog, read_selected
@@ -105,6 +107,7 @@ def batch_view(db, bid, detail=True):
                       expected=sum(sum(c.values()) for c in platforms.values()))
         if detail:
             result["reviews"]=reviews
+            result["target_limits"]=[t|asdict(effective_limits(result["rules"],t["platform"],t["account"])) for t in targets]
     return result
 
 def control_batch(path,bid,action,now):

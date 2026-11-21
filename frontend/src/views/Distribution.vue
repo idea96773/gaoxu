@@ -1,13 +1,14 @@
 <template>
   <section class="distribution">
     <header class="heading">
-      <div><h1>{{searching?'跨批次查询':'文章分发'}}</h1><p v-if="!searching">本地导入 · 平台成稿审核 · 模拟排期与发布 · 北京时间</p></div>
-      <div v-if="searching" class="actions"><el-button @click="leaveSearch">返回批次管理</el-button></div>
-      <div v-else class="actions"><el-button @click="router.push({query:{...route.query,view:'search'}})">跨批次查询</el-button><el-button :type="online ? 'success' : 'warning'" plain @click="runtimeOpen=true">{{online ? '调度器在线' : '查看调度器状态'}}</el-button>
+      <div><h1>{{calendarView?'排期日历':searching?'跨批次查询':'文章分发'}}</h1><p v-if="!searching && !calendarView">本地导入 · 平台成稿审核 · 模拟排期与发布 · 北京时间</p></div>
+      <div v-if="searching || calendarView" class="actions"><el-button v-if="searching" @click="openCalendar">排期日历</el-button><el-button @click="leaveSearch">返回批次管理</el-button></div>
+      <div v-else class="actions"><el-button @click="openCalendar">排期日历</el-button><el-button @click="router.push({query:{...route.query,view:'search'}})">跨批次查询</el-button><el-button :type="online ? 'success' : 'warning'" plain @click="runtimeOpen=true">{{online ? '调度器在线' : '查看调度器状态'}}</el-button>
         <ReprintCreate :api="api" @created="openReprint" /><el-button @click="showImport=true">导入文章</el-button></div>
     </header>
     <el-alert v-if="error" :title="error" type="error" show-icon @close="error=''" />
-    <ArticleSearch v-if="searching" :api="api" :names="names" :date="date" :label="label" @job="openJob" @platforms="names=$event" />
+    <ScheduleCalendar v-if="calendarView" :api="api" :names="names" :label="label" @platforms="names=$event" />
+    <ArticleSearch v-else-if="searching" :api="api" :names="names" :date="date" :label="label" @job="openJob" @platforms="names=$event" />
     <template v-else>
     <div class="batchbar">
       <label>当前批次</label>
@@ -129,6 +130,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import ScheduleCalendar from './ScheduleCalendar.vue'
 import ArticleSearch from "./ArticleSearch.vue"
 import PlatformDraftPanel from './PlatformDraftPanel.vue'
 import RuntimeStatus from "./RuntimeStatus.vue"
@@ -140,6 +142,13 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 const runtimeOpen=ref(false)
 const route=useRoute(),router=useRouter()
 const searching=computed(()=>route.query.view==='search')
+const calendarView=computed(()=>route.query.view==='calendar')
+function openCalendar(){
+  const query={view:'calendar'}
+  for(const k of ['batch','platform','account'])if(route.query[k])query[k]=route.query[k]
+  if(searching.value && route.query.start)query.month=String(route.query.start).slice(0,7)
+  router.push({query})
+}
 async function leaveSearch(){await router.push({query:bid.value?{batch:bid.value}:{}});await refresh()}
 const batches=ref([]),names=ref({}),bid=ref(String(route.query.batch||'')),batch=ref(null),error=ref(''),online=ref(false)
 const tab=ref(route.query.tab==='deliveries'?'deliveries':'rows'),showImport=ref(false),source=ref('library'),files=ref([]),urls=ref(''),platforms=ref(['zhihu','xiaohongshu']),routing=ref('rotate'),gap=ref(60),cap=ref(10),platformCap=ref(20)
@@ -175,7 +184,7 @@ async function api(path,data){
   return response.json()
 }
 async function detail(){const id=bid.value;if(id){const result=await api('batches/'+id);if(bid.value===id){if(batch.value?.id!==id){if(result.reprint && tab.value!=='deliveries')tab.value='reprint';else if(!result.reprint && tab.value==='reprint')tab.value='rows'}batch.value=result}}}
-async function refresh(){if(searching.value)return;try{const data=await api('batches?summary=1');batches.value=data.batches;names.value=data.platforms;for(const p of Object.keys(data.platforms))accounts.value[p]??='模拟账号';online.value=!!data.worker_seen && data.checked>=data.worker_seen && data.checked-data.worker_seen<18
+async function refresh(){if(searching.value || calendarView.value)return;try{const data=await api('batches?summary=1');batches.value=data.batches;names.value=data.platforms;for(const p of Object.keys(data.platforms))accounts.value[p]??='模拟账号';online.value=!!data.worker_seen && data.checked>=data.worker_seen && data.checked-data.worker_seen<18
   if(!bid.value || !data.batches.some(b=>b.id===bid.value))bid.value=data.batches[0]?.id||''
   await detail();error.value=''}catch(e){online.value=false;error.value=e.message}}
 async function selectBatch(){await router.replace({query:{batch:bid.value}});await refresh()}
@@ -224,7 +233,7 @@ onBeforeUnmount(()=>{closed=true;clearTimeout(timer)})
 <style scoped>
 .distribution{max-width:1350px;margin:0 auto;color:var(--text-primary);padding:8px 4px}
 .heading,.actions,.batchbar,.record{display:flex;align-items:center;gap:12px}
-.heading,.record{justify-content:space-between}.heading{margin-bottom:28px}.heading h1{font-size:30px;letter-spacing:.03em;margin:0}
+.actions{flex-wrap:wrap}.heading,.record{justify-content:space-between}.heading{margin-bottom:28px}.heading h1{font-size:30px;letter-spacing:.03em;margin:0}
 p,small{color:var(--text-secondary);line-height:1.65}.heading p{margin:6px 0 0}.batchbar{flex-wrap:wrap;margin:18px 0}
 .metrics{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));border-block:1px solid var(--border);padding:22px 0;gap:14px}
 .metrics small,.metrics strong{display:block}.metrics strong{font-size:25px;margin-top:7px;font-variant-numeric:tabular-nums}

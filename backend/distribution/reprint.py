@@ -77,7 +77,7 @@ def validated_settings(data):
         raise ValueError("请输入 HTTPS 公众号文章地址")
     pools=pools_for(data.get("targets"))
     targets=[dict(platform=p,account=a) for p,accounts in pools.items() for a in accounts]
-    return dict(targets=targets,destination=destination,rules=clean_rules(data.get("rules",{})))
+    return dict(targets=targets,destination=destination,rules=clean_rules(data.get("rules",{}),targets))
 
 
 def create(path,root,data):

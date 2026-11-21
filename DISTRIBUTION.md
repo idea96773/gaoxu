@@ -63,7 +63,7 @@ Pop-Location
 
 ```powershell
 Push-Location backend
-..\.dist-venv\Scripts\python.exe -m unittest distribution.test_workflow distribution.test_editorial distribution.test_delivery distribution.test_reprint distribution.test_search -v
+..\.dist-venv\Scripts\python.exe -m unittest distribution.test_workflow distribution.test_editorial distribution.test_delivery distribution.test_reprint distribution.test_search distribution.test_scheduling -v
 Pop-Location
 ```
 
@@ -92,6 +92,10 @@ POST /api/distribution/editorial/<draft_id>/schedule 接收可选的整数 Unix 
 在「文章分发」点击「批量转载」，搜索并勾选最多 100 篇已下载文章。每个平台勾选参与分稿的模拟账号，可以自行添加别名。核对文末公众号直链、北京时间窗口、间隔和两级每日上限后，点击「生成待审核转载稿」。原文来自所选目录的 Markdown，文内配图归档在本机。缺少正文、来源或本地配图的条目会显示原因，其余条目可继续审核。
 
 在建批窗口点击「保存为常用设置」，可将所选账号、文末链接、时段、两级日上限和发布间隔保存到本机数据库。以后打开窗口会自动读取，可临时调整本次参数。停排日期和补班日期可逐行输入；开启「仅在周一至周五排期」后，补班日期仍可排期。备份主库时包含这些设置。
+
+在排期规则下展开「单独设置平台或账号」，可以给已勾选的平台或账号设置精确到分钟的起止时间、每日篇数和最小间隔。平台时段可替换通用时段，账号时段须在所属平台开放时段内，结束时间不含在内。平台限额由该平台账号共享，账号额度另外计算。已预约或实际交付的任务仍有原批次的限额与间隔，新批次会同时满足双方规则。停排和补班日期按当前批次的北京时间日历执行。批量审核前可展开「查看各账号排期规则」核对。
+
+在管理台顶部打开「排期日历」，可按月、平台和账号查看模拟排期。每日区分排队中、执行中、已完成、失败、暂停和取消；点击有任务的日期会打开相同筛选条件下的跨批次查询。冻结稿和模拟流程均计入日历，真实平台草稿回执另在任务详情中查看。
 
 DSH 可先调用 `library_list` 选择文章，调用 `reprint_settings` 读取已保存配置，再以指定的账号、规则、链接和稳定的请求编号调用 `reprint_prepare` 创建待审批次。`reprint_preview` 返回稿件摘要值、正文和配图引用供核对。人工审核入口仍在管理台。`article_search` 与 `scheduler_status` 可分别查询跨批记录和调度器运行状态。冻结稿通过 `publish_reschedule` 改期时，需传入上次读取的排期值 `expected_slot`。
 

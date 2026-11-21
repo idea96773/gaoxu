@@ -1,5 +1,6 @@
 """Read-only article and delivery lookup across the entire simulation database."""
 from datetime import date, datetime, time, timedelta
+from calendar import monthrange
 
 from flask import jsonify, request
 
@@ -104,6 +105,32 @@ def search(db, args):
 
 
 def register(api,path):
+    @api.get("/schedule-calendar")
+    def schedule_calendar():
+        today=datetime.now(BEIJING).date()
+        month=request.args.get("month") or today.strftime("%Y-%m")
+        start=day_start(month+"-01")
+        first=date.fromisoformat(month+"-01")
+        size=monthrange(first.year,first.month)[1]
+        filters=["stage IN ('deliver','publish')","slot>=?","slot<?"]
+        values=[start,start+size*86400]
+        platform=request.args.get("platform","")
+        if platform and platform not in PLATFORMS:
+            raise ValueError("未知的平台")
+        for field,value in (("platform",platform),("account",request.args.get("account",""))):
+            if value:
+                filters.append(field+"=?")
+                values.append(value)
+        with transaction(path,False) as db:
+            counts=db.execute("""SELECT date(slot,'unixepoch','+8 hours') day,
+                CASE WHEN b.control='paused' AND j.state='ready' THEN 'paused' ELSE j.state END status,
+                count(*) n FROM jobs j JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch
+                WHERE """+" AND ".join(filters)+" GROUP BY day,status",values)
+            days={}
+            for row in counts:
+                days.setdefault(row["day"],{})[row["status"]]=row["n"]
+        return jsonify(month=month,today=today.isoformat(),size=size,weekday=first.weekday(),days=days)
+
     @api.get("/article-search")
     def search_articles():
         with transaction(path,False) as db:

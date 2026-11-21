@@ -3,6 +3,7 @@ import hashlib
 import posixpath
 import re
 from collections import defaultdict
+from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import PurePosixPath
 from urllib.parse import unquote, urlsplit
@@ -10,6 +11,22 @@ from .store import canonicalize, compact, digest
 
 SOURCE_LINK = re.compile(r"(?m)^原文地址[：:]\s*.*?(https://mp\.weixin\.qq\.com/[^\s)<>]+)")
 MEDIA = {".png",".jpg",".jpeg",".gif",".webp",".other"}
+
+def export_metadata(markdown):
+    header=markdown[:1600].partition("\n")[2]
+    header=re.split(r"(?m)^原文地址[:：]",header,maxsplit=1)[0]
+    author=re.search(r"作者[:：]\s*(.*?)\s+(?:公号|公众号)[:：]",header)
+    source=re.search(r"(?:公号|公众号)[:：]\s*(.*?)\s+发布时间[:：]",header)
+    stamp=re.search(r"发布时间[:：]\s*(\d{4}-\d{1,2}-\d{1,2})\s+(\d{1,2}:\d{2})(?!\d)",header)
+    published=None
+    if stamp:
+        try:
+            published=datetime.strptime(stamp[1]+" "+stamp[2],"%Y-%m-%d %H:%M").strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            pass
+    return dict(author=author[1].strip() if author else None,source_name=source[1].strip() if source else None,
+                publish_time=published)
+
 def image_type(data):
     if data.startswith(b"\xff\xd8\xff"):
         return "image/jpeg"
@@ -97,11 +114,7 @@ def parse_folders(parts):
                     assets[ref]=(hashlib.sha256(data).hexdigest(),mime,data)
                 else:
                     missing.append(ref)
-            metadata={}
-            for key,pattern in [("author",r"作者[:：]\s*(.*?)\s+公号"),("source_name",r"公号[:：]\s*(.*?)\s+发布时间"),
-                                ("publish_time",r"发布时间[:：]\s*(\d{4}-\d\d-\d\d\s+\d\d:\d\d)")]:
-                match=re.search(pattern,md[:1600])
-                metadata[key]=match[1].strip() if match else None
+            metadata=export_metadata(md)
             images=["/api/distribution/media/"+v[0] for v in assets.values()]
             doc=dict(metadata,title=title,source_url=url or None,source_folder=label,original_html=html,
                      markdown_content=body,images=list(dict.fromkeys(images)),cover=images[0] if images else None,

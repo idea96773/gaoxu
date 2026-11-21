@@ -5,7 +5,8 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from .delivery import existing_deliveries
-from .folders import MEDIA, SOURCE_LINK, parse_folders
+from .folders import MEDIA, SOURCE_LINK, export_metadata, parse_folders
+from .search import day_start
 from .store import canonicalize, transaction
 
 DEFAULT_LIBRARY = Path("E:/新公众号文章下载EasyWechatDownload/10个账号文章筛选")
@@ -16,7 +17,7 @@ def safe_entry(path):
 
 def article_header(folder,bodies):
     if len(bodies)!=1:
-        return folder.name,None,None
+        return dict(title=folder.name,url=None,source=None,source_name=None,publish_time=None)
     with bodies[0].open("rb") as stream:
         sample=stream.read(8193)
     if len(sample)>8192:
@@ -26,13 +27,16 @@ def article_header(folder,bodies):
     title=header.partition("\n")[0].strip("# ").strip() or folder.name
     match=SOURCE_LINK.search(header)
     url=match[1] if match else None
-    return title,url,canonicalize(url) if url else None
+    meta=export_metadata(header)
+    return dict(title=title,url=url,source=canonicalize(url) if url else None,
+                source_name=meta["source_name"],publish_time=meta["publish_time"])
 
 
 def selected_header(root,relative):
     folder=selected_folder(root,relative)
     bodies=[p for p in folder.iterdir() if p.suffix.lower()==".md" and safe_entry(p) and p.is_file()]
-    return article_header(folder,bodies)
+    header=article_header(folder,bodies)
+    return header["title"],header["url"],header["source"]
 
 
 def discover(root):
@@ -40,29 +44,76 @@ def discover(root):
     if not root.is_dir() or not safe_entry(root):
         raise ValueError("固定保存目录不可用")
     found=[]
+    def safe_child(path):
+        try:
+            return safe_entry(path)
+        except OSError:
+            return False
     for current,dirs,files in os.walk(root,followlinks=False):
         folder=Path(current)
-        dirs[:]=sorted(d for d in dirs if d.lower()!="img" and safe_entry(folder/d))
-        bodies=sorted(folder/n for n in files if n.lower().endswith(".md") and safe_entry(folder/n))
+        dirs[:]=sorted(d for d in dirs if d.lower()!="img" and safe_child(folder/d))
+        bodies=sorted(folder/n for n in files if n.lower().endswith(".md") and safe_child(folder/n))
         if not bodies:
             continue
         rel=folder.relative_to(root).as_posix()
         try:
-            title,_,ref=article_header(folder,bodies)
+            header=article_header(folder,bodies)
         except (OSError,UnicodeError):
-            title,ref=folder.name,None
-        found.append((rel,title,ref))
-    return sorted(found)
+            header=article_header(folder,[])
+        header.pop("url")
+        found.append(dict(directory=rel,**header))
+    return sorted(found,key=lambda entry:entry["directory"])
 
-def catalog(path,root):
-    entries=discover(root)
+def catalog_records(path,entries):
     with transaction(path,False) as db:
         seen={r[0] for r in db.execute("SELECT canonical FROM rows WHERE kind='article' AND canonical LIKE 'folder:%'")}
         imported={r[0] for r in db.execute("SELECT rel FROM library_imports")}
-        history=existing_deliveries(db,("folder:"+ref for _,_,ref in entries if ref))
-    return [dict(directory=rel,title=title,source=ref,known=("folder:"+ref in seen if ref else rel in imported),
-                 deliveries=history.get("folder:"+ref,{}) if ref else {})
-            for rel,title,ref in entries]
+        history=existing_deliveries(db,("folder:"+item["source"] for item in entries if item["source"]))
+    for item in entries:
+        key="folder:"+item["source"] if item["source"] else None
+        item.update(known=key in seen if key else item["directory"] in imported,deliveries=history.get(key,{}))
+    return entries
+
+
+def catalog(path,root):
+    return catalog_records(path,discover(root))
+
+
+def catalog_page(path,root,args):
+    start,end=args.get("start",""),args.get("end","")
+    for value in (start,end):
+        if value:
+            day_start(value)
+    if start and end and start>end:
+        raise ValueError("结束日期应等于或晚于开始日期")
+    try:
+        page=int(args.get("page",1))
+        limit=int(args.get("page_size",30))
+        if page<1 or not 1<=limit<=100:
+            raise ValueError
+    except ValueError:
+        raise ValueError("页码须为正整数，每页可读取 1 至 100 篇") from None
+    order=args.get("order","directory")
+    if order not in ("directory","newest"):
+        raise ValueError("未知的目录排序方式")
+    keyword=args.get("keyword","").strip().casefold()
+    source=args.get("source_name","")
+    found=[]
+    for item in discover(root):
+        day=(item["publish_time"] or "")[:10]
+        if source and item["source_name"]!=source:
+            continue
+        if (start and day<start) or (end and (not day or day>end)):
+            continue
+        if keyword and not any(keyword in item[k].casefold() for k in ("title","directory")):
+            continue
+        found.append(item)
+    if order=="newest":
+        found.sort(key=lambda item:item["publish_time"] or "",reverse=True)
+    total=len(found)
+    page=min(page,max(1,(total+limit-1)//limit))
+    offset=(page-1)*limit
+    return dict(items=catalog_records(path,found[offset:offset+limit]),total=total,page=page,page_size=limit)
 
 def validate_directories(selected):
     if not isinstance(selected,list) or not 1<=len(selected)<=100 or not all(isinstance(r,str) for r in selected):

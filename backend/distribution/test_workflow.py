@@ -155,6 +155,23 @@ class Workflow(unittest.TestCase):
         r=self.client.post("/api/distribution/library",json=options(0,key="folders")|{"directories":["测试号/文章-1","测试号/文章-2"]})
         self.assertEqual(r.status_code,201);self.run_all();b=self.view(r.json["id"])
         self.assertEqual((b["simulated"],b["counts"]["invalid"]),(3,1))
+    def test_catalog_filters_export_metadata_before_paging(self):
+        early,late,other,unknown=[export_folder(self.root,i) for i in (1,2,3,4)]
+        for folder,timestamp,source in ((early,"2026-01-01 8:00","甲号"),(late,"2026-01-02 9:05","甲号"),
+                                        (other,"2026-01-02 09:30","乙号"),(unknown,"无日期","甲号")):
+            md=folder/"正文.md"
+            text=md.read_text(encoding="utf-8").replace("2026-01-01 08:00",timestamp).replace("公号:测试号","公众号:"+source)
+            md.write_text(text,encoding="utf-8")
+        url="/api/distribution/library"
+        args=dict(source_name="甲号",start="2026-01-01",end="2026-01-02",order="newest",page_size="1")
+        page=self.client.get(url,query_string=args).json
+        self.assertEqual((page["total"],page["items"][0]["publish_time"]),(2,"2026-01-02 09:05"))
+        second=self.client.get(url,query_string=args|{"page":"2"}).json["items"][0]
+        self.assertEqual((second["directory"],second["source_name"]),("测试号/文章-1","甲号"))
+        self.assertEqual(self.client.get(url,query_string={"start":"2026-02-30"}).status_code,400)
+        listing=self.client.get(url).json["items"]
+        self.assertIsNone(next(item for item in listing if item["directory"].endswith("文章-4"))["publish_time"])
+
     def test_image_with_markdown_title_and_other_extension(self):
         p=export_folder(self.root,1)
         (p/"img/0.png").rename(p/"img/0.other")

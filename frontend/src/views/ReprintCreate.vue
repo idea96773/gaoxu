@@ -4,6 +4,14 @@
     <small>{{root}}</small>
     <p><el-input v-model="filter" placeholder="搜索文章标题或目录" clearable /></p>
     <div class="coverage-tools">
+      <label>来源公众号 <select v-model="sourceName"><option value="">全部公众号</option>
+        <option v-for="name in sourceNames" :key="name" :value="name">{{name}}</option></select></label>
+      <label>原文发布日期 <input type="date" v-model="fromDay" :max="toDay || undefined"></label>
+      <label>至 <input type="date" v-model="toDay" :min="fromDay || undefined"></label>
+      <label><input type="checkbox" v-model="newestFirst"> 新稿优先</label>
+    </div>
+    <p v-if="invalidRange" role="alert">结束日期应等于或晚于开始日期。</p>
+    <div class="coverage-tools">
       <label>筛选文章 <select v-model="coverageFilter">
         <option value="all">全部</option><option value="missing" :disabled="!selectedPlatforms.length">所选平台有缺项</option>
         <option value="covered" :disabled="!selectedPlatforms.length">所选平台均有任务</option>
@@ -15,6 +23,7 @@
     <div class="articles" v-loading="loading">
       <div v-for="item in pageItems" :key="item.directory" class="catalog-row">
         <label :title="item.directory"><input type="checkbox" v-model="dirs" :value="item.directory" :disabled="dirs.length>=100 && !dirs.includes(item.directory)"> {{item.title}}</label>
+        <small>{{item.source_name || '公众号未识别'}} · {{item.publish_time || '原文发布时间未识别'}}</small>
         <small v-if="!item.source">原文链接待识别，可手动勾选</small>
         <small v-else-if="selectedPlatforms.length">{{missing(item).length?'待补排　'+missing(item).map(p=>channels[p]).join('、'):'所选平台均已有任务'}}</small>
         <el-button v-for="job in item.deliveries" :key="job.id" type="primary" link @click="$emit('job',job.id)">
@@ -28,7 +37,15 @@
       <span>{{page}} / {{pageCount}} 页 · 共 {{filtered.length}} 篇</span>
       <el-button size="small" :disabled="page>=pageCount" @click="page++">下一页</el-button>
     </nav>
-    <p>已选 {{dirs.length}} 篇 / 最多 100 篇</p>
+    <details v-if="dirs.length"><summary>查看已选清单（{{dirs.length}} / 100）</summary>
+      <div v-for="entry in selection" :key="entry.directory" class="catalog-row">
+        <span>{{entry.title || entry.directory}}</span>
+        <small>{{entry.source_name || entry.directory}}{{entry.unavailable?' · 目录不可用':''}}</small>
+        <el-button link @click="dirs=dirs.filter(dir=>dir!==entry.directory)">移出</el-button>
+      </div>
+    </details>
+    <p v-else>已选 0 篇 / 最多 100 篇</p>
+    <p v-if="!loading && unavailable" role="alert">有 {{unavailable}} 个已选目录当前不可用，请核对选稿清单。</p>
     <fieldset><legend>参与轮流分稿的模拟账号</legend>
       <div v-for="(title,p) in channels" :key="p" class="pool"><strong>{{title}}</strong>
         <label v-for="a in aliases[p]" :key="a"><input type="checkbox" v-model="chosen[p]" :value="a" :aria-label="title+a"> {{a}}</label>
@@ -62,7 +79,7 @@
       <el-button link :disabled="loading || busy || saving" @click="reloadDefaults">读取常用设置</el-button>
       <small role="status">{{notice}}</small></div>
     <el-alert v-if="error" :title="error" type="error" :closable="false" />
-    <template #footer><el-button @click="visible=false">关闭</el-button><el-button type="primary" :disabled="loading || saving || !dirs.length || !targets.length" :loading="busy" @click="submit">提交选稿到后台</el-button></template>
+    <template #footer><el-button @click="visible=false">关闭</el-button><el-button type="primary" :disabled="loading || saving || !dirs.length || unavailable || !targets.length" :loading="busy" @click="submit">提交选稿到后台</el-button></template>
   </el-dialog>
 </template>
 <script setup>
@@ -85,17 +102,29 @@ const holidays=ref(''),workdays=ref(''),revision=ref(0),saving=ref(false),notice
 const overrides=ref([])
 const fields=[['gap','平台间隔（秒）',1,86400],['account_cap','账号每日上限',1,1000],['platform_cap','平台每日上限',1,10000],['start_hour','开始小时',0,23],['end_hour','结束小时（不含）',1,24]]
 const coverageFilter=ref('all')
+const sourceName=ref(''),fromDay=ref(''),toDay=ref(''),newestFirst=ref(false)
+const sourceNames=computed(()=>[...new Set(items.value.map(item=>item.source_name).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'zh-CN')))
+const byDirectory=computed(()=>new Map(items.value.map(item=>[item.directory,item])))
+const selection=computed(()=>dirs.value.map(directory=>byDirectory.value.get(directory) || {directory,unavailable:true}))
+const unavailable=computed(()=>selection.value.filter(item=>item.unavailable).length)
+const invalidRange=computed(()=>fromDay.value && toDay.value && fromDay.value>toDay.value)
 const states={ready:'已排期',running:'交付中',done:'已模拟交付',failed:'交付失败'}
 const targets=computed(()=>Object.keys(channels).flatMap(platform=>chosen[platform].map(account=>({platform,account}))))
 const selectedPlatforms=computed(()=>Object.keys(channels).filter(p=>chosen[p].length))
 const missing=item=>selectedPlatforms.value.filter(p=>!item.deliveries?.[p])
-const filtered=computed(()=>items.value.filter(item=>{
+const filtered=computed(()=>{
   const query=filter.value.trim().toLowerCase()
-  if(!item.directory.toLowerCase().includes(query) && !item.title.toLowerCase().includes(query))return false
-  if(coverageFilter.value==='unknown')return !item.source
-  if(!selectedPlatforms.value.length || coverageFilter.value==='all')return true
-  return item.source && (coverageFilter.value==='missing'?missing(item).length>0:missing(item).length===0)
-}))
+  const matching=items.value.filter(item=>{
+    if(sourceName.value && item.source_name!==sourceName.value)return false
+    const day=item.publish_time?.slice(0,10)
+    if((fromDay.value && (!day || day<fromDay.value)) || (toDay.value && (!day || day>toDay.value)))return false
+    if(!item.directory.toLowerCase().includes(query) && !item.title.toLowerCase().includes(query))return false
+    if(coverageFilter.value==='unknown')return !item.source
+    if(!selectedPlatforms.value.length || coverageFilter.value==='all')return true
+    return item.source && (coverageFilter.value==='missing'?missing(item).length>0:missing(item).length===0)
+  })
+  return newestFirst.value?matching.sort((a,b)=>(b.publish_time || '').localeCompare(a.publish_time || '')):matching
+})
 const additions=computed(()=>{
   if(!selectedPlatforms.value.length || dirs.value.length>=100)return []
   const selected=new Set(dirs.value)
@@ -111,7 +140,7 @@ const additions=computed(()=>{
 const page=ref(1),pageSize=30
 const pageCount=computed(()=>Math.max(1,Math.ceil(filtered.value.length/pageSize)))
 const pageItems=computed(()=>filtered.value.slice((page.value-1)*pageSize,page.value*pageSize))
-watch([filter,coverageFilter,selectedPlatforms,items],()=>{page.value=1})
+watch([filter,coverageFilter,selectedPlatforms,items,sourceName,fromDay,toDay,newestFirst],()=>{page.value=1})
 function addMissing(){dirs.value=[...dirs.value,...additions.value]}
 watch(selectedPlatforms,platforms=>{if(!platforms.length && ['missing','covered'].includes(coverageFilter.value))coverageFilter.value='all'})
 const links=reactive(Object.fromEntries(Object.keys(channels).map(p=>[p,{mode:'direct',short:'',verified:false}])))
@@ -172,14 +201,22 @@ async function saveDefaults(){
     revision.value=data.revision;notice.value='已保存，创建新批次时自动读取'}catch(e){error.value=e.message}
   finally{saving.value=false}
 }
+let openRequest=0
 async function open(){
+  const request=++openRequest
   visible.value=true;loading.value=true;error.value='';notice.value=''
   const [library,saved,bound]=await Promise.allSettled([props.api('library'),props.api('reprint-settings'),props.api('zhihu-draft-accounts')])
+  if(request!==openRequest)return
   if(bound.status==='fulfilled'){
     const available=bound.value.items.filter(a=>a.user_id && valid(a.alias)).map(a=>a.alias)
     aliases.zhihu=[...new Set([...aliases.zhihu,...available])]
   }
-  if(library.status==='fulfilled'){root.value=library.value.root;items.value=library.value.items}
+  if(library.status==='fulfilled'){
+    if(root.value && root.value!==library.value.root && dirs.value.length){
+      dirs.value=[];notice.value='保存根目录已更换，请从当前目录重新选稿'
+    }
+    root.value=library.value.root;items.value=library.value.items
+  }
   else{items.value=[];error.value=library.reason.message}
   if(saved.status==='fulfilled')applyDefaults(saved.value)
   else error.value=saved.reason.message

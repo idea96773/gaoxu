@@ -14,7 +14,7 @@ from . import delivery, reprint, search, platform_draft
 from .scheduling import effective_limits
 from .engine import close_attempt, lookup_receipt, operation_key
 from .store import DEFAULT_DB, PLATFORMS, import_batch, initialize, next_slot, transaction
-from .library import DEFAULT_LIBRARY, catalog, read_selected
+from .library import DEFAULT_LIBRARY, catalog, catalog_page, read_selected
 
 def outcome(row, jobs, target_count):
     if row["kind"] != "article":
@@ -264,6 +264,8 @@ def make_blueprint(path,root):
         return jsonify(id=import_batch(path,options,folders=inputs)),201
     @api.get("/library")
     def library():
+        if any(k in request.args for k in ("source_name","keyword","start","end","order","page","page_size")):
+            return jsonify(root=str(root),**catalog_page(path,root,request.args))
         return jsonify(root=str(root),items=catalog(path,root))
     @api.post("/library")
     def import_library():

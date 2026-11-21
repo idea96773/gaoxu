@@ -112,7 +112,7 @@ def receipt(path, db, job):
         return confirmed_receipt(remote,db,job)
 
 
-def frozen_binding(db, job):
+def bound_snapshot(db, job):
     bound = db.execute("""SELECT f.*, d.state, d.frozen, d.rev, d.platform, d.account, d.row_id,d.provider
         FROM frozen_deliveries f JOIN drafts d ON d.id=f.draft WHERE f.job=?""",(job["id"],)).fetchone()
     if not bound or bound["state"]!="approved" or bound["frozen"]!=bound["snapshot"] or digest(bound["snapshot"])!=bound["sha"]:
@@ -120,6 +120,11 @@ def frozen_binding(db, job):
     if (bound["row_id"],bound["platform"],bound["account"],bound["rev"],bound["planned"]) != (
             job["row_id"],job["platform"],job["account"],job["revision"],job["slot"]):
         raise ValueError("任务账号、版本或排期与冻结绑定不一致")
+    return bound
+
+
+def frozen_binding(db, job):
+    bound=bound_snapshot(db,job)
     if bound["provider"]=="reprint":
         return dict(bound,approval=origin(db,job["row_id"],job["platform"],bound["sha"],bound["rev"]))
     return dict(bound,approval=None)

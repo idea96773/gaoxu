@@ -121,6 +121,35 @@ class FrozenDelivery(unittest.TestCase):
         self.assertEqual(self.post(f"jobs/{other}/reschedule",body|dict(time=agreed,expected_available=agreed))["slot"],agreed)
         self.assertEqual(self.detail(other)["delivery"]["planned"],agreed)
 
+    def test_backup_verifies_crash_window_then_rejects_mismatched_ledger(self):
+        from . import backup
+        draft,_=self.freeze(self.targets[0])
+        job=self.schedule(draft,self.slot)["id"]
+        self.crash(self.slot)
+        bundle=backup.create(self.path,self.path.parent/"archive")
+        report=backup.verify(bundle)
+        self.assertEqual((report["delivery_receipts"],report["pending_reconciliation"]),(1,1))
+        restored=backup.restore(bundle,self.path.parent/"restore")
+        drain(restored/backup.DATABASES[0],self.slot+31)
+        self.assertEqual(self.detail(job)["job"]["state"],"running")
+        with transaction(restored/backup.DATABASES[0],False) as db:
+            self.assertEqual(db.execute("SELECT state FROM jobs WHERE id=?",(job,)).fetchone()[0],"done")
+
+        # Both SQLite files are individually healthy and still match their manifest.
+        ledger=bundle/backup.DATABASES[1]
+        with transaction(ledger) as db:
+            db.execute("UPDATE delivered_drafts SET account='另一模拟账号'")
+        manifest=bundle/"manifest.json"
+        content=json.loads(manifest.read_text(encoding="utf-8"))
+        content["sha256"][ledger.name]=backup.checksum(ledger)
+        manifest.write_text(json.dumps(content),encoding="utf-8")
+        with self.assertRaisesRegex(ValueError,"冻结稿任务"):
+            backup.verify(bundle)
+        destination=self.path.parent/"bad-restore"
+        with self.assertRaisesRegex(ValueError,"冻结稿任务"):
+            backup.restore(bundle,destination)
+        self.assertFalse(destination.exists())
+
     def test_crash_before_and_after_acceptance(self):
         did,frozen=self.freeze(self.targets[0])
         peer,_=self.freeze(self.targets[1])

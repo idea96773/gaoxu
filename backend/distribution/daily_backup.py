@@ -3,6 +3,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import stat
 import time
 import uuid
@@ -10,7 +11,7 @@ from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .backup import DATABASES, checksum, create, database, inspect
+from .backup import DATABASES, checksum, create, database, verify_contents
 from .store import BEIJING, ledger_path, transaction
 
 KEEP = 7
@@ -71,6 +72,7 @@ def verify_bundle(folder,owner):
     for name in DATABASES:
         if checksum(folder/name)!=manifest["sha256"][name]:
             raise ValueError("自动备份文件校验失败")
+    verify_contents(folder)
 
 
 def snapshot(path,policy,day,allow_create):
@@ -84,8 +86,6 @@ def snapshot(path,policy,day,allow_create):
     folder=root/day
     if folder.exists():
         verify_bundle(folder,owner)
-        for name in DATABASES:
-            inspect(folder/name)
     else:
         if not allow_create:
             raise ValueError("本轮备份多次中断，未找到完整副本")
@@ -104,14 +104,15 @@ def snapshot(path,policy,day,allow_create):
     verified=0
     for previous in older:
         try:
-            verify_bundle(previous,owner)
+            if previous!=folder:
+                verify_bundle(previous,owner)
             verified+=1
             if verified<=KEEP:
                 continue
             for name in (*DATABASES,"manifest.json"):
                 (previous/name).unlink()
             previous.rmdir()
-        except (ValueError,OSError):
+        except (ValueError,OSError,sqlite3.DatabaseError):
             warning="已有新备份；较早的备份目录需要人工核对"
     return folder,warning
 

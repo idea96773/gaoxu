@@ -207,7 +207,10 @@ uv pip install --python .dist-venv/Scripts/python.exe websockets==15.0.1
 
 ```powershell
 ..\.dist-venv\Scripts\python.exe -m distribution.backup create --output E:\稿序备份
+..\.dist-venv\Scripts\python.exe -m distribution.backup verify E:\稿序备份\某次备份
 ..\.dist-venv\Scripts\python.exe -m distribution.backup restore E:\稿序备份\某次备份 E:\稿序恢复\本次恢复
 ```
 
-恢复命令核对两份文件、数据库结构和外键，将数据写入新目录。原程序继续使用原数据库。需要使用恢复副本时，先关闭原实例，将 `DIST_DB` 设为新目录中 `dry-run.sqlite` 的绝对路径，再启动程序。恢复点之后的操作不在该副本中，启用真实草稿桥之前应核对平台草稿箱和备份时间。恢复副本中待发送或结果不确定的真实草稿任务需人工核对。备份含正文和图片，应放在自己的受限磁盘目录。
+可用 `verify` 只读核对已有备份。除文件摘要、数据库结构和外键外，程序会把模拟回执逐笔对应到任务，核对冻结稿版本、账号、排期和归档配图的实际内容摘要。`pending_reconciliation` 表示接收端已有回执、主库仍留有发送尝试的任务数；恢复时可用原回执对账。每日备份保留期只计算通过核对的副本。
+
+恢复命令先核对复制出的两份库，通过后才交付新目录。原程序继续使用原数据库。需要使用恢复副本时，先关闭原实例，将 `DIST_DB` 设为新目录中 `dry-run.sqlite` 的绝对路径，再启动程序。恢复点之后的操作不在该副本中，启用真实草稿桥之前应核对平台草稿箱和备份时间。恢复副本中待发送或结果不确定的真实草稿任务需人工核对。备份含正文和图片，应放在自己的受限磁盘目录。

@@ -111,9 +111,12 @@
           <p v-if="job.delivery.received">模拟接收端核对　{{job.delivery.received.matches?'与冻结稿一致':'内容不一致'}}</p>
         </div>
         <PlatformDraftPanel v-if="jobOpen && job.job.platform==='zhihu' && job.delivery?.snapshot.kind==='reprint'" :key="job.job.id" :job="job" :api="api" />
+        <div v-for="entry in job.delivery?.reschedules" :key="entry.changed+'-'+entry.after_slot" class="record">
+          <small>改期于 {{date(entry.changed)}}<br>{{date(entry.before_slot)}} → {{date(entry.after_slot)}}</small>
+        </div>
         <p>状态 {{label(job.job.state)}} · 执行 {{job.job.attempts}} 次</p>
         <p>计划 {{date(job.job.slot)}}　完成 {{date(job.job.finished)}}</p><p>模拟回执 {{job.job.receipt||'—'}}</p><p>{{job.job.failure}}</p>
-        <div v-if="job.job.stage==='publish' && job.job.state==='ready'"><label>改期（北京时间） <input v-model="newTime" type="datetime-local"></label> <el-button @click="reschedule">保存改期</el-button></div>
+        <div v-if="['publish','deliver'].includes(job.job.stage) && job.job.state==='ready'"><label>改期（北京时间） <input v-model="newTime" type="datetime-local"></label> <el-button @click="reschedule">保存改期</el-button></div>
         <el-button v-if="job.job.state==='failed'" @click="retry(job.job.id)">仅重试此项</el-button>
         <div v-for="h in job.history" :key="h.seq" class="record"><span>#{{h.seq}}　{{date(h.started)}}</span><span>{{label(h.outcome)}} {{h.reason}}</span></div>
       </template>
@@ -206,7 +209,7 @@ async function cancelBatch(){try{await ElMessageBox.confirm('取消本批次未�
 async function openArticle(id){await action(async()=>{article.value=await api('articles/'+id);articleOpen.value=true})}
 async function openJob(id){await action(async()=>{job.value=await api('jobs/'+id);newTime.value='';jobOpen.value=true})}
 async function retry(id){await action(async()=>{await api('jobs/'+id+'/retry',{});if(jobOpen.value)job.value=await api('jobs/'+id);ElMessage.success('已重新排队')})}
-async function reschedule(){await action(async()=>{const t=Date.parse(newTime.value+':00+08:00')/1000;if(!Number.isFinite(t))throw Error('请选择北京时间');await api('jobs/'+job.value.job.id+'/reschedule',{time:t});job.value=await api('jobs/'+job.value.job.id)})}
+async function reschedule(){await action(async()=>{const t=Date.parse(newTime.value+':00+08:00')/1000;if(!Number.isFinite(t))throw Error('请选择北京时间');await api('jobs/'+job.value.job.id+'/reschedule',{time:t,expected_slot:job.value.job.slot});job.value=await api('jobs/'+job.value.job.id)})}
 let timer,closed=false
 async function poll(){await refresh();if(!closed)timer=setTimeout(poll,3000)}
 onMounted(poll)

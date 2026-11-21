@@ -135,7 +135,7 @@ def control_batch(path,bid,action,now):
 
 def job_action(path,jid,action,data,now):
     with transaction(path) as db:
-        j=db.execute("""SELECT j.*,b.control,b.rules FROM jobs j JOIN rows r ON r.id=j.row_id
+        j=db.execute("""SELECT j.*,b.control,b.rules,r.canonical FROM jobs j JOIN rows r ON r.id=j.row_id
              JOIN batches b ON b.id=r.batch WHERE j.id=?""",(jid,)).fetchone()
         if not j:
             raise KeyError("找不到任务")
@@ -148,6 +148,8 @@ def job_action(path,jid,action,data,now):
                 raise ValueError("只能重试失败的步骤")
             db.execute("UPDATE jobs SET state='ready',due=?,failure='' WHERE id=?",(now,jid))
         elif action=="reschedule":
+            if j["stage"]=="deliver":
+                return delivery.move_slot(path,db,j,data,now)
             if j["stage"]!="publish" or j["state"]!="ready":
                 raise ValueError("只能改期尚未领取的发布任务")
             stamp=data.get("time")

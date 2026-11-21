@@ -40,9 +40,7 @@ def schedule_in(db, draft_id, data, now):
     if requested is not None and not now <= requested <= now+366*86400:
         raise ValueError("请选择未来一年内的北京时间")
     limits = json.loads(draft["rules"])
-    bookings = db.execute("""SELECT coalesce(finished,slot) mark, account FROM jobs
-        WHERE stage='deliver' AND platform=? AND state!='cancelled' ORDER BY mark""", (draft["platform"],)).fetchall()
-    slot = available_time(requested or now, draft["account"], limits, bookings, check_gaps=True)
+    slot = free_slot(db,draft["platform"],draft["account"],requested or now,limits)
     if requested is not None and requested != slot:
         when = datetime.fromtimestamp(slot, BEIJING).strftime("%Y-%m-%d %H:%M:%S")
         raise ValueError("所选排期与时间窗、间隔或日上限冲突；可选北京时间 " + when)
@@ -52,6 +50,37 @@ def schedule_in(db, draft_id, data, now):
     db.execute("INSERT INTO frozen_deliveries VALUES(?,?,?,?,?,?)",
                (job,draft_id,requested,slot,payload,digest(payload)))
     return {"id":job, "slot":slot, "state":"ready", "created":True}
+
+
+def free_slot(db, platform, account, stamp, limits, exclude=0):
+    bookings=db.execute("""SELECT coalesce(finished,slot) mark,account FROM jobs WHERE stage='deliver'
+        AND platform=? AND state!='cancelled' AND id!=? ORDER BY mark""",(platform,exclude)).fetchall()
+    return available_time(stamp,account,limits,bookings,check_gaps=True)
+
+
+def move_slot(path, db, job, data, now):
+    stamp,previous=data.get("time"),data.get("expected_slot")
+    if type(stamp) is not int or type(previous) is not int:
+        raise ValueError("请刷新后选择新的北京时间")
+    if job["state"]!="ready" or receipt(path,job):
+        raise ValueError("只能调整尚未领取、没有接收回执的任务")
+    if job["slot"]==stamp:
+        return
+    if job["slot"]!=previous:
+        raise ValueError("排期已被其他操作修改，请刷新任务")
+    if not now<=stamp<=now+366*86400:
+        raise ValueError("请选择未来一年内的北京时间")
+    slot=free_slot(db,job["platform"],job["account"],stamp,json.loads(job["rules"]),job["id"])
+    if slot!=stamp:
+        suggestion=datetime.fromtimestamp(slot,BEIJING).strftime("%Y-%m-%d %H:%M:%S")
+        raise ValueError("新排期与账号或平台规则冲突，可用北京时间 "+suggestion)
+    bound=db.execute("UPDATE frozen_deliveries SET planned=? WHERE job=? AND planned=?",
+                     (slot,job["id"],previous))
+    if bound.rowcount!=1:
+        raise ValueError("任务排期与冻结绑定不一致")
+    db.execute("UPDATE jobs SET slot=?,due=? WHERE id=?",(slot,slot,job["id"]))
+    db.execute("INSERT INTO delivery_reschedules(job,before_slot,after_slot,changed) VALUES(?,?,?,?)",
+               (job["id"],previous,slot,now))
 
 
 def receipt(path, job):
@@ -103,5 +132,6 @@ def details(path, db, job):
                         matches=all(delivered[k]==v for k,v in expected.items()))
     return {"draft_id":bound["draft"],"sha":bound["sha"],"planned":bound["planned"],
             "snapshot":json.loads(bound["snapshot"]),
-            "received":received}
+            "received":received, "reschedules":[dict(r) for r in db.execute(
+                "SELECT before_slot,after_slot,changed FROM delivery_reschedules WHERE job=? ORDER BY id",(job["id"],))]}
 

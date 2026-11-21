@@ -186,8 +186,10 @@ DSH 可先调用 `library_list` 选择文章，调用 `reprint_settings` 读取�
 
 ```powershell
 uv pip install --python .dist-venv/Scripts/python.exe websockets==15.0.1
-.\scripts\start-zhihu-drafts.ps1 -ExtensionId '替换为扩展ID'
+.\scripts\start-zhihu-drafts.ps1 -ExtensionId '替换为扩展ID' -JobId 123
 ```
+
+首次验证一篇时，把示例中的 123 换成该稿任务详情显示的交付任务编号。任务详情也会显示带本稿编号的启动命令。确认界面显示「仅任务 #编号」和指定账号后，再确认保存。这次连接及重连都只领取这一份冻结稿。同一账号的其他排队稿件继续等待。完成后按 Ctrl+C 关闭草稿桥；今后需要处理整个账号的已确认队列时，可省略 `-JobId` 启动。
 
 在「知乎草稿账号」中选择或填写本机分稿别名，核对草稿桥显示的知乎昵称和账号 ID，点击「绑定当前登录账号」。同一知乎 ID 同时只对应一个别名。要绑定第二个账号，切换专用浏览器登录，刷新账号后绑定另一个别名。登录状态由该浏览器配置保存；管理台记下知乎 ID、昵称和别名。已绑定的别名可直接在批量转载窗口勾选。
 

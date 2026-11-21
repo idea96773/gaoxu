@@ -1,7 +1,8 @@
 ﻿param(
     [Parameter(Mandatory=$true)][ValidatePattern('^[a-p]{32}$')][string]$ExtensionId,
     [ValidateRange(1024,65535)][int]$Port=9537,
-    [switch]$CheckOnly
+    [switch]$CheckOnly,
+    [ValidateRange(1,9223372036854775807)][long]$JobId
 )
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
@@ -15,6 +16,7 @@ Push-Location (Join-Path $root 'backend')
 try {
     $workerArgs=@('-m','distribution.zhihu_draft_worker','--extension-id',$ExtensionId,'--port',"$Port")
     if ($CheckOnly) { $workerArgs+='--check-only' }
+    if ($PSBoundParameters.ContainsKey('JobId')) { $workerArgs+=@('--job',"$JobId") }
     & $python @workerArgs
     $result=$LASTEXITCODE
 } finally {

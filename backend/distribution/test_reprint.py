@@ -425,6 +425,48 @@ class Reprint(unittest.TestCase):
                 self.assertFalse(status(db)["connected"])
         self.assertEqual(self.client.get(accounts).json["bridge"]["phase"],"offline")
 
+    def test_scoped_bridge_leaves_older_job_for_same_account_queued(self):
+        from .draft_bridge import heartbeat, listener
+        from .platform_draft import claim as claim_draft
+        self.targets=[dict(platform="zhihu",account="模拟A")]
+        bid=self.create([self.source(71),self.source(72)])
+        self.prepare()
+        self.approve(bid,self.batch(bid)["reviews"])
+        older,selected=sorted(self.batch(bid)["deliveries"],key=lambda job:job["id"])
+        accounts=BASE+"zhihu-draft-accounts"
+
+        def endpoint(job):
+            return BASE+f"jobs/{job['id']}/platform-draft"
+
+        def queue(job):
+            url=endpoint(job)
+            revision=self.client.get(url).json["rights"]["revision"]
+            return self.client.post(url,json=dict(action="queue",scope_revision=revision,sha=job["sha"],
+                                                   user_id="fixture",consent=True))
+
+        with listener(self.path,9541,False,"original"):
+            heartbeat(self.path,"fixture","测试账号",session="original")
+            bound=self.client.post(accounts,json=dict(action="bind",alias="模拟A",revision=0,user_id="fixture"))
+            self.assertEqual(bound.status_code,200)
+            for job in (older,selected):
+                url=endpoint(job)
+                revision=self.client.get(url).json["rights"]["revision"]
+                granted=self.client.post(url,json=dict(action="scope",scope="zhihu_draft",rights_confirmed=True,
+                    sha=job["sha"],user_id="fixture",scope_revision=revision))
+                self.assertEqual(granted.status_code,200)
+            self.assertEqual(queue(older).status_code,200)
+        with listener(self.path,9541,False,"one",selected["id"]):
+            heartbeat(self.path,"fixture","测试账号",session="one")
+            self.assertEqual(self.client.get(accounts).json["bridge"]["job_id"],selected["id"])
+            self.assertIn("仅处理任务",queue(older).json["error"])
+            self.assertEqual(queue(selected).status_code,200)
+            self.assertIsNone(claim_draft(self.path,"other",selected["id"]))
+            self.assertEqual(claim_draft(self.path,"fixture",selected["id"])["job"],selected["id"])
+            self.assertIsNone(claim_draft(self.path,"fixture",selected["id"]))
+            self.assertEqual(self.client.get(endpoint(older)).json["record"]["state"],"queued")
+        self.assertIsNone(self.client.get(accounts).json["bridge"]["job_id"])
+        self.assertEqual(claim_draft(self.path,"fixture")["job"],older["id"])
+
     def test_zhihu_draft_recipient_follows_frozen_identity(self):
         # All identities and heartbeats are fixtures in this test's temporary database.
         from .zhihu_draft_worker import heartbeat

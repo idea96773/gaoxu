@@ -4,7 +4,7 @@
     <p>分稿别名　{{job.job.account}}　<el-button link @click="$emit('accounts',job.job.account)">管理知乎账号</el-button></p>
     <p>{{recipientSource==='binding'?'本次保存将锁定账号':'本稿指定账号'}}　{{recipient?.name || '待绑定'}}
       <small v-if="recipient">账号 ID　{{recipient.user_id}}</small></p>
-    <BridgeConnection :bridge="bridge" :account="account" :target="recipient"/>
+    <BridgeConnection :bridge="bridge" :account="account" :target="recipient" :job-id="job.job.id"/>
     <div v-if="grant" class="scope">
       <p>转载授权　<strong>{{grant.scope==='local'?'仅本地试稿':'可用于指定知乎账号的草稿箱'}}</strong>
         <small v-if="grant.scope==='zhihu_draft'">获准账号 ID　{{grant.user_id}}</small></p>
@@ -39,7 +39,8 @@ const grant=ref(null),history=ref([]),permitted=ref(false)
 const bridge=ref(null),account=ref(null),record=ref(null),inspections=ref([]),busy=ref(false),error=ref('')
 const labels={queued:'等待保存',preparing:'准备配图',sending:'正在请求保存',saved:'已找到草稿，待核对',verified:'已人工核对',needs_review:'核对发现问题',unknown:'回执不确定，需核对草稿箱',failed:'准备失败',cancelled:'已取消'}
 const path='jobs/'+props.job.job.id+'/platform-draft'
-const canSend=computed(()=>!bridge.value?.check_only && permitted.value && recipient.value && account.value && control.value==='active' && recipient.value.user_id===account.value.user_id && props.job.job.state!=='cancelled' && (!record.value ||
+const canSend=computed(()=>!bridge.value?.check_only && (!bridge.value?.job_id || bridge.value.job_id===props.job.job.id) &&
+    permitted.value && recipient.value && account.value && control.value==='active' && recipient.value.user_id===account.value.user_id && props.job.job.state!=='cancelled' && (!record.value ||
     (['failed','cancelled'].includes(record.value.state) && record.value.user_id===account.value.user_id)))
 let stopped=false,timer,sequence=0
 async function load(){

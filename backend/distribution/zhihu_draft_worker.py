@@ -146,7 +146,7 @@ def run_task(path,task,bridge):
         raise
 
 
-def serve_bridge(path,port,extension_id,token,check_only=False):
+def serve_bridge(path,port,extension_id,token,check_only=False,job_id=None):
     from websockets.sync.server import serve
     gate=threading.Lock()
     session=uuid.uuid4().hex
@@ -162,7 +162,7 @@ def serve_bridge(path,port,extension_id,token,check_only=False):
                 uid,name=bridge.identity()
                 confirmed=True
                 heartbeat(path,uid,name,session=session)
-                task=claim(path,uid) if uid and not check_only else None
+                task=claim(path,uid,job_id) if uid and not check_only else None
                 if task:
                     heartbeat(path,uid,name,session=session,phase="working")
                     run_task(path,task,bridge)
@@ -176,14 +176,23 @@ def serve_bridge(path,port,extension_id,token,check_only=False):
             finally:
                 gate.release()
     initialize(path)
+    if job_id is not None:
+        with transaction(path,False) as db:
+            row=frozen_reprint.source(db,job_id,platform="zhihu")
+            if row["control"]=="cancelled" or row["state"]=="cancelled":
+                raise ValueError("所选任务已取消，请重新选择知乎转载任务")
     with instance_lock(str(path)+".draft-worker.lock"), serve(handle,"127.0.0.1",port,origins=["chrome-extension://"+extension_id]) as server:
         if not check_only:
             with transaction(path) as db:
                 now=int(time.time())
-                db.execute("UPDATE platform_drafts SET state='failed',reason='准备过程中断，可重试',updated=? WHERE state='preparing'",(now,))
-                db.execute("UPDATE platform_drafts SET state='unknown',reason='保存期间中断，请核对草稿箱',updated=? WHERE state='sending'",(now,))
-        with listener(path,port,check_only,session):
-            print(f"稿序草稿桥已启动 ws://127.0.0.1:{port}（{'仅核对连接' if check_only else '草稿交付'}）",flush=True)
+                db.execute("""UPDATE platform_drafts SET state='failed',reason='准备过程中断，可重试',updated=?
+                    WHERE state='preparing' AND (? IS NULL OR job=?)""",(now,job_id,job_id))
+                db.execute("""UPDATE platform_drafts SET state='unknown',reason='保存期间中断，请核对草稿箱',updated=?
+                    WHERE state='sending' AND (? IS NULL OR job=?)""",(now,job_id,job_id))
+        with listener(path,port,check_only,session,job_id):
+            mode="仅核对连接" if check_only else "草稿交付"
+            scope=f"任务 #{job_id}" if job_id is not None else "账号已确认队列"
+            print(f"稿序草稿桥已启动 ws://127.0.0.1:{port}（{mode} · {scope}）",flush=True)
             server.serve_forever()
 
 
@@ -193,10 +202,16 @@ if __name__=="__main__":
     parser.add_argument("--port",type=int,default=9537)
     parser.add_argument("--extension-id",required=True)
     parser.add_argument("--check-only",action="store_true")
+    parser.add_argument("--job",type=int,help="只处理这个已冻结的知乎转载交付任务编号")
     args=parser.parse_args()
     if not re.fullmatch(r"[a-p]{32}",args.extension_id):
         parser.error("请输入 Chrome 扩展管理页显示的扩展 ID")
+    if args.job is not None and not 1<=args.job<=2**63-1:
+        parser.error("请输入有效的正整数任务编号")
     secret=os.environ.get("WECHATSYNC_TOKEN") or getpass.getpass("请输入在扩展中设置的连接 Token（隐藏输入）: ")
     if not secret:
         parser.error("需要扩展连接 Token")
-    serve_bridge(args.db,args.port,args.extension_id,secret,args.check_only)
+    try:
+        serve_bridge(args.db,args.port,args.extension_id,secret,args.check_only,args.job)
+    except ValueError as exc:
+        parser.exit(1,f"{exc}\n")

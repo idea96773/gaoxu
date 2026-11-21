@@ -97,7 +97,7 @@ def batch_view(db, bid, detail=True):
                     state="processing"
                 else:
                     state="partial" if "done" in states else ("failed" if "failed" in states else "cancelled")
-            elif state in ("pending","preparing","invalid") and batch["control"]=="cancelled":
+            elif state in ("pending","preparing","invalid","returned") and batch["control"]=="cancelled":
                 state="cancelled"
             elif state=="preparing" and review["prepare_state"]=="running":
                 state="reading"

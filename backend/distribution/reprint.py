@@ -17,6 +17,11 @@ from .store import canonicalize, clean_rules, compact, digest, enqueue, transact
 DESTINATION = "https://mp.weixin.qq.com/s/YFkz4nZBTLm-GHtqz_5lUw"
 CHANNELS = ("zhihu", "toutiao")
 
+# Reading the source again advances j.revision. Reopening the same snapshot
+# also starts a fresh review, including on older batches without a prepare job.
+REVIEW_REVISION = """(coalesce(j.revision,1)+(SELECT count(*) FROM reprint_returns h
+    WHERE h.row_id=q.row_id AND h.resumed_as='snapshot'))"""
+
 
 def pools_for(targets):
     if not isinstance(targets,list) or not 1<=len(targets)<=28:
@@ -298,7 +303,7 @@ def prepare_one(path,ticket,now):
 
 def approve_one(path,bid,rid,sha,now,revision=1,expected_prior=None):
     with transaction(path) as db:
-        row=db.execute("""SELECT q.*,r.canonical,b.targets,b.control,coalesce(j.revision,1) revision
+        row=db.execute(f"""SELECT q.*,r.canonical,b.targets,b.control,{REVIEW_REVISION} revision
             FROM reprint_reviews q JOIN rows r ON r.id=q.row_id LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'
             JOIN batches b ON b.id=r.batch WHERE b.id=? AND r.id=?""",(bid,rid)).fetchone()
         if not row or row["sha"]!=sha or type(revision) is not int or row["revision"]!=revision:
@@ -343,8 +348,8 @@ def approve_one(path,bid,rid,sha,now,revision=1,expected_prior=None):
 
 
 def overview(db,bid,platforms=()):
-    items=db.execute("""SELECT r.id,r.line,r.note,r.canonical,r.owner,q.title,q.state,q.sha,j.id AS prepare_job,
-        coalesce(j.revision,1) revision,j.state AS prepare_state,j.attempts AS prepare_attempts FROM rows r
+    items=db.execute(f"""SELECT r.id,r.line,r.note,r.canonical,r.owner,q.title,q.state,q.sha,j.id AS prepare_job,
+        {REVIEW_REVISION} revision,j.state AS prepare_state,j.attempts AS prepare_attempts FROM rows r
         JOIN reprint_reviews q ON r.id=q.row_id
         LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare' WHERE r.batch=? ORDER BY r.line""",(bid,)).fetchall()
     assignments=db.execute("""SELECT a.row_id,a.platform,a.reused,j.account,j.slot,j.due,j.state,j.id,j.receipt,f.draft,
@@ -356,10 +361,17 @@ def overview(db,bid,platforms=()):
     by_row={}
     for a in assignments:
         by_row.setdefault(a["row_id"],[]).append(dict(a))
+    returns={}
+    if platforms:
+        for event in db.execute("""SELECT h.* FROM rows r JOIN reprint_returns h ON h.row_id=r.id
+                WHERE r.batch=? ORDER BY h.row_id,h.revision DESC""",(bid,)):
+            returns.setdefault(event["row_id"],[]).append(dict(event))
     prior=existing_deliveries(db,[r["canonical"] for r in items if r["state"]=="pending"]) if platforms else {}
     result=[]
     for r in items:
         row=dict(r)
+        if platforms:
+            row["returns"]=returns.get(r["id"],[])
         history=prior.get(row.pop("canonical"),{})
         row["assignments"]=([dict(job,reused=1) for job in by_row.get(row["owner"],[])]
                             if row["owner"] else by_row.get(r["id"],[]))
@@ -399,34 +411,71 @@ def register(api,path,current_root,body):
     def new_reprints():
         return jsonify(id=create(path,current_root(),body())),201
 
-    @api.post("/reprints/<bid>/<int:rid>/reread")
-    def reread_reprint(bid,rid):
+    @api.post("/reprints/<bid>/<int:rid>/reread",defaults={"action":"reread"})
+    @api.post("/reprints/<bid>/<int:rid>/return",defaults={"action":"return"})
+    @api.post("/reprints/<bid>/<int:rid>/reopen",defaults={"action":"reopen"})
+    def change_review(bid,rid,action):
         data=body()
+        reason=data.get("reason")
+        if action=="return" and (not isinstance(reason,str) or not 1<=len(reason.strip())<=500):
+            raise ValueError("请填写 1 至 500 字的退回原因")
+        now=int(time.time())
         with transaction(path) as db:
-            row=db.execute("""SELECT q.state,q.sha,j.id,j.revision,j.state job_state,b.control
-                FROM reprint_reviews q JOIN rows r ON r.id=q.row_id JOIN batches b ON b.id=r.batch
-                JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'
-                JOIN reprint_sources s ON s.row_id=r.id WHERE r.id=? AND b.id=?""",(rid,bid)).fetchone()
+            row=db.execute(f"""SELECT q.state,q.sha,j.id,j.state job_state,{REVIEW_REVISION} revision,
+                b.control,s.directory FROM reprint_reviews q JOIN rows r ON r.id=q.row_id
+                JOIN batches b ON b.id=r.batch LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'
+                LEFT JOIN reprint_sources s ON s.row_id=r.id WHERE r.id=? AND b.id=?""",(rid,bid)).fetchone()
             if not row:
-                raise ValueError("此稿缺少可重读的来源目录，请重新选稿")
-            if (row["control"]!="active" or row["state"]!="pending" or row["job_state"]!="done"
-                    or data.get("sha")!=row["sha"] or type(data.get("revision")) is not int or data["revision"]!=row["revision"]):
-                return jsonify(error="批次或预览版本已变化，请刷新后再操作"),409
+                raise KeyError("找不到本批次的转载稿")
+            revision=row["revision"]
+            if (row["control"]!="active" or not row["sha"] or data.get("sha")!=row["sha"]
+                    or type(data.get("revision")) is not int or data["revision"]!=revision):
+                return jsonify(error="批次或审核版本已变化，请刷新后再操作"),409
+            state=row["state"]
+            if action=="return":
+                if state=="returned":
+                    prior=db.execute("SELECT reason FROM reprint_returns WHERE row_id=? AND revision=?",
+                                     (rid,revision)).fetchone()
+                    if prior and prior["reason"]==reason.strip():
+                        return jsonify(state=state,revision=revision)
+                if state!="pending":
+                    return jsonify(error="只能退回本批次仍待审核的文章"),409
+                db.execute("""INSERT INTO reprint_returns(row_id,revision,sha,reason,returned_at)
+                    VALUES(?,?,?,?,?)""",(rid,revision,row["sha"],reason.strip(),now))
+                db.execute("UPDATE reprint_reviews SET state='returned' WHERE row_id=?",(rid,))
+                return jsonify(state="returned",revision=revision)
+            if action=="reopen" and state!="returned":
+                return jsonify(error="只有已退回的稿件可以重新送审"),409
+            if action=="reread":
+                if not row["directory"] or not row["id"]:
+                    raise ValueError("此稿缺少可重读的来源目录，请重新选稿")
+                if (state not in ("pending","returned") or data.get("expected_state","pending")!=state
+                        or row["job_state"]!="done"):
+                    return jsonify(error="稿件当前无法重读，请刷新后再操作"),409
+            if state=="returned":
+                changed=db.execute("""UPDATE reprint_returns SET resumed_at=?,resumed_as=?
+                    WHERE row_id=? AND revision=? AND resumed_at IS NULL""",
+                    (now,"snapshot" if action=="reopen" else "directory",rid,revision))
+                if changed.rowcount!=1:
+                    raise ValueError("找不到对应的退回记录，请核对审核历史")
+            if action=="reopen":
+                db.execute("UPDATE reprint_reviews SET state='pending' WHERE row_id=?",(rid,))
+                return jsonify(state="pending",revision=revision+1)
             db.execute("""UPDATE jobs SET state='ready',due=?,finished=NULL,failure='',revision=revision+1
-                WHERE id=?""",(int(time.time()),row["id"]))
+                WHERE id=?""",(now,row["id"]))
             db.execute("UPDATE reprint_reviews SET state='preparing',sha='',snapshot='null' WHERE row_id=?",(rid,))
-            return jsonify(id=row["id"],revision=row["revision"]+1)
+            return jsonify(id=row["id"],revision=revision+1)
 
     @api.get("/reprints/<bid>/<int:rid>")
     def preview_reprint(bid,rid):
         with transaction(path,False) as db:
-            r=db.execute("""SELECT q.*,coalesce(j.revision,1) revision,b.targets,r.canonical,r.owner FROM reprint_reviews q JOIN rows r ON r.id=q.row_id
+            r=db.execute(f"""SELECT q.*,{REVIEW_REVISION} revision,b.targets,r.canonical,r.owner FROM reprint_reviews q JOIN rows r ON r.id=q.row_id
                 JOIN batches b ON b.id=r.batch
                 LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'
                 WHERE r.batch=? AND r.id=?""",(bid,rid)).fetchone()
             if not r:
                 raise KeyError("找不到转载稿")
-            if r["state"] not in ("pending","approved","duplicate"):
+            if r["state"] not in ("pending","returned","approved","duplicate"):
                 return jsonify(error="这篇文章尚无可审核的稿件"),409
             platform=request.args.get("platform")
             platforms=pools_for(json.loads(r["targets"]))

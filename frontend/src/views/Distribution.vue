@@ -13,6 +13,7 @@
     <nav v-if="overview" class="batchbar" aria-label="全部批次的工作进度">
       <b>全部批次</b>
       <el-button @click="openWork('pending_reprint')">待审转载 {{overview.pending_reprint}} 篇</el-button>
+      <el-button v-if="overview.returned_reprint" @click="openWork('returned_reprint')">审核退回 {{overview.returned_reprint}} 篇</el-button>
       <el-button @click="openWork('queued_delivery')">冻结稿待交付 {{overview.queued_delivery}} 份</el-button>
       <el-button @click="openWork('confirmed_delivery')">今日模拟交付 {{overview.delivered_today}} 份</el-button>
       <el-button @click="failuresOpen=true">跨批次失败待办 {{overview.failed_steps}} 项</el-button>
@@ -33,7 +34,7 @@
         <div v-for="[title,num] in (tab==='deliveries' || batch.reprint) ? deliveryMetrics : [['导入行数',batch.rows_total],['有效唯一文章',batch.unique],['重复行',batch.counts.duplicate||0],['失败步骤',batch.failures.length],['模拟回执',batch.simulated+' / '+batch.expected],['真实公开',batch.public]]" :key="title">
           <small>{{title}}</small><strong>{{num}}</strong></div>
       </div>
-      <p v-if="batch.reprint" class="progress">共 {{batch.rows_total}} 篇　等待读取 {{batch.counts.preparing||0}}　读取中 {{batch.counts.reading||0}}　待审核 {{batch.counts.pending||0}}　交付中 {{batch.counts.processing||0}}　全部交付 {{batch.counts.done||0}}　重复 {{batch.counts.duplicate||0}}　资料异常 {{batch.counts.invalid||0}}　部分成功 {{batch.counts.partial||0}}　失败 {{batch.counts.failed||0}}　取消 {{batch.counts.cancelled||0}}</p>
+      <p v-if="batch.reprint" class="progress">共 {{batch.rows_total}} 篇　等待读取 {{batch.counts.preparing||0}}　读取中 {{batch.counts.reading||0}}　待审核 {{batch.counts.pending||0}}　审核退回 {{batch.counts.returned||0}}　交付中 {{batch.counts.processing||0}}　全部交付 {{batch.counts.done||0}}　重复 {{batch.counts.duplicate||0}}　资料异常 {{batch.counts.invalid||0}}　部分成功 {{batch.counts.partial||0}}　失败 {{batch.counts.failed||0}}　取消 {{batch.counts.cancelled||0}}</p>
       <p v-if="!batch.reprint && tab!=='deliveries'" class="progress">模拟流程进度　已完成 {{batch.counts.done||0}}　处理中 {{batch.counts.processing||0}}　部分成功 {{batch.counts.partial||0}}　失败 {{batch.counts.failed||0}}　取消 {{batch.counts.cancelled||0}}　无效行 {{batch.counts.invalid||0}}</p>
       <div v-if="batch.has_local" class="batchbar"><span>成稿　待生成 {{batch.editorial?.queued||0}}　生成中 {{batch.editorial?.generating||0}}　待审核 {{batch.editorial?.editing||0}}　已冻结 {{batch.editorial?.approved||0}}　失败 {{batch.editorial?.failed||0}}</span>
         <el-button :disabled="!batch.ai_ready || batch.control!=='active'" @click="generateBatch">批量生成平台成稿</el-button></div>
@@ -189,7 +190,7 @@ const focusedRow=computed(()=>route.query.batch===batch.value?.id ? String(route
 const reviewBatch=computed(()=>focusedRow.value && batch.value?.reprint
   ? {...batch.value,reviews:batch.value.reviews.filter(row=>String(row.id)===focusedRow.value)} : batch.value)
 function openWork(work){
-  const query={view:'search',work,date_field:work==='pending_reprint'?'imported':'execution'}
+  const query={view:'search',work,date_field:['pending_reprint','returned_reprint'].includes(work)?'imported':'execution'}
   if(work==='confirmed_delivery')Object.assign(query,{date_field:'delivered',start:overview.value.today,end:overview.value.today})
   router.push({query})
 }

@@ -71,6 +71,10 @@ CREATE TABLE IF NOT EXISTS reprint_selections (
 CREATE TABLE IF NOT EXISTS reprint_reviews (
  row_id INTEGER PRIMARY KEY REFERENCES rows(id), title TEXT NOT NULL, state TEXT NOT NULL,
  sha TEXT NOT NULL, snapshot TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS reprint_returns (
+ row_id INTEGER NOT NULL REFERENCES reprint_reviews(row_id), revision INTEGER NOT NULL, sha TEXT NOT NULL,
+ reason TEXT NOT NULL, returned_at INTEGER NOT NULL, resumed_at INTEGER,
+ resumed_as TEXT CHECK(resumed_as IN ('snapshot','directory')), PRIMARY KEY(row_id,revision));
 CREATE TABLE IF NOT EXISTS reprint_assignments (
  row_id INTEGER REFERENCES rows(id), platform TEXT NOT NULL, job INTEGER NOT NULL REFERENCES jobs(id),
  reused INTEGER NOT NULL, PRIMARY KEY(row_id,platform));

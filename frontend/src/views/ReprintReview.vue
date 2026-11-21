@@ -16,13 +16,20 @@
     <el-table :data="batch.reviews" row-key="id">
       <el-table-column width="50"><template #default="{row}"><input type="checkbox" :aria-label="'选择审核 '+row.title" :disabled="row.state!=='pending'||!active" v-model="ids" :value="reviewKey(row)"></template></el-table-column>
       <el-table-column label="转载文章" min-width="190"><template #default="{row}"><b>{{row.line}} · {{row.title}}</b><p v-if="row.note">{{row.note}}</p>
-        <template v-if="['pending','approved','duplicate'].includes(row.state)">
-          <el-button v-for="p in rowPlatforms(row)" :key="p" type="primary" link @click="preview(row,p)">预览{{names[p]}}{{boundJob(row,p)?'冻结稿':'待审稿'}}</el-button>
+        <p v-if="row.state==='returned' && row.returns?.length">退回原因　{{row.returns[0].reason}}</p>
+        <details v-if="row.returns?.length"><summary>退回记录（{{row.returns.length}}）</summary>
+          <p v-for="entry in row.returns" :key="entry.revision">第 {{entry.revision}} 版 · {{date(entry.returned_at)}}　{{entry.reason}}
+            <small v-if="entry.resumed_at"> · {{date(entry.resumed_at)}} {{entry.resumed_as==='directory'?'从目录重读':'原稿重新送审'}}</small></p>
+        </details>
+        <template v-if="['pending','returned','approved','duplicate'].includes(row.state)">
+          <el-button v-for="p in rowPlatforms(row)" :key="p" type="primary" link @click="preview(row,p)">预览{{names[p]}}{{boundJob(row,p)?'冻结稿':row.state==='returned'?'退回稿':'待审稿'}}</el-button>
         </template>
-        <el-button v-if="active && row.state==='pending' && row.prepare_job" link :disabled="busy" @click="reread(row)">从目录重读</el-button>
+        <el-button v-if="active && row.state==='pending'" link :disabled="busy" @click="changeDecision(row,'return')">退回此稿</el-button>
+        <el-button v-if="active && row.state==='returned'" link :disabled="busy" @click="changeDecision(row,'reopen')">原稿重新送审</el-button>
+        <el-button v-if="active && ['pending','returned'].includes(row.state) && row.prepare_job" link :disabled="busy" @click="reread(row)">从目录重读</el-button>
         <el-button v-if="row.prepare_job" link @click="$emit('job',row.prepare_job)">读取记录（{{row.prepare_attempts}} 次）</el-button>
         <el-button v-if="row.prepare_state==='failed' && active" link type="primary" @click="$emit('retry',row.prepare_job,row.prepare_attempts)">重新读取这篇</el-button></template></el-table-column>
-      <el-table-column label="进度" width="98"><template #default="{row}">{{row.progress==='pending'?'待审核':label(row.progress)}}</template></el-table-column>
+      <el-table-column label="进度" width="98"><template #default="{row}">{{row.progress==='pending'?'待审核':row.progress==='returned'?'审核退回':label(row.progress)}}</template></el-table-column>
       <el-table-column label="模拟账号、排期和回执" min-width="230"><template #default="{row}">
         <template v-if="row.state==='pending'">
           <small v-if="row.missing_platforms?.length">审核后排期　{{row.missing_platforms.map(p=>names[p]).join('、')}}</small>
@@ -65,7 +72,7 @@ function selectAll(e){ids.value=e.target.checked?pending.value.map(reviewKey):[]
 const frame=computed(()=>'<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src '+location.origin+'; style-src \'unsafe-inline\'"><style>body{max-width:680px;margin:18px auto;padding:0 16px;color:#242830;font:16px/1.8 system-ui}img{max-width:100%;height:auto}h1{font-size:24px}a{color:#1766aa}p{overflow-wrap:anywhere}</style>'+view.value.html)
 const previewKey=ref(''),previewPlatform=ref(''),previewTask=ref(null)
 const previewPlatforms=computed(()=>[...new Set(props.batch.targets.map(t=>t.platform))])
-const rowPlatforms=row=>row.state==='pending'?previewPlatforms.value:row.assignments.map(a=>a.platform)
+const rowPlatforms=row=>['pending','returned'].includes(row.state)?previewPlatforms.value:row.assignments.map(a=>a.platform)
 const boundJob=(row,p)=>(row.state==='pending'?row.prior_jobs:row.assignments)?.find(job=>job.platform===p)?.id ?? null
 const previewIdentity=(row,p)=>JSON.stringify([props.batch.id,reviewKey(row),row.state,p,boundJob(row,p)])
 const localImages=computed(()=>(view.value?.images || []).filter(src=>typeof src==='string' && /^\/api\/distribution\/media\/[a-f0-9]{64}$/.test(src)))
@@ -79,9 +86,34 @@ async function reread(row){
   try{await ElMessageBox.confirm('确认已修正下载目录内的正文或配图？重读后请重新审核这篇稿件。','从目录重读',{confirmButtonText:'重新读取',cancelButtonText:'返回'})}catch{return}
   busy.value=true;error.value=''
   try{
-    await props.api('reprints/'+bid+'/'+row.id+'/reread',{sha:row.sha,revision:row.revision})
+    await props.api('reprints/'+bid+'/'+row.id+'/reread',{sha:row.sha,revision:row.revision,expected_state:row.state})
     ids.value=ids.value.filter(key=>key!==reviewKey(row))
     emit('refresh');ElMessage.success('已排队重读这篇文章')
+  }catch(e){error.value=e.message}finally{busy.value=false}
+}
+async function changeDecision(row,action){
+  const bid=props.batch.id
+  const data={sha:row.sha,revision:row.revision}
+  try{
+    if(action==='return'){
+      const input=await ElMessageBox.prompt('请说明《'+row.title+'》需要处理的问题。','退回此稿',{
+        inputType:'textarea',inputPlaceholder:'例如：缺少一张配图，或转载授权需核实',
+        inputValidator:text=>!!text?.trim() && text.trim().length<=500 || '请填写 1 至 500 字的原因',
+        confirmButtonText:'记录并退回',cancelButtonText:'返回'
+      })
+      data.reason=input.value.trim()
+    }else{
+      await ElMessageBox.confirm('将《'+row.title+'》当前保存的正文和配图重新送审？如果已修改下载目录中的文件，请选择「从目录重读」。','原稿重新送审',{
+        confirmButtonText:'重新送审',cancelButtonText:'返回'
+      })
+    }
+  }catch{return}
+  busy.value=true;error.value=''
+  try{
+    await props.api('reprints/'+bid+'/'+row.id+'/'+action,data)
+    ids.value=ids.value.filter(key=>key!==reviewKey(row))
+    emit('refresh')
+    ElMessage.success(action==='return'?'已记录退回原因':'原稿已重新进入待审列表')
   }catch(e){error.value=e.message}finally{busy.value=false}
 }
 let previewRequest=0

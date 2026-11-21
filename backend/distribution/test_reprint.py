@@ -571,6 +571,62 @@ class Reprint(unittest.TestCase):
             self.prepare()
         self.assertEqual(self.batch(bid)["reviews"][0]["state"],"invalid")
 
+    def test_returned_review_is_isolated_and_requires_fresh_approval_after_reopen(self):
+        bid=self.create([self.source(61),self.source(62)])
+        self.prepare()
+        first,other=self.batch(bid)["reviews"]
+        url=BASE+f"reprints/{bid}/{first['id']}"
+        guard=dict(sha=first["sha"],revision=first["revision"])
+        reason="文末链接需要核对"
+        self.assertEqual(self.client.post(url+"/return",json=guard|dict(reason=" ")).status_code,400)
+        for _ in range(2):
+            self.assertEqual(self.client.post(url+"/return",json=guard|dict(reason=reason)).status_code,200)
+        blocked=self.batch(bid)
+        self.assertEqual(blocked["counts"],dict(pending=1,returned=1))
+        self.assertEqual(self.client.get(BASE+"batches?summary=1").json["overview"]["returned_reprint"],1)
+        self.assertEqual(len(blocked["reviews"][0]["returns"]),1)
+        self.assertEqual(blocked["reviews"][0]["returns"][0]["reason"],reason)
+        self.assertEqual(self.client.get(url+"?platform=zhihu").json["sha"],first["sha"])
+        self.assertEqual(self.client.post(url+"/reread",json=guard).status_code,409)
+        self.assertEqual(self.client.get(BASE+"article-search?work=returned_reprint").json["items"][0]["row_id"],first["id"])
+        self.assertIn("error",self.approve(bid,[first])[0])
+        self.approve(bid,[other])
+        self.assertEqual(len(self.batch(bid)["deliveries"]),2)
+        self.client.post(BASE+f"batches/{bid}/pause",json={})
+        self.assertEqual(self.client.post(url+"/reopen",json=guard).status_code,409)
+        self.client.post(BASE+f"batches/{bid}/resume",json={})
+        self.assertEqual(self.client.post(url+"/reopen",json=guard).status_code,200)
+        reopened=self.batch(bid)["reviews"][0]
+        self.assertEqual((reopened["state"],reopened["sha"],reopened["revision"]),("pending",first["sha"],first["revision"]+1))
+        self.assertEqual(reopened["returns"][0]["resumed_as"],"snapshot")
+        self.assertIn("error",self.approve(bid,[first])[0])
+        self.assertEqual(self.client.post(url+"/return",json=guard|dict(reason=reason)).status_code,409)
+        self.assertEqual(self.client.get(BASE+"article-search?work=returned_reprint").json["total"],0)
+        self.assertEqual(self.client.get(BASE+"batches?summary=1").json["overview"]["returned_reprint"],0)
+        self.assertEqual(self.approve(bid,[reopened])[0]["state"],"approved")
+        self.assertEqual(len(self.batch(bid)["deliveries"]),4)
+
+    def test_reread_returned_source_keeps_reason_and_advances_revision(self):
+        directory=self.source(63)
+        bid=self.create([directory])
+        self.prepare()
+        original=self.batch(bid)["reviews"][0]
+        url=BASE+f"reprints/{bid}/{original['id']}"
+        guard=dict(sha=original["sha"],revision=original["revision"])
+        self.client.post(url+"/return",json=guard|dict(reason="需要补全正文"))
+        md=self.root/directory/"正文.md"
+        md.write_text(md.read_text(encoding="utf-8")+"\n\n补全的段落",encoding="utf-8")
+        req=guard|dict(expected_state="returned")
+        self.assertEqual(self.client.post(url+"/reread",json=req).status_code,200)
+        self.assertEqual(self.client.post(url+"/reread",json=req).status_code,409)
+        self.prepare()
+        updated=self.batch(bid)["reviews"][0]
+        self.assertEqual(updated["returns"][0]["resumed_as"],"directory")
+        self.assertEqual(updated["revision"],original["revision"]+1)
+        self.assertNotEqual(updated["sha"],original["sha"])
+        self.assertEqual(updated["assignments"],[])
+        self.assertIn("error",self.approve(bid,[original])[0])
+
     def test_reread_requires_review_again_even_when_bytes_match(self):
         bid=self.create([self.source(3)])
         self.prepare()

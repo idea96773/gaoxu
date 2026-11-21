@@ -45,7 +45,7 @@ records AS (
     UNION ALL
     SELECT q.row_id,NULL,NULL,'review',NULL,
            CASE WHEN a.control='cancelled' THEN 'cancelled' ELSE q.state END,NULL,NULL,NULL,NULL
-    FROM reprint_reviews q JOIN articles a ON a.row_id=q.row_id WHERE q.state IN ('preparing','pending','invalid')
+    FROM reprint_reviews q JOIN articles a ON a.row_id=q.row_id WHERE q.state IN ('preparing','pending','invalid','returned')
 )
 SELECT a.row_id,a.batch,a.created,a.control,a.title,x.edition,x.stage,x.platform,x.account,
        x.job_id,x.state,x.slot,x.execution_slot,x.received,p.state AS draft_state
@@ -60,6 +60,8 @@ def overview(db,now):
     counts=db.execute("""SELECT
         (SELECT count(*) FROM reprint_reviews q JOIN rows r ON r.id=q.row_id
          JOIN batches b ON b.id=r.batch WHERE q.state='pending' AND b.control='active') pending_reprint,
+        (SELECT count(*) FROM reprint_reviews q JOIN rows r ON r.id=q.row_id
+         JOIN batches b ON b.id=r.batch WHERE q.state='returned' AND b.control!='cancelled') returned_reprint,
         (SELECT count(*) FROM jobs j JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch
          WHERE j.stage='deliver' AND j.state='ready' AND b.control='active') queued_delivery,
         (SELECT count(*) FROM jobs WHERE stage='deliver' AND state='done' AND receipt IS NOT NULL
@@ -89,6 +91,7 @@ def search(db, args):
     work=args.get("work","")
     if work:
         scopes={"pending_reprint":"stage='review' AND state='pending' AND control='active'",
+                "returned_reprint":"stage='review' AND state='returned'",
                 "queued_delivery":"stage='deliver' AND state='ready' AND control='active'",
                 "confirmed_delivery":"stage='deliver' AND state='done' AND received IS NOT NULL"}
         if work not in scopes:

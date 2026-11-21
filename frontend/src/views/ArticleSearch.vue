@@ -8,7 +8,8 @@
         <option v-for="a in accounts" :key="a">{{a}}</option></select></label>
       <div class="date-row">
         <label>工作进度<select v-model="form.work" @change="switchWork"><option value="">全部进度</option>
-          <option value="pending_reprint">待审转载</option><option value="queued_delivery">冻结稿待交付</option>
+          <option value="pending_reprint">待审转载</option><option value="returned_reprint">审核退回</option>
+          <option value="queued_delivery">冻结稿待交付</option>
           <option value="confirmed_delivery">冻结稿已模拟交付</option></select></label>
         <label>知乎草稿核对<select v-model="form.draft_review"><option value="">全部</option>
           <option value="awaiting">待核对</option><option value="issue">发现问题</option><option value="verified">已核对通过</option></select></label>
@@ -30,10 +31,11 @@
       <el-table-column label="实际交付" min-width="137"><template #default="{row}">{{date(row.received)}}</template></el-table-column>
       <el-table-column label="交付状态" width="116"><template #default="{row}"><el-tag :type="colors[row.state] || 'info'">{{states[row.state] || label(row.state)}}</el-tag>
         <div v-if="row.draft_state" class="secondary">知乎草稿 · {{draftStates[row.draft_state] || row.draft_state}}</div>
-        <div v-if="row.control==='paused' && ['ready','unscheduled','pending'].includes(row.state)" class="secondary">批次已暂停</div>
+        <div v-if="row.control==='paused' && ['ready','unscheduled','pending','returned'].includes(row.state)" class="secondary">批次已暂停</div>
         <el-button v-if="row.job_id" link @click="$emit('job',row.job_id)">任务详情</el-button>
         <router-link v-if="row.stage==='review' && row.state==='pending' && row.control==='active'"
-          :to="{query:{batch:row.batch,review_row:String(row.row_id)}}">审核这篇</router-link></template></el-table-column>
+          :to="{query:{batch:row.batch,review_row:String(row.row_id)}}">审核这篇</router-link>
+        <router-link v-if="row.state==='returned'" :to="{query:{batch:row.batch,review_row:String(row.row_id)}}">查看退回原因</router-link></template></el-table-column>
     </el-table>
     <nav v-if="result.total>result.page_size" class="pages" aria-label="查询结果翻页">
       <el-button :disabled="loading || result.page===1" @click="move(-1)">上一页</el-button>
@@ -56,12 +58,12 @@ const empty=()=>({items:[],total:0,page:1,page_size:25})
 const result=ref(empty())
 const kinds={deliver:'冻结稿模拟交付',publish:'模拟流程发布',pipeline:'模拟流程',review:'转载审核'}
 const colors={done:'success',failed:'danger',blocked:'danger',invalid:'danger',ready:'primary',pending:'warning',running:'warning'}
-const states={preparing:'准备转载资料',done:'已模拟交付',pending:'待审核',invalid:'资料异常',blocked:'排期前失败',unscheduled:'待排期'}
+const states={preparing:'准备转载资料',done:'已模拟交付',pending:'待审核',returned:'审核退回',invalid:'资料异常',blocked:'排期前失败',unscheduled:'待排期'}
 const platforms=computed(()=>[...new Set([...Object.keys(props.names),...choices.value.map(x=>x.platform)])])
 const accounts=computed(()=>[...new Set(choices.value.filter(x=>!form.platform || x.platform===form.platform).map(x=>x.account))].sort())
 function syncAccount(){if(!accounts.value.includes(form.account))form.account=''}
 function switchWork(){
-  if(form.work==='pending_reprint'){form.date_field='imported';form.platform='';form.account='';form.draft_review=''}
+  if(['pending_reprint','returned_reprint'].includes(form.work)){form.date_field='imported';form.platform='';form.account='';form.draft_review=''}
   if(form.work==='queued_delivery')form.date_field='execution'
   if(form.work==='confirmed_delivery')form.date_field='delivered'
 }

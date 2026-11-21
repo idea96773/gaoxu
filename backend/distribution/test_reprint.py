@@ -799,6 +799,43 @@ class Reprint(unittest.TestCase):
         self.assertEqual(current[1]["state"],"pending")
         self.assertEqual(current[2],invalid)
 
+    def test_receipt_survives_disconnect_before_account_confirmation(self):
+        from . import platform_draft, rights, zhihu_draft_worker
+
+        self.targets=[dict(platform="zhihu",account="模拟")]
+        bid=self.create([self.source(65)])
+        self.prepare()
+        self.approve(bid,self.batch(bid)["reviews"])
+        job,=self.batch(bid)["deliveries"]
+        uid="fixture-account"
+        with transaction(self.path) as db:
+            rights.record(db,job["id"],job["sha"],"zhihu_draft",uid,0)
+            db.execute("""INSERT INTO platform_drafts(job,canonical,sha,user_id,name,state,updated)
+                SELECT ?,canonical,?,?,'模拟','queued',0 FROM rows WHERE id=?""",
+                (job["id"],job["sha"],uid,job["row_id"]))
+        task=platform_draft.claim(self.path,uid)
+        link="https://zhuanlan.zhihu.com/p/65123/edit"
+        bridge=Mock()
+        bridge.identity.side_effect=[(uid,"模拟"),ConnectionError()]
+        bridge.request.return_value=dict(results=[dict(platform="zhihu",draftOnly=True,success=True,postUrl=link)])
+        with patch.object(zhihu_draft_worker,"prepare_content",return_value={"title":"测试","content":"测试"}):
+            with self.assertRaises(ConnectionError):
+                zhihu_draft_worker.run_task(self.path,task,bridge)
+        bridge.request.assert_called_once()
+        client=create_app(self.path,self.root).test_client()
+        url=BASE+f"jobs/{job['id']}/platform-draft"
+        info=client.get(url).json
+        self.assertEqual((info["record"]["state"],info["record"]["url"],info["unverified_edit_url"]),
+                         ("unknown","",link))
+        self.assertIsNone(platform_draft.claim(self.path,uid))
+        actual="https://zhuanlan.zhihu.com/p/65999/edit"
+        checked=client.post(url,json=dict(action="inspect",sha=job["sha"],user_id=uid,url=actual,
+            expected_state="unknown",revision=0,checks=dict.fromkeys(("title","layout","images","footer"),"pass")))
+        self.assertEqual(checked.status_code,200)
+        info=client.get(url).json
+        self.assertEqual((info["record"]["state"],info["record"]["url"],info["unverified_edit_url"]),
+                         ("verified",actual,None))
+
     def test_platform_draft_inspection_tracks_cases_without_resending(self):
         from .store import transaction
         self.targets=[dict(platform="zhihu",account="模拟")]

@@ -27,6 +27,18 @@ def checked_url(db,record,value):
     return url
 
 
+def remember_receipt(path,task,value):
+    """Persist the extension reply before a second network call checks the browser identity."""
+    with transaction(path) as db:
+        record=db.execute("""SELECT id,url FROM platform_drafts WHERE id=? AND sha=? AND user_id=?
+            AND state='sending'""",(task["id"],task["sha"],task["user_id"])).fetchone()
+        if not record:
+            raise ValueError("此任务已退出保存状态")
+        url=checked_url(db,record,value)
+        db.execute("INSERT INTO zhihu_draft_receipts(outbox,edit_url) VALUES(?,?)",(record["id"],url))
+        return url
+
+
 def record_inspection(db,job,record,data,now):
     if not record or record["state"] not in ("saved","unknown","needs_review","verified"):
         raise ValueError("请先在指定账号草稿箱找到对应草稿")
@@ -140,11 +152,17 @@ def register(api,path,body):
             inspections=[] if not record else [dict(r)|{"checks":json.loads(r["checks"])} for r in db.execute(
                 "SELECT id,checks,checked_at,sha,user_id,url FROM draft_inspections WHERE outbox=? ORDER BY id DESC LIMIT 10",
                 (record["id"],))]
+            receipt=None
+            if record and record["state"]=="unknown" and not record["url"]:
+                receipt=db.execute("""SELECT r.edit_url FROM zhihu_draft_receipts r WHERE r.outbox=?
+                    AND NOT EXISTS (SELECT 1 FROM platform_drafts t WHERE t.url=r.edit_url AND t.id!=r.outbox)""",
+                    (record["id"],)).fetchone()
             return jsonify(**bridge_status(db),recipient=target,recipient_source=via,control=row["control"],
                            rights=grant,permitted=bool(target and rights.permits(grant,row["sha"],target["user_id"])),
                            rights_history=[dict(event) for event in changes],
                            reusable_images=len(draft_images.confirmed(db,record["id"],grant["revision"])) if record else 0,
-                           record=dict(record) if record else None,inspections=inspections)
+                           record=dict(record) if record else None,inspections=inspections,
+                           unverified_edit_url=receipt["edit_url"] if receipt else None)
 
     @api.post("/jobs/<int:job>/platform-draft")
     def change_platform_draft(job):

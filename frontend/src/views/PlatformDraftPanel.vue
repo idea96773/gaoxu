@@ -18,6 +18,8 @@
       <a v-if="record.url" :href="record.url" target="_blank" rel="noopener noreferrer">打开知乎草稿</a>
     </p>
     <p v-if="record?.reason">{{record.reason}}</p>
+    <p v-if="record?.state==='unknown' && receiptUrl">扩展曾返回编辑地址，接收账号仍待核对。请在「{{record.name}}」的浏览器中
+      <a :href="receiptUrl" target="_blank" rel="noopener noreferrer">打开待核对草稿</a>，核对账号和内容后填写下方核对表。</p>
     <p v-if="reusableImages && ['queued','preparing','failed','cancelled'].includes(record?.state)">
       本稿可沿用 {{reusableImages}} 张已转存配图，共 {{uniqueImages}} 张不同配图。
     </p>
@@ -25,7 +27,7 @@
     <el-button v-if="canSend" type="primary" :loading="busy" @click="enqueue">保存到 {{account.name}} 的草稿箱</el-button>
     <el-button v-if="record && ['queued','preparing'].includes(record.state)" :disabled="busy" @click="change({action:'cancel'})">取消草稿任务</el-button>
     <DraftInspection v-if="record && ['saved','unknown','needs_review','verified'].includes(record.state)"
-      :key="record.id" :api="api" :path="path" :record="record" :entries="inspections" :snapshot="job.delivery.snapshot"
+      :key="record.id" :api="api" :path="path" :record="record" :receipt-url="receiptUrl" :entries="inspections" :snapshot="job.delivery.snapshot"
       :date="date" @refresh="load" @recorded="$emit('inspected')" />
     <el-alert v-if="error" :title="error" type="error" :closable="false"/>
   </section>
@@ -39,6 +41,7 @@ const props=defineProps({api:Function,job:Object,bindingsVersion:Number,date:Fun
 defineEmits(['accounts','inspected'])
 const recipient=ref(null),recipientSource=ref(''),control=ref('')
 const grant=ref(null),history=ref([]),permitted=ref(false)
+const receiptUrl=ref('')
 const reusableImages=ref(0)
 const uniqueImages=computed(()=>new Set(props.job.delivery.snapshot.images).size)
 const bridge=ref(null),account=ref(null),record=ref(null),inspections=ref([]),busy=ref(false),error=ref('')
@@ -51,7 +54,8 @@ let stopped=false,timer,sequence=0
 async function load(){
   const n=++sequence
   try{const info=await props.api(path);if(!stopped && n===sequence){bridge.value=info.bridge;account.value=info.account;record.value=info.record;recipient.value=info.recipient;recipientSource.value=info.recipient_source;control.value=info.control
-    grant.value=info.rights;permitted.value=info.permitted;history.value=info.rights_history;inspections.value=info.inspections || [];reusableImages.value=info.reusable_images || 0}}
+    grant.value=info.rights;permitted.value=info.permitted;history.value=info.rights_history;inspections.value=info.inspections || [];reusableImages.value=info.reusable_images || 0
+    receiptUrl.value=info.unverified_edit_url || ''}}
   catch(e){if(!stopped && n===sequence){bridge.value=null;account.value=null;grant.value=null;permitted.value=false;reusableImages.value=0;error.value=e.message}}
 }
 async function poll(){await load();if(!stopped)timer=setTimeout(poll,4000)}

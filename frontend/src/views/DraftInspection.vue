@@ -23,7 +23,7 @@
 </template>
 <script setup>
 import {computed,ref} from 'vue'
-const props=defineProps({api:Function,path:String,record:Object,entries:Array,snapshot:Object,date:Function})
+const props=defineProps({api:Function,path:String,record:Object,receiptUrl:String,entries:Array,snapshot:Object,date:Function})
 const emit=defineEmits(['refresh','recorded'])
 const editing=ref(false),busy=ref(false),error=ref(''),checks=ref({}),url=ref(''),revision=ref(0),state=ref('')
 const latest=computed(()=>props.entries[0])
@@ -39,7 +39,7 @@ const summary=values=>fields.value.map(f=>f.label+' '+labels[values[f.key]]).joi
 const hasResult=computed(()=>Object.values(checks.value).some(x=>x!=='pending'))
 const stale=computed(()=>revision.value!==(latest.value?.id || 0) || state.value!==props.record.state)
 function start(){
-  revision.value=latest.value?.id || 0;state.value=props.record.state;url.value=props.record.url || ''
+  revision.value=latest.value?.id || 0;state.value=props.record.state;url.value=props.record.url || props.receiptUrl || ''
   checks.value=Object.fromEntries(fields.value.map(f=>[f.key,latest.value?.checks[f.key] || 'pending']))
   error.value='';editing.value=true
 }

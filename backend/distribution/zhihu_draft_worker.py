@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from .markdown_media import replace_media_urls
 from .draft_bridge import heartbeat, listener
 from . import draft_images, frozen_reprint
-from .platform_draft import authorized_source, claim, edit_url, require_rights, transition
+from .platform_draft import authorized_source, claim, remember_receipt, require_rights, transition
 from .runtime import instance_lock
 from .store import DEFAULT_DB, initialize, transaction
 
@@ -151,7 +151,7 @@ def run_task(path,task,bridge):
         results=response.get("results",[])
         if len(results)!=1 or results[0].get("platform")!="zhihu" or results[0].get("draftOnly") is not True or results[0].get("success") is not True:
             raise ValueError("未收到草稿回执")
-        url=edit_url(results[0].get("postUrl"))
+        url=remember_receipt(path,task,results[0].get("postUrl"))
         if bridge.identity()[0]!=task["user_id"]:
             raise ValueError("回执所属账号需要核对")
         transition(path,task,"sending","saved",url=url)

@@ -22,9 +22,10 @@
     </div>
     <div class="articles" v-loading="loading">
       <div v-for="item in pageItems" :key="item.directory" class="catalog-row">
-        <label :title="item.directory"><input type="checkbox" v-model="dirs" :value="item.directory" :disabled="dirs.length>=100 && !dirs.includes(item.directory)"> {{item.title}}</label>
+        <label :title="item.directory"><input type="checkbox" v-model="dirs" :value="item.directory" :disabled="(!item.selection_key || dirs.length>=100) && !dirs.includes(item.directory)"> {{item.title}}</label>
         <small>{{item.source_name || '公众号未识别'}} · {{item.publish_time || '原文发布时间未识别'}}</small>
-        <small v-if="!item.source">原文链接待识别，可手动勾选</small>
+        <small v-if="!item.selection_key">请核对导出的 Markdown 文件后重新打开选稿</small>
+        <small v-else-if="!item.source">原文链接待识别，按当前 Markdown 文件选稿</small>
         <small v-else-if="selectedPlatforms.length">{{missing(item).length?'待补排　'+missing(item).map(p=>channels[p]).join('、'):'所选平台均已有任务'}}</small>
         <el-button v-for="job in item.deliveries" :key="job.id" type="primary" link @click="$emit('job',job.id)">
           {{channels[job.platform] || job.platform}} · {{job.account}} · {{job.control==='paused' && job.state==='ready'?'批次暂停':states[job.state] || job.state}} ›
@@ -40,12 +41,12 @@
     <details v-if="dirs.length"><summary>查看已选清单（{{dirs.length}} / 100）</summary>
       <div v-for="entry in selection" :key="entry.directory" class="catalog-row">
         <span>{{entry.title || entry.directory}}</span>
-        <small>{{entry.source_name || entry.directory}}{{entry.unavailable?' · 目录不可用':''}}</small>
+        <small>{{entry.source_name || entry.directory}}{{entry.problem?' · '+entry.problem:''}}</small>
         <el-button link @click="dirs=dirs.filter(dir=>dir!==entry.directory)">移出</el-button>
       </div>
     </details>
     <p v-else>已选 0 篇 / 最多 100 篇</p>
-    <p v-if="!loading && unavailable" role="alert">有 {{unavailable}} 个已选目录当前不可用，请核对选稿清单。</p>
+    <p v-if="!loading && unavailable" role="alert">有 {{unavailable}} 项选稿需要核对，请移出后重新选择。</p>
     <fieldset><legend>参与轮流分稿的模拟账号</legend>
       <div v-for="(title,p) in channels" :key="p" class="pool"><strong>{{title}}</strong>
         <label v-for="a in aliases[p]" :key="a"><input type="checkbox" v-model="chosen[p]" :value="a" :aria-label="title+a"> {{a}}</label>
@@ -105,8 +106,21 @@ const coverageFilter=ref('all')
 const sourceName=ref(''),fromDay=ref(''),toDay=ref(''),newestFirst=ref(false)
 const sourceNames=computed(()=>[...new Set(items.value.map(item=>item.source_name).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'zh-CN')))
 const byDirectory=computed(()=>new Map(items.value.map(item=>[item.directory,item])))
-const selection=computed(()=>dirs.value.map(directory=>byDirectory.value.get(directory) || {directory,unavailable:true}))
-const unavailable=computed(()=>selection.value.filter(item=>item.unavailable).length)
+const marked=reactive(new Map())
+watch(dirs,chosenDirs=>{
+  const chosenSet=new Set(chosenDirs)
+  for(const dir of marked.keys())if(!chosenSet.has(dir))marked.delete(dir)
+  for(const dir of chosenDirs){
+    const item=byDirectory.value.get(dir)
+    if(!marked.has(dir) && item)marked.set(dir,{directory:dir,title:item.title,source_name:item.source_name,key:item.selection_key})
+  }
+},{flush:'sync'})
+const selection=computed(()=>dirs.value.map(directory=>{
+  const entry=marked.get(directory),current=byDirectory.value.get(directory)
+  const problem=!current?'目录不可用':!entry?.key || current.selection_key!==entry.key?'文章标识已变化':''
+  return {...entry,directory,problem}
+}))
+const unavailable=computed(()=>selection.value.filter(item=>item.problem).length)
 const invalidRange=computed(()=>fromDay.value && toDay.value && fromDay.value>toDay.value)
 const states={ready:'已排期',running:'交付中',done:'已模拟交付',failed:'交付失败'}
 const targets=computed(()=>Object.keys(channels).flatMap(platform=>chosen[platform].map(account=>({platform,account}))))
@@ -226,7 +240,9 @@ let signature='',key=''
 async function submit(){
   busy.value=true;error.value=''
   try{
-    const data={directories:dirs.value,...options()}
+    if(unavailable.value)throw Error('选稿与当前目录不一致，请重新核对')
+    const selections=Object.fromEntries(selection.value.map(item=>[item.directory,{key:item.key,title:item.title}]))
+    const data={directories:[...dirs.value],selections,...options()}
     const current=JSON.stringify(data)
     if(current!==signature){signature=current;key=crypto.randomUUID()}
     const result=await props.api('reprints',{...data,request_id:key})

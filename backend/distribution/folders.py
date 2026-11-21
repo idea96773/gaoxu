@@ -11,6 +11,7 @@ from .store import canonicalize, compact, digest
 
 SOURCE_LINK = re.compile(r"(?m)^原文地址[：:]\s*.*?(https://mp\.weixin\.qq\.com/[^\s)<>]+)")
 MEDIA = {".png",".jpg",".jpeg",".gif",".webp",".other"}
+MAX_FILE_BYTES = 16*1024*1024
 
 def export_metadata(markdown):
     header=markdown[:1600].partition("\n")[2]
@@ -58,9 +59,9 @@ def parse_folders(parts):
         ext=PurePosixPath(name).suffix.lower()
         if ext not in MEDIA and ext not in (".html",".md"):
             continue
-        data=stream.read(16*1024*1024+1)
+        data=stream.read(MAX_FILE_BYTES+1)
         total+=len(data)
-        if len(data)>16*1024*1024 or total>256*1024*1024:
+        if len(data)>MAX_FILE_BYTES or total>256*1024*1024:
             raise ValueError("单文件上限为 16 MB，每批上限为 256 MB")
         if name in files:
             raise ValueError("同一相对路径重复")
@@ -121,6 +122,7 @@ def parse_folders(parts):
                      media_map={k:"/api/distribution/media/"+v[0] for k,v in assets.items()},
                      missing_images=missing,copyright_status="unknown",mode="local-dry-run")
             items.append(dict(label=label,url=url or label,canonical=canonical or "local:"+digest(compact([title,body])),
+                              markdown_sha=hashlib.sha256(files[group[".md"][0]]).hexdigest(),
                               doc=doc,assets=assets,error=""))
         except (UnicodeError,ValueError) as exc:
             items.append(dict(label=label,url=label,canonical=None,error=str(exc),assets={}))

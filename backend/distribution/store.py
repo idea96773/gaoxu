@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS reprint_link_rules (
  batch TEXT PRIMARY KEY REFERENCES reprint_batches(batch), payload TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS reprint_sources (
  row_id INTEGER PRIMARY KEY REFERENCES rows(id), root TEXT NOT NULL, directory TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS reprint_selections (
+ row_id INTEGER PRIMARY KEY REFERENCES reprint_sources(row_id), selection_key TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS reprint_reviews (
  row_id INTEGER PRIMARY KEY REFERENCES rows(id), title TEXT NOT NULL, state TEXT NOT NULL,
  sha TEXT NOT NULL, snapshot TEXT NOT NULL);

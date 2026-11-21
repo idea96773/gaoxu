@@ -344,6 +344,44 @@ class Reprint(unittest.TestCase):
         self.assertEqual(current[1]["state"],"pending")
         self.assertEqual(current[2],invalid)
 
+    def test_selected_source_survives_restart_and_folder_replacement(self):
+        dirs=[self.source(i) for i in (51,52)]
+        items=self.client.get(BASE+"library").json["items"]
+        marks={r["directory"]:dict(title=r["title"],key=r["selection_key"]) for r in items}
+        params=dict(directories=dirs,selections=marks,request_id="picked",targets=self.targets)
+        bid=self.client.post(BASE+"reprints",json=params).json["id"]
+        md=self.root/dirs[0]/"正文.md"
+        original=md.read_text(encoding="utf-8")
+        md.write_text(original.replace("test-export-51","test-export-52"),encoding="utf-8")
+        self.client=create_app(self.path,self.root).test_client()
+        self.assertEqual(self.client.post(BASE+"reprints",json=params).json["id"],bid)
+        self.prepare()
+        rejected,peer=self.batch(bid)["reviews"]
+        self.assertEqual((rejected["state"],peer["state"]),("invalid","pending"))
+        self.assertEqual(rejected["assignments"],[])
+        md.write_text(original+"\n更新配图说明",encoding="utf-8")
+        self.client.post(BASE+f"jobs/{rejected['prepare_job']}/retry",json={})
+        self.prepare()
+        restored,unchanged=self.batch(bid)["reviews"]
+        self.assertEqual(restored["state"],"pending")
+        self.assertEqual(unchanged,peer)
+
+    def test_catalog_file_selection_checks_full_markdown_beyond_header(self):
+        directory=self.source(53)
+        md=self.root/directory/"正文.md"
+        md.write_text("# 同名\n"+"摘要\n"*3600+"\n原文地址：https://mp.weixin.qq.com/s/first\n正文",encoding="utf-8")
+        mark=self.client.get(BASE+"library").json["items"][0]
+        self.assertTrue(mark["selection_key"].startswith("file-"))
+        bid=self.client.post(BASE+"reprints",json=dict(request_id="late-link",directories=[directory],
+            selections={directory:dict(title=mark["title"],key=mark["selection_key"])},targets=self.targets)).json["id"]
+        from .library import read_folder
+        def replaced(*args):
+            md.write_text(md.read_text(encoding="utf-8").replace("/s/first","/s/second"),encoding="utf-8")
+            return read_folder(*args)
+        with patch("distribution.reprint.read_folder",side_effect=replaced):
+            self.prepare()
+        self.assertEqual(self.batch(bid)["reviews"][0]["state"],"invalid")
+
     def test_reread_requires_review_again_even_when_bytes_match(self):
         bid=self.create([self.source(3)])
         self.prepare()

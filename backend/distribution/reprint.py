@@ -12,7 +12,7 @@ from markdown_it import MarkdownIt
 
 from .delivery import existing_deliveries, schedule_in
 from .editorial import checked_link
-from .library import read_folder, selected_header, validate_directories
+from .library import read_folder, selected_header, selection_key, validate_directories
 from .store import canonicalize, clean_rules, compact, digest, enqueue, transaction
 
 DESTINATION = "https://mp.weixin.qq.com/s/YFkz4nZBTLm-GHtqz_5lUw"
@@ -124,16 +124,26 @@ def create(path,root,data):
     targets,destination,rules=settings["targets"],settings["destination"],settings["rules"]
     pools=pools_for(targets)
     dirs=data.get("directories")
+    validate_directories(dirs)
+    selections=data.get("selections")
     identity=["reprint",dirs,pools,rules,destination]
     if "links" in settings:
         identity.append(settings["links"])
+    if selections is not None:
+        if not isinstance(selections,dict) or selections.keys()!=set(dirs):
+            raise ValueError("选稿记录与提交的目录不一致，请重新选择")
+        for mark in selections.values():
+            if (not isinstance(mark,dict) or not isinstance(mark.get("title"),str) or not mark["title"].strip()
+                    or len(mark["title"])>8192 or not isinstance(mark.get("key"),str)
+                    or not re.fullmatch(r"(url|file)-[0-9a-f]{64}",mark["key"]) or set(mark)!={"title","key"}):
+                raise ValueError("选稿记录无效，请重新读取目录")
+        identity.append({"selections":selections})
     fingerprint=digest(compact(identity))
     def previous(db):
         row=db.execute("SELECT id,digest FROM batches WHERE request_key=?",(key,)).fetchone()
         if row and row["digest"]!=fingerprint:
             raise ValueError("请求编号已用于不同的批次")
         return row["id"] if row else None
-    validate_directories(dirs)
     now=int(time.time())
     with transaction(path) as db:
         old=previous(db)
@@ -159,15 +169,17 @@ def create(path,root,data):
                            (bid,line,directory)).lastrowid
             owners[directory]=(rid,line)
             db.execute("INSERT INTO reprint_sources VALUES(?,?,?)",(rid,str(Path(root).absolute()),directory))
+            if selections is not None:
+                db.execute("INSERT INTO reprint_selections VALUES(?,?)",(rid,selections[directory]["key"]))
             db.execute("INSERT INTO reprint_reviews VALUES(?,?, 'preparing','','null')",
-                       (rid,PurePosixPath(directory).name or directory))
+                       (rid,selections[directory]["title"] if selections is not None else PurePosixPath(directory).name or directory))
             enqueue(db,rid,"reprint_prepare",now)
         return bid
 
 
 def reuse_existing(path,ticket,platforms,header,now):
     from .engine import close_attempt
-    title,url,ref=header
+    title,url,ref=header["title"],header["url"],header["source"]
     if not ref:
         return False
     identity="folder:"+ref
@@ -192,10 +204,28 @@ def reuse_existing(path,ticket,platforms,header,now):
         return True
 
 
+def check_selected_source(source,ref,markdown_sha,full=False):
+    previous=source["canonical"]
+    if previous:
+        if (ref or full) and previous!="folder:"+str(ref):
+            raise ValueError("原文链接与上次读取的文章不同，请恢复原文件，或将新文章另行选稿")
+        return
+    key=source["selection_key"]
+    if key:
+        kind=key.split("-",1)[0]
+        if kind=="url" and not ref and not full:
+            return  # The export header may exceed the directory scan's read limit.
+        value=ref if kind=="url" else markdown_sha
+        if selection_key(source["root"],source["directory"],kind,value)!=key:
+            raise ValueError("目录中的文章与选稿记录不一致，请恢复原文件后重试，或将新文章另行选稿")
+
+
 def prepare_one(path,ticket,now):
     from .engine import close_attempt
-    query="""SELECT j.*,b.control,s.root,s.directory,spec.destination,b.targets,links.payload links FROM jobs j
+    query="""SELECT j.*,b.control,s.root,s.directory,r.canonical,sel.selection_key,
+        spec.destination,b.targets,links.payload links FROM jobs j
         JOIN reprint_sources s ON s.row_id=j.row_id JOIN rows r ON r.id=j.row_id
+        LEFT JOIN reprint_selections sel ON sel.row_id=s.row_id
         JOIN batches b ON b.id=r.batch JOIN reprint_batches spec ON spec.batch=b.id
         LEFT JOIN reprint_link_rules links ON links.batch=b.id
         WHERE j.id=? AND j.token=? AND j.state='running' AND j.stage='reprint_prepare'"""
@@ -211,11 +241,16 @@ def prepare_one(path,ticket,now):
         try:
             platforms=pools_for(json.loads(source["targets"]))
             header=selected_header(source["root"],source["directory"])
+            check_selected_source(source,header["source"],header["markdown_sha"])
             if reuse_existing(path,ticket,platforms,header,now):
                 return
             item,_=read_folder(source["root"],source["directory"])
             if item["error"]:
                 raise ValueError(item["error"])
+            parsed_ref=canonicalize(item["doc"]["source_url"] or "")
+            if header["source"] and header["source"]!=parsed_ref:
+                raise ValueError("读取期间原文链接已变化，请等下载完成后重新核对文章")
+            check_selected_source(source,parsed_ref,item.get("markdown_sha"),full=True)
             view=review_snapshot(item["doc"],source["destination"],platforms,json.loads(source["links"] or "{}"))
             payload=compact(view)
             sha=digest(payload)

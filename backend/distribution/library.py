@@ -1,15 +1,20 @@
 """Manually triggered discovery inside the configured Easy WeChat export root."""
 import os
 import stat
+import hashlib
 from contextlib import ExitStack
 from pathlib import Path
 
 from .delivery import existing_deliveries
-from .folders import MEDIA, SOURCE_LINK, export_metadata, parse_folders
+from .folders import MAX_FILE_BYTES, MEDIA, SOURCE_LINK, export_metadata, parse_folders
 from .search import day_start
-from .store import canonicalize, transaction
+from .store import canonicalize, compact, digest, transaction
 
 DEFAULT_LIBRARY = Path("E:/新公众号文章下载EasyWechatDownload/10个账号文章筛选")
+
+def selection_key(root,directory,kind,value):
+    location=os.path.normcase(os.path.abspath(root))
+    return kind+"-"+digest(compact([location,directory,value]))
 
 def safe_entry(path):
     info = path.lstat()
@@ -17,18 +22,32 @@ def safe_entry(path):
 
 def article_header(folder,bodies):
     if len(bodies)!=1:
-        return dict(title=folder.name,url=None,source=None,source_name=None,publish_time=None)
+        return dict(title=folder.name,url=None,source=None,source_name=None,publish_time=None,markdown_sha=None)
     with bodies[0].open("rb") as stream:
         sample=stream.read(8193)
-    if len(sample)>8192:
         # A truncated URL can still look valid. Only match complete lines.
-        sample=sample[:8192].rpartition(b"\n")[0]
-    header=sample.decode("utf-8-sig").strip()
-    title=header.partition("\n")[0].strip("# ").strip() or folder.name
-    match=SOURCE_LINK.search(header)
-    url=match[1] if match else None
+        prefix=sample[:8192].rpartition(b"\n")[0] if len(sample)>8192 else sample
+        header=prefix.decode("utf-8-sig").strip()
+        title=header.partition("\n")[0].strip("# ").strip() or folder.name
+        match=SOURCE_LINK.search(header)
+        url=match[1] if match else None
+        source=canonicalize(url) if url else None
+        markdown_sha=None
+        if not source:
+            size=os.fstat(stream.fileno()).st_size
+            if len(sample)<=size<=MAX_FILE_BYTES:
+                stamp=hashlib.sha256(sample)
+                size_read=len(sample)
+                while size_read<=size:
+                    chunk=stream.read(min(65536,size+1-size_read))
+                    if not chunk:
+                        break
+                    stamp.update(chunk)
+                    size_read+=len(chunk)
+                if size_read==size:
+                    markdown_sha=stamp.hexdigest()
     meta=export_metadata(header)
-    return dict(title=title,url=url,source=canonicalize(url) if url else None,
+    return dict(title=title,url=url,source=source,markdown_sha=markdown_sha,
                 source_name=meta["source_name"],publish_time=meta["publish_time"])
 
 
@@ -36,7 +55,7 @@ def selected_header(root,relative):
     folder=selected_folder(root,relative)
     bodies=[p for p in folder.iterdir() if p.suffix.lower()==".md" and safe_entry(p) and p.is_file()]
     header=article_header(folder,bodies)
-    return header["title"],header["url"],header["source"]
+    return header
 
 
 def discover(root):
@@ -61,6 +80,9 @@ def discover(root):
         except (OSError,UnicodeError):
             header=article_header(folder,[])
         header.pop("url")
+        markdown_sha=header.pop("markdown_sha")
+        kind,value=("url",header["source"]) if header["source"] else ("file",markdown_sha)
+        header["selection_key"]=selection_key(root,rel,kind,value) if value else None
         found.append(dict(directory=rel,**header))
     return sorted(found,key=lambda entry:entry["directory"])
 

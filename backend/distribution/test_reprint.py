@@ -899,6 +899,34 @@ class Reprint(unittest.TestCase):
         self.assertEqual(restored["state"],"pending")
         self.assertEqual(unchanged,peer)
 
+    def test_export_changing_during_read_retries_only_that_article(self):
+        from .library import parse_folders
+
+        first=self.source(91)
+        bid=self.create([first,self.source(92)])
+        now=int(time.time())
+        def edit_after_read(parts):
+            items=parse_folders(parts)
+            with (self.root/first/"正文.md").open("a",encoding="utf-8") as stream:
+                stream.write("\n下载完成后的末段。")
+            return items
+
+        with patch("distribution.library.parse_folders",side_effect=edit_after_read):
+            self.assertTrue(tick(self.path,now,preparation=True))
+        self.assertTrue(tick(self.path,now,preparation=True))
+        waiting,peer=self.batch(bid)["reviews"]
+        self.assertEqual((waiting["state"],waiting["sha"],peer["state"]),("preparing","","pending"))
+        self.assertIn("发生变化",waiting["note"])
+        due=waiting["prepare_retry_at"]
+        self.assertGreaterEqual(due,now+5)
+        self.assertFalse(tick(self.path,due-1,preparation=True))
+        self.assertTrue(tick(self.path,due,preparation=True))
+        ready,unchanged=self.batch(bid)["reviews"]
+        self.assertEqual((ready["state"],ready["prepare_attempts"],ready["prepare_retry_at"]),("pending",2,None))
+        self.assertEqual(unchanged,peer)
+        preview=self.client.get(BASE+f"reprints/{bid}/{ready['id']}?platform=zhihu").json
+        self.assertIn("下载完成后的末段",preview["snapshot"]["text"])
+
     def test_body_citation_cannot_reuse_the_cited_articles_delivery(self):
         from .library import read_folder
         original,missing,valid=(self.source(i) for i in (81,82,83))

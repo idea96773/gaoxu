@@ -491,6 +491,7 @@ def execute_approval(db,job,now):
 def overview(db,bid,platforms=()):
     items=db.execute(f"""SELECT r.id,r.line,r.note,r.canonical,r.owner,q.title,q.state,q.sha,j.id AS prepare_job,
         {REVIEW_REVISION} revision,j.state AS prepare_state,j.attempts AS prepare_attempts,
+        CASE WHEN q.state='preparing' AND j.state='ready' AND j.failure<>'' THEN j.due END AS prepare_retry_at,
         s.id AS schedule_job,s.attempts AS schedule_attempts,s.failure AS schedule_failure FROM rows r
         JOIN reprint_reviews q ON r.id=q.row_id
         LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'

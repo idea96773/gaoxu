@@ -44,6 +44,7 @@
         <p v-if="row.state==='pending' && row.schedule_failure" role="alert">{{row.schedule_failure}}</p>
         <el-button v-if="row.prepare_state==='failed' && active" link type="primary" @click="$emit('retry',row.prepare_job,row.prepare_attempts)">重新读取这篇</el-button></template></el-table-column>
       <el-table-column label="进度" width="116"><template #default="{row}">{{row.progress==='pending'?'待审核':row.progress==='returned'?'审核退回':label(row.progress)}}
+        <small v-if="row.prepare_retry_at">{{active?'下次可重读 '+date(row.prepare_retry_at):'批次继续后重读'}}</small>
         <small v-if="row.state==='duplicate' && row.delivery_progress"> · 关联任务{{label(row.delivery_progress)}}</small></template></el-table-column>
       <el-table-column label="模拟账号、排期和回执" min-width="230"><template #default="{row}">
         <template v-if="row.state==='pending'">

@@ -3,7 +3,7 @@ import os
 import stat
 import hashlib
 import sqlite3
-from contextlib import ExitStack
+from contextlib import closing
 from pathlib import Path
 
 from .delivery import existing_deliveries
@@ -12,6 +12,11 @@ from .search import day_start
 from .store import canonicalize, compact, digest, transaction
 
 DEFAULT_LIBRARY = Path("E:/新公众号文章下载EasyWechatDownload/10个账号文章筛选")
+EXPORT_CHANGED = "读取期间下载目录中的正文或配图发生变化，请等待这篇下载完成"
+
+
+def file_signature(info):
+    return info.st_dev,info.st_ino,info.st_size,info.st_mtime_ns
 
 def library_settings(path, fixed=None):
     if fixed:
@@ -75,6 +80,7 @@ def article_header(folder,bodies):
     if len(bodies)!=1:
         return dict(title=folder.name,url=None,source=None,source_name=None,publish_time=None,markdown_sha=None)
     with bodies[0].open("rb") as stream:
+        before=os.fstat(stream.fileno())
         sample=stream.read(8193)
         # A truncated URL can still look valid. Only match complete lines.
         prefix=sample[:8192].rpartition(b"\n")[0] if len(sample)>8192 else sample
@@ -85,7 +91,7 @@ def article_header(folder,bodies):
         markdown_sha=None
         identity=source
         if not source:
-            size=os.fstat(stream.fileno()).st_size
+            size=before.st_size
             if len(sample)<=size<=MAX_FILE_BYTES:
                 raw=sample+stream.read(size-len(sample)+1)
                 if len(raw)==size:
@@ -95,6 +101,8 @@ def article_header(folder,bodies):
                         _,_,identity,_=markdown_fields(md,folder.name)
                     except ValueError:
                         pass
+        if file_signature(bodies[0].lstat())!=file_signature(before):
+            raise BlockingIOError(EXPORT_CHANGED)
     meta=export_metadata(header.metadata)
     return dict(title=title,url=url,source=source,markdown_sha=markdown_sha,identity=identity,
                 source_name=meta["source_name"],publish_time=meta["publish_time"])
@@ -102,9 +110,11 @@ def article_header(folder,bodies):
 
 def selected_header(root,relative):
     folder=selected_folder(root,relative)
-    bodies=[p for p in folder.iterdir() if p.suffix.lower()==".md" and safe_entry(p) and p.is_file()]
-    header=article_header(folder,bodies)
-    return header
+    try:
+        bodies=[p for p in folder.iterdir() if p.suffix.lower()==".md" and safe_entry(p) and p.is_file()]
+        return article_header(folder,bodies)
+    except FileNotFoundError as exc:
+        raise BlockingIOError(EXPORT_CHANGED) from exc
 
 
 def discover(root):
@@ -206,18 +216,47 @@ def selected_folder(root, rel):
     return folder
 
 
-def read_folder(root,rel,remaining=256*1024*1024):
-    folder=selected_folder(root,rel)
-    paths=[p for p in folder.iterdir() if safe_entry(p) and p.is_file() and p.suffix.lower() in (".md",".html")]
+def export_files(folder):
+    def entries(directory,extensions):
+        for path in directory.iterdir():
+            if path.suffix.lower() not in extensions:
+                continue
+            info=path.lstat()
+            if stat.S_ISREG(info.st_mode) and not getattr(info,"st_file_attributes",0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                yield path,file_signature(info)
+
+    files=dict(entries(folder,(".md",".html")))
     imgs=folder/"img"
     if imgs.is_dir() and safe_entry(imgs):
-        paths.extend(p for p in imgs.iterdir() if safe_entry(p) and p.is_file() and p.suffix.lower() in MEDIA)
-    size=sum(p.stat().st_size for p in paths)
-    if size>remaining:
-        raise ValueError("导入文件超过 256 MB")
-    with ExitStack() as stack:
-        entries=[((Path(folder.name)/p.relative_to(folder)).as_posix(),stack.enter_context(p.open("rb"))) for p in paths]
-        item=parse_folders(entries)[0]
+        files.update(entries(imgs,MEDIA))
+    return files
+
+
+def export_streams(folder,files):
+    for path,expected in files.items():
+        with path.open("rb") as stream:
+            if file_signature(os.fstat(stream.fileno()))!=expected:
+                raise BlockingIOError(EXPORT_CHANGED)
+            yield path.relative_to(folder.parent).as_posix(),stream
+            if file_signature(os.fstat(stream.fileno()))!=expected:
+                raise BlockingIOError(EXPORT_CHANGED)
+
+
+def read_folder(root,rel,remaining=256*1024*1024):
+    folder=selected_folder(root,rel)
+    try:
+        files=export_files(folder)
+        size=sum(length for _,_,length,_ in files.values())
+        if size>remaining:
+            raise ValueError("导入文件超过 256 MB")
+        try:
+            with closing(export_streams(folder,files)) as streams:
+                item=parse_folders(streams)[0]
+        finally:
+            if export_files(folder)!=files:
+                raise BlockingIOError(EXPORT_CHANGED)
+    except FileNotFoundError as exc:
+        raise BlockingIOError(EXPORT_CHANGED) from exc
     item.update(library_rel=rel,label=folder.name)
     return item,size
 

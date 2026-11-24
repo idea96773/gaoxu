@@ -43,6 +43,9 @@ tool('library_list','查看下载目录、原文标识与各平台已有任务�
   order:z.enum(['directory','newest']).optional(),page:jobId.optional(),page_size:z.number().int().min(1).max(100).optional()
 },args=>api('library'+(Object.keys(args).length?'?'+new URLSearchParams(args):'')))
 tool('reprint_settings','读取管理台保存的常用转载账号、文末链接和排期规则',{},()=>api('reprint-settings'))
+tool('library_match_links','按原文链接查找已下载文章。每行返回匹配、同源多目录、未匹配、无效或重复结果。确认目录后可将匹配项交给 reprint_prepare_saved 或 reprint_prepare。',{
+  urls:z.array(z.string()).min(1).max(100),expected_root:z.string().optional()
+},args=>api('library/match-links',args))
 tool('reprint_prepare','按选定目录创建转载批次并返回批次编号。将 library_list 的 title 与 selection_key 按目录传入 selections，可核对后台实际读取的文章来源。batch_status 查询进度，request_id 用于去重',{
   request_id:admission.request_id,directories:z.array(z.string()).min(1).max(100),
   expected_root:z.string().optional().describe('上次 library_list 返回的 root，用于核对选稿目录'),

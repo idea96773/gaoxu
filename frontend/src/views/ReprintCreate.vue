@@ -6,6 +6,8 @@
     <div :inert="busy || loading">
     <template v-if="root"><small>{{root}}</small> <el-button link @click="reloadLibrary(root)">刷新目录</el-button></template>
     <LibrarySettings :api="api" :disabled="loading || busy" :needs-setup="needsSetup" @saved="reloadLibrary" />
+    <LibraryLinkPicker v-if="visible && root && !loading" :key="root" :api="api" :root="root" :dirs="dirs" :by-directory="byDirectory"
+      @catalog="applyLibrary" @add="selected=>dirs=[...dirs,...selected]" />
     <p><el-input v-model="filter" placeholder="搜索文章标题或目录" clearable /></p>
     <div class="coverage-tools">
       <label>来源公众号 <select v-model="sourceName"><option value="">全部公众号</option>
@@ -97,6 +99,7 @@
 import {ref, computed, reactive, watch} from 'vue'
 import ScopeSchedule from './ScopeSchedule.vue'
 import LibrarySettings from './LibrarySettings.vue'
+import LibraryLinkPicker from './LibraryLinkPicker.vue'
 const props=defineProps({api:Function})
 const emit=defineEmits(['created','job'])
 const visible=ref(false),busy=ref(false),loading=ref(false),error=ref(''),root=ref(''),items=ref([]),dirs=ref([]),filter=ref('')

@@ -14,7 +14,7 @@ from . import delivery, frozen_reprint, reprint, search, platform_draft
 from .scheduling import effective_limits
 from .engine import close_attempt, lookup_receipt
 from .store import BEIJING, DEFAULT_DB, PLATFORMS, booked_slot, import_batch, initialize, operation_key, transaction
-from .library import catalog, catalog_page, check_library_root, configure_library, library_settings, read_selected
+from .library import catalog, catalog_page, check_library_root, configure_library, library_settings, match_links, read_selected
 
 def outcome(row, jobs, target_count):
     if row["kind"] != "article":
@@ -386,6 +386,10 @@ def make_blueprint(path,fixed_root):
         inputs=read_selected(root,options.get("directories"))
         options["urls"]=[f["url"] for f in inputs]
         return jsonify(id=import_batch(path,options,folders=inputs)),201
+
+    @api.post("/library/match-links")
+    def match_downloaded_links():
+        return jsonify(match_links(path,current_root(),body(),include_catalog=request.args.get("catalog")=="1"))
     @api.get("/media/<sha>")
     def media(sha):
         with transaction(path,False) as db:

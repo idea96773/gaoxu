@@ -99,7 +99,10 @@ def article_header(folder,bodies):
                     markdown_sha=hashlib.sha256(raw).hexdigest()
                     try:
                         md=raw.decode("utf-8-sig").replace("\r\n","\n").strip()
-                        _,_,identity,_=markdown_fields(md,folder.name)
+                        header=export_header(md,folder.name)
+                        title,url,identity,_=markdown_fields(md,folder.name,header)
+                        url=url or None
+                        source=canonicalize(url) if url else None
                     except ValueError:
                         pass
         if file_signature(bodies[0].lstat())!=file_signature(before):
@@ -168,6 +171,46 @@ def catalog_records(path,entries):
 
 def catalog(path,root):
     return catalog_records(path,discover(root))
+
+
+def match_links(path,root,data,*,include_catalog=False):
+    check_library_root(root,data)
+    urls=data.get("urls")
+    if isinstance(urls,str):
+        urls=urls.splitlines()
+    if not isinstance(urls,list) or not all(isinstance(line,str) for line in urls):
+        raise ValueError("请每行粘贴一条公众号文章链接")
+    lines=[(n,value.strip()) for n,value in enumerate(urls,1) if value.strip()]
+    if not 1<=len(lines)<=100:
+        raise ValueError("每次可匹配 1 至 100 条非空链接")
+    entries=discover(root)
+    by_source={}
+    for entry in entries:
+        if entry["source"]:
+            choice={k:entry[k] for k in ("directory","title","selection_key")}
+            by_source.setdefault(entry["source"],[]).append(choice)
+    matches=[]
+    first={}
+    for number,url in lines:
+        source=canonicalize(url) if len(url)<=4096 and not any(c.isspace() for c in url) else None
+        row=dict(line=number,source=source)
+        if not source:
+            row["status"]="invalid"
+        elif source in first:
+            row.update(status="duplicate",first_line=first[source])
+        else:
+            first[source]=number
+            candidates=by_source.get(source,[])
+            row["candidates"]=candidates
+            if len(candidates)>1:
+                row["status"]="ambiguous"
+            else:
+                row["status"]="matched" if candidates else "missing"
+        matches.append(row)
+    result=dict(root=str(root),matches=matches)
+    if include_catalog:
+        result["items"]=catalog_records(path,entries)
+    return result
 
 
 def catalog_page(path,root,args):

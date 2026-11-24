@@ -302,6 +302,49 @@ class Reprint(unittest.TestCase):
         self.assertEqual(pinned[:-1], recent)
         self.assertEqual((pinned[-1]["id"], pinned[-1]["rows_total"]), (bid, 1))
 
+    def test_match_downloaded_links_then_prepare_selected_copies(self):
+        import shutil
+        first=self.source(41)
+        shared=self.source(42)
+        copy="其他下载/同一原文"
+        shutil.copytree(self.root/shared,self.root/copy)
+        long_header=self.source(43)
+        md=self.root/long_header/"正文.md"
+        original=md.read_text(encoding="utf-8")
+        source="https://mp.weixin.qq.com/s?__biz=test&mid=57&idx=2"
+        md.write_text(original.replace("测试作者","甲"*4000).replace("https://mp.weixin.qq.com/s/test-export-43",source),
+                      encoding="utf-8")
+        url="https://mp.weixin.qq.com/s/test-export-41"
+        endpoint=BASE+"library/match-links"
+        lines="\n".join([url+"?scene=1","",url+"#read","https://example.invalid/s/42",
+                         "https://mp.weixin.qq.com/s/no-local-copy","https://mp.weixin.qq.com/s/test-export-42",
+                         "https://mp.weixin.qq.com/s?mid=57&idx=2&__biz=test&scene=1"])
+        response=self.client.post(endpoint+"?catalog=1",json=dict(urls=lines,expected_root=str(self.root)))
+        self.assertEqual(response.status_code,200,response.json)
+        rows=response.json["matches"]
+        self.assertEqual([(r["line"],r["status"]) for r in rows],[(1,"matched"),(3,"duplicate"),(4,"invalid"),
+                         (5,"missing"),(6,"ambiguous"),(7,"matched")])
+        self.assertEqual(rows[1]["first_line"],1)
+        self.assertCountEqual([c["directory"] for c in rows[4]["candidates"]],[shared,copy])
+        chosen=[rows[0]["candidates"][0],next(c for c in rows[4]["candidates"] if c["directory"]==copy),
+                rows[5]["candidates"][0]]
+        self.assertEqual([c["directory"] for c in chosen],[first,copy,long_header])
+        with transaction(self.path,False) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM batches").fetchone()[0],0)
+        data=dict(request_id="from-links",expected_root=str(self.root),targets=self.targets,
+                  directories=[c["directory"] for c in chosen],
+                  selections={c["directory"]:dict(title=c["title"],key=c["selection_key"]) for c in chosen})
+        bid=self.client.post(BASE+"reprints",json=data).json["id"]
+        self.prepare()
+        self.assertEqual([row["state"] for row in self.batch(bid)["reviews"]],["pending"]*3)
+        self.assertEqual(self.batch(bid)["deliveries"],[])
+        self.assertEqual(self.client.post(BASE+"reprints",json=data).json["id"],bid)
+        bulk=self.client.post(endpoint,json=dict(urls=[url]*100)).json
+        self.assertNotIn("items",bulk)
+        self.assertEqual(Counter(r["status"] for r in bulk["matches"]),{"matched":1,"duplicate":99})
+        for invalid in (dict(urls=[""]*3),dict(urls=[url]*101),dict(urls=url,expected_root="old")):
+            self.assertEqual(self.client.post(endpoint,json=invalid).status_code,400)
+
     def test_clean_install_waits_for_local_library_configuration(self):
         from .library import library_settings
         fresh=self.root/"new-install.sqlite"

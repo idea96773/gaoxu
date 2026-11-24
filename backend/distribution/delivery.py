@@ -46,7 +46,7 @@ def schedule(path, draft_id, data, now):
         return schedule_in(db, draft_id, data, now)
 
 
-def schedule_in(db, draft_id, data, now):
+def schedule_in(db, draft_id, data, now, *, confirmed_at=None):
     if set(data) - {"time"}:
         raise ValueError("版本、平台、账号及内容由冻结稿确定")
     requested = data.get("time")
@@ -70,15 +70,27 @@ def schedule_in(db, draft_id, data, now):
     if draft["control"] != "active":
         raise ValueError("批次已暂停或取消")
     check_delivery_account(db, draft["canonical"], draft["platform"], draft["account"])
-    if requested is not None and not now <= requested <= now+366*86400:
+    decision_time = now if confirmed_at is None else confirmed_at
+    if requested is not None and not decision_time <= requested <= decision_time+366*86400:
         raise ValueError("请选择未来一年内的北京时间")
     limits = json.loads(draft["rules"])
-    slot = free_slot(db,draft["platform"],draft["account"],requested or now,limits)
+    overdue = requested is not None and requested < now
+    if overdue:
+        # Past reservations no longer compete for a future delivery. The locked
+        # time must still have been inside this batch's approved calendar.
+        slot = available_slot(requested,draft["platform"],draft["account"],limits,[])
+    else:
+        slot = free_slot(db,draft["platform"],draft["account"],requested or now,limits)
     if requested is not None and requested != slot:
         when = datetime.fromtimestamp(slot, BEIJING).strftime("%Y-%m-%d %H:%M:%S")
         raise ValueError("所选排期与时间窗、间隔或日上限冲突；可选北京时间 " + when)
+    due = slot
+    if overdue:
+        # The worker may first see a confirmed decision after its locked slot.
+        # Keep that slot in the frozen receipt and reserve a current execution time.
+        due = free_slot(db,draft["platform"],draft["account"],now,limits)
     job = db.execute("""INSERT INTO jobs(row_id,stage,platform,account,revision,due,slot)
-        VALUES(?,'deliver',?,?,?,?,?)""", (*target,draft["rev"],slot,slot)).lastrowid
+        VALUES(?,'deliver',?,?,?,?,?)""", (*target,draft["rev"],due,slot)).lastrowid
     payload = draft["frozen"]
     sha=digest(payload)
     db.execute("INSERT INTO frozen_deliveries VALUES(?,?,?,?,?,?)",

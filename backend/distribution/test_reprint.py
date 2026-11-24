@@ -308,6 +308,60 @@ class Reprint(unittest.TestCase):
         self.assertCountEqual([(j["row_id"],j["platform"],j["slot"]) for j in jobs],
                               [(approved["id"],p,start+30) for p in ("zhihu","toutiao")])
 
+    def test_restart_after_locked_slots_keeps_original_plan_and_uses_remaining_quota(self):
+        bid=self.create([self.source(i) for i in (71,72,73)])
+        self.targets=[dict(platform="zhihu",account="其他账号")]
+        other=self.create([self.source(74)],"other")
+        self.prepare()
+        start=int(datetime(2030,1,7,9,tzinfo=BEIJING).timestamp())
+        resume=start+3600
+        with patch("distribution.reprint.time.time",return_value=start-60):
+            jobs_url=BASE+f"reprints/{bid}/"
+            selected=[{k:r[k] for k in ("id","revision","sha")} | {"expected_prior":{}}
+                      for r in self.batch(bid)["reviews"]]
+            forecast=self.client.post(jobs_url+"plan",json=dict(items=selected,start_at=start)).json["items"]
+            for item,plan in zip(selected,forecast,strict=True):
+                item["expected_accounts"]={a["platform"]:a["account"] for a in plan["assignments"]}
+                item["expected_slots"]={a["platform"]:a["slot"] for a in plan["assignments"]}
+            decision=dict(approved=True,background=True,items=selected)
+            response=self.client.post(jobs_url+"approve",json=decision).json["items"]
+            self.assertEqual([r["state"] for r in response],["scheduling"]*3)
+        # A different account already has a Zhihu reservation at recovery time.
+        with patch("distribution.reprint.time.time",return_value=resume):
+            self.approve(other,self.batch(other)["reviews"])
+        self.client=create_app(self.path,self.root).test_client()
+        drain(self.path,resume)
+        jobs=self.batch(bid)["deliveries"]
+        self.assertEqual(len(jobs),6)
+        for platform,actual in (("zhihu",[resume+30,resume+60,start+86400]),
+                                ("toutiao",[resume,resume+30,resume+60])):
+            for job,item,received_at in zip(sorted((j for j in jobs if j["platform"]==platform),
+                                                   key=lambda j:j["slot"]),selected,actual,strict=True):
+                detail=self.client.get(BASE+f"jobs/{job['id']}").json
+                receipt=detail["delivery"]["received"]
+                self.assertTrue(receipt["matches"])
+                self.assertEqual((receipt["planned"],receipt["account"],receipt["time"]),
+                                 (item["expected_slots"][platform],item["expected_accounts"][platform],received_at))
+        self.client.post(jobs_url+"approve",json=decision)
+        self.assertEqual(self.batch(bid)["deliveries"],jobs)
+
+    def test_expired_slot_at_review_time_cannot_be_backdated(self):
+        bid=self.create([self.source(75)])
+        self.prepare()
+        row=self.batch(bid)["reviews"][0]
+        confirmed=int(datetime(2030,1,7,10,tzinfo=BEIJING).timestamp())
+        item={k:row[k] for k in ("id","revision","sha")}
+        item.update(expected_prior={},expected_accounts={p:"模拟A" for p in ("zhihu","toutiao")},
+                    expected_slots={p:confirmed-1 for p in ("zhihu","toutiao")})
+        with patch("distribution.reprint.time.time",return_value=confirmed):
+            result=self.client.post(BASE+f"reprints/{bid}/approve",json=dict(approved=True,background=True,items=[item]))
+            self.assertEqual(result.json["items"][0]["state"],"scheduling")
+        drain(self.path,confirmed+3600)
+        batch=self.batch(bid)
+        self.assertEqual(batch["deliveries"],[])
+        self.assertEqual(batch["reviews"][0]["state"],"pending")
+        self.assertIn("未来一年",batch["reviews"][0]["schedule_failure"])
+
     def test_saved_settings_are_bound_once_and_replay_survives_rule_change(self):
         directory=self.source(14)
         catalog=self.client.get(BASE+"library").json

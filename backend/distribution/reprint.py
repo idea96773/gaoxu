@@ -467,7 +467,7 @@ def approve_in(db,bid,rid,sha,now,revision,expected_prior,expected_accounts,expe
         did=db.execute("""INSERT INTO drafts(row_id,platform,account,rev,state,title,body,provider,frozen)
             VALUES(?,?,?,?,'approved',?,?,'reprint',?)""",(rid,p,account,revision,view["title"],view["text"],compact(view))).lastrowid
         booking={} if expected_slots is None else {"time":expected_slots[p]}
-        job=schedule_in(db,did,booking,now)
+        job=schedule_in(db,did,booking,now,confirmed_at=confirmed_at)
         db.execute("INSERT INTO reprint_assignments VALUES(?,?,?,0)",(rid,p,job["id"]))
         db.execute("INSERT OR REPLACE INTO account_rotation VALUES(?,?)",(pool,(position+1)%len(accounts)))
         assigned.append(dict(platform=p,account=account))

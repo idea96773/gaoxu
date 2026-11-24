@@ -34,6 +34,9 @@
         <el-button v-for="job in item.deliveries" :key="job.id" type="primary" link @click="$emit('job',job.id)">
           {{channels[job.platform] || job.platform}} · {{job.account}} · {{job.control==='paused' && job.state==='ready'?'批次暂停':states[job.state] || job.state}}{{job.control==='cancelled'?' · 原批次已取消':''}} ›
         </el-button>
+        <el-button v-for="job in item.edited_deliveries" :key="job.id" link @click="$emit('job',job.id)">
+          改编稿 #{{job.id}} · {{channels[job.platform] || job.platform}} · {{job.account}} · {{states[job.state] || job.state}} ›
+        </el-button>
       </div>
       <p v-if="!filtered.length && !loading">没有找到符合条件的文章。</p>
     </div>

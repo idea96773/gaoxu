@@ -10,20 +10,35 @@ from .scheduling import available_slot
 from .store import BEIJING, booked_slot, compact, delivery_key, digest, ledger_path, reserved_peers, transaction
 
 
-def existing_deliveries(db, identities):
-    """Return the earliest uncancelled frozen job for each source and platform."""
+def frozen_jobs_for_sources(db, identities, *, reprints_only):
     keys=list(dict.fromkeys(key for key in identities if key))
-    by_source={}
+    provider_filter = "AND d.provider='reprint'" if reprints_only else ""
     for start in range(0,len(keys),400):
         group=keys[start:start+400]
         placeholders=",".join("?" for _ in group)
-        rows=db.execute(f"""SELECT r.canonical,r.batch,j.id,j.platform,j.account,j.state,j.slot,b.control
+        yield from db.execute(f"""SELECT r.canonical,r.batch,j.id,j.platform,j.account,j.state,j.slot,b.control,d.provider
             FROM rows r JOIN jobs j ON j.row_id=r.id JOIN frozen_deliveries f ON f.job=j.id
+            JOIN drafts d ON d.id=f.draft
             JOIN batches b ON b.id=r.batch WHERE r.canonical IN ({placeholders})
-            AND j.stage='deliver' AND j.state!='cancelled' ORDER BY j.id""",group)
-        for row in rows:
-            by_source.setdefault(row["canonical"],{}).setdefault(row["platform"],dict(row))
+            AND j.stage='deliver' AND j.state!='cancelled' {provider_filter} ORDER BY j.id""",group)
+
+
+def existing_deliveries(db, identities):
+    """Return the first reusable original reprint for each source and platform."""
+    by_source={}
+    for row in frozen_jobs_for_sources(db, identities, reprints_only=True):
+        by_source.setdefault(row["canonical"],{}).setdefault(row["platform"],dict(row))
     return by_source
+
+
+def check_delivery_account(db, canonical, platform, account):
+    # The receiver uses the source, platform and account as its idempotency key.
+    prior = db.execute("""SELECT j.id FROM rows r JOIN jobs j ON j.row_id=r.id
+        JOIN frozen_deliveries f ON f.job=j.id
+        WHERE r.canonical=? AND j.platform=? AND j.account=? AND j.stage='deliver'
+          AND j.state!='cancelled' ORDER BY j.id LIMIT 1""", (canonical, platform, account)).fetchone()
+    if prior:
+        raise ValueError(f"账号「{account}」已有同一原文的冻结稿交付任务 #{prior['id']}，请核对原任务。")
 
 
 def schedule(path, draft_id, data, now):
@@ -37,7 +52,7 @@ def schedule_in(db, draft_id, data, now):
     requested = data.get("time")
     if requested is not None and type(requested) is not int:
         raise ValueError("排期时间格式无效")
-    draft = db.execute("""SELECT d.*, b.control, b.rules FROM drafts d
+    draft = db.execute("""SELECT d.*, r.canonical, b.control, b.rules FROM drafts d
         JOIN rows r ON r.id=d.row_id JOIN batches b ON b.id=r.batch WHERE d.id=?""", (draft_id,)).fetchone()
     if not draft:
         raise KeyError("找不到平台成稿")
@@ -54,6 +69,7 @@ def schedule_in(db, draft_id, data, now):
         return {"id":old["job"], "slot":old["planned"], "state":old["state"], "created":False}
     if draft["control"] != "active":
         raise ValueError("批次已暂停或取消")
+    check_delivery_account(db, draft["canonical"], draft["platform"], draft["account"])
     if requested is not None and not now <= requested <= now+366*86400:
         raise ValueError("请选择未来一年内的北京时间")
     limits = json.loads(draft["rules"])

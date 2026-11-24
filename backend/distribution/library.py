@@ -6,7 +6,7 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
-from .delivery import existing_deliveries
+from .delivery import frozen_jobs_for_sources
 from .folders import MAX_FILE_BYTES, MEDIA, export_header, export_metadata, markdown_fields, parse_folders
 from .search import day_start
 from .store import canonicalize, compact, digest, transaction
@@ -146,13 +146,20 @@ def discover(root):
     return sorted(found,key=lambda entry:entry["directory"])
 
 def catalog_records(path,entries):
+    history, edited = {}, {}
     with transaction(path,False) as db:
         seen={r[0] for r in db.execute("SELECT canonical FROM rows WHERE kind='article' AND canonical LIKE 'folder:%'")}
-        history=existing_deliveries(db,("folder:"+item["source"] for item in entries if item["source"]))
+        identities = ("folder:"+item["source"] for item in entries if item["source"])
+        for job in frozen_jobs_for_sources(db, identities, reprints_only=False):
+            if job["provider"] == "reprint":
+                history.setdefault(job["canonical"], {}).setdefault(job["platform"], dict(job))
+            else:
+                edited.setdefault(job["canonical"], []).append(dict(job))
     for item in entries:
         key="folder:"+item["source"] if item["source"] else None
         identity=item.pop("identity",None)
-        item.update(known=bool(identity and "folder:"+identity in seen),deliveries=history.get(key,{}))
+        item.update(known=bool(identity and "folder:"+identity in seen),deliveries=history.get(key,{}),
+                    edited_deliveries=edited.get(key,[]))
     return entries
 
 

@@ -92,6 +92,50 @@ class FrozenDelivery(unittest.TestCase):
         self.assertNotEqual(self.detail(other_job)["job"]["receipt"],d["job"]["receipt"])
         self.assertEqual(self.schedule(did,self.slot)["id"],jid)
 
+    def test_edited_delivery_cannot_satisfy_a_reprint_or_duplicate_its_receipt(self):
+        edited, _ = self.freeze(self.targets[0])
+        old_job = self.schedule(edited, self.slot)["id"]
+        drain(self.path, self.slot)
+        article, = self.client.get(BASE+"library").json["items"]
+        self.assertFalse(article["deliveries"])
+        self.assertEqual([j["id"] for j in article["edited_deliveries"]], [old_job])
+
+        def submit(key, target):
+            batch = self.post("reprints", dict(request_id=key, directories=[article["directory"]],
+                                              targets=[target]))["id"]
+            while tick(self.path, preparation=True):
+                pass
+            row, = self.client.get(BASE+"batches/"+batch).json["reviews"]
+            return batch, row
+
+        batch, row = submit("same-account", self.targets[0])
+        self.assertEqual(row["state"], "pending")
+        self.assertEqual(row["prior_jobs"], [])
+        item = dict(id=row["id"], sha=row["sha"], revision=row["revision"], expected_prior={})
+        planned, = self.post(f"reprints/{batch}/plan", dict(items=[item]))["items"]
+        approved, = self.post(f"reprints/{batch}/approve", dict(items=[item], approved=True))["items"]
+        for attempt in (planned, approved):
+            self.assertIn(f"#{old_job}", attempt["error"])
+        self.assertEqual(self.client.get(BASE+"batches/"+batch).json["deliveries"], [])
+
+        second, row = submit("other-account", self.targets[1])
+        item = dict(id=row["id"], sha=row["sha"], revision=row["revision"], expected_prior={})
+        self.post(f"reprints/{second}/approve", dict(items=[item], approved=True))
+        job, = self.client.get(BASE+"batches/"+second).json["deliveries"]
+        drain(self.path, max(job["slot"], self.slot))
+        received = self.detail(job["id"])["delivery"]
+        self.assertTrue(received["received"]["matches"])
+        self.assertEqual(received["snapshot"]["kind"], "reprint")
+        _, replay = submit("repeated", self.targets[1])
+        self.assertEqual(replay["state"], "duplicate")
+        self.assertEqual([a["id"] for a in replay["assignments"]], [job["id"]])
+        later_edit, _ = self.freeze(self.targets[1])
+        conflict = self.client.post(BASE+f"editorial/{later_edit}/schedule", json={})
+        self.assertEqual(conflict.status_code, 400)
+        self.assertIn(f"#{job['id']}", conflict.json["error"])
+        with transaction(ledger_path(self.path), False) as remote:
+            self.assertEqual(remote.execute("SELECT count(*) FROM delivered_drafts").fetchone()[0], 2)
+
     def test_preview_releases_failed_booking_but_keeps_unreconciled_receipt(self):
         draft,_=self.freeze(self.targets[0])
         peer,_=self.freeze(self.targets[1])

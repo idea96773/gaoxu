@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath
 
 from flask import jsonify, request
 
-from .delivery import existing_deliveries, schedule_in
+from .delivery import check_delivery_account, existing_deliveries, schedule_in
 from .editorial import checked_link
 from .library import check_library_root, read_folder, selected_header, selection_key, validate_directories
 from .markdown_media import MARKDOWN, inline_tokens, local_path
@@ -361,6 +361,7 @@ def plan_selection(db,bid,items,now):
                     assignments.append(dict(platform=p,account=job["account"],slot=job["slot"],prior_job=job["id"]))
                     continue
                 account=accounts[positions[p]%len(accounts)]
+                check_delivery_account(db, row["canonical"], p, account)
                 slot=available_slot(now,p,account,rules,bookings[p])
                 assignments.append(dict(platform=p,account=account,slot=slot,prior_job=None))
             # Apply this article to the in-memory forecast only after all its platforms succeeded.

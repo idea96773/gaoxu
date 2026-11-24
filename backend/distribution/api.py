@@ -309,6 +309,7 @@ def make_blueprint(path,fixed_root):
         result=health(path)
         if platform_draft.local_console_request():
             result["database"]=str(Path(path).resolve())
+            result["project"]=str(Path(__file__).resolve().parents[2])
         return jsonify(result)
 
     @api.get("/runtime-status")

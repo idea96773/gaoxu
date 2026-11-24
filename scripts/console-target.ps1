@@ -8,9 +8,10 @@ function Get-GaoxuDatabase([string]$ProjectRoot, [string]$Database) {
     return [IO.Path]::GetFullPath([IO.Path]::Combine($ProjectRoot, $Database))
 }
 
-function Read-GaoxuConsole([string]$ExpectedDatabase) {
+function Read-GaoxuConsole([string]$ExpectedDatabase, [string]$ExpectedProject) {
     $request = [Net.HttpWebRequest]::Create('http://127.0.0.1:5419/api/distribution/health')
     $request.Proxy = $null
+    $request.AllowAutoRedirect = $false
     $request.Timeout = 2500
     $request.ReadWriteTimeout = 2500
     try {
@@ -25,7 +26,10 @@ function Read-GaoxuConsole([string]$ExpectedDatabase) {
     if ($status.application -ne 'gaoxu' -or !$status.database) {
         throw '5419 端口上的服务未提供稿序任务库信息，请核对正在运行的程序。'
     }
-    if ($status.database -ne $ExpectedDatabase) {
+    if ($ExpectedProject -and $status.project -ne $ExpectedProject) {
+        throw '正在运行的管理台未确认来自此目录。请在管理台所在的项目目录双击「启动稿序」，再打开自启动设置。'
+    }
+    if ($ExpectedDatabase -and $status.database -ne $ExpectedDatabase) {
         throw "管理台正在使用其他任务库。当前运行 | $($status.database)；本次启动 | $ExpectedDatabase。请从原项目打开管理台，或在原实例正常退出后切换任务库。"
     }
     return $status

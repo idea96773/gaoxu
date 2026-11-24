@@ -30,8 +30,7 @@
         <p>{{!startup.registered?'当前 Windows 用户尚未为此稿序目录配置自启动':!startup.enabled?'自启动已禁用':
           startup.triggers.length?'已配置，触发方式为'+startup.triggers.join('、'):'已注册，缺少启用的触发条件'}}</p>
         <p>当前任务库　{{startup.database}}</p>
-        <p v-if="!startup.enabled">如需在登录 Windows 后自动恢复排期，可在稿序项目目录运行
-          <code>.\scripts\windows-startup.ps1 -Action Enable -Trigger Logon -Database (Read-Host '粘贴当前任务库路径')</code>。</p>
+        <p>在项目目录双击「配置稿序自启动.bat」，可选择登录后或开机时恢复排期。设置窗口会显示当前管理台的任务库，供你确认。</p>
         <p v-if="startup.enabled && startup.expected_database">{{startup.database_pinned?'自启动绑定的任务库':'按当前配置预计使用'}}　{{startup.expected_database}}
           <strong v-if="startup.matches===false"> · 与当前任务库不同</strong></p>
         <p v-else-if="startup.enabled">请在任务计划程序核对启动命令及运行账号的 DIST_DB 设置。</p>

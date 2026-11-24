@@ -926,6 +926,56 @@ class Reprint(unittest.TestCase):
         self.assertEqual(checked_render("",[])[1]["status"],"no_html")
         self.assertEqual(checked_render('<div id="js_content"></div>'*2,[])[1]["status"],"no_body")
 
+    def test_source_breaks_survive_review_freeze_and_export(self):
+        directory=self.source(48)
+        folder=self.root/directory
+        md=folder/"正文.md"
+        md.write_text(md.read_text(encoding="utf-8").replace("第48篇的本地正文。","甲 & 乙丙丁"),encoding="utf-8")
+        original=('<div id="js_content"><p>甲 &amp; 乙</p><section><p>丙<br>丁</p></section>'
+                  '<p hidden>排版外文字</p><img src="img/0.png"></div>')
+        (folder/"正文.html").write_text(original,encoding="utf-8")
+        bid=self.create([directory])
+        self.prepare()
+        row=self.batch(bid)["reviews"][0]
+        view=self.client.get(BASE+f"reprints/{bid}/{row['id']}?platform=zhihu").json["snapshot"]
+        self.assertEqual(view["body_comparison"]["restored_breaks"],2)
+        self.assertTrue(view["body_comparison"]["structure_matches"])
+        segment="<p>甲 &amp; 乙</p>\n<p>丙<br />\n丁</p>"
+        self.assertIn(segment,view["html"])
+        self.approve(bid,[row])
+        jobs=self.batch(bid)["reviews"][0]["assignments"]
+        for job in jobs:
+            inspected=self.client.get(BASE+f"jobs/{job['id']}/reprint-check").json
+            self.assertIn(segment,inspected["html"])
+            self.assertEqual((len(inspected["images"]),inspected["reader_url"]),(1,DESTINATION))
+            archive=self.client.get(BASE+f"editorial/{job['draft']}/export")
+            with zipfile.ZipFile(io.BytesIO(archive.data)) as pack:
+                self.assertIn(segment,pack.read("article.html").decode())
+                self.assertIn("甲 & 乙丙丁",pack.read("article.md").decode())
+
+    def test_source_breaks_compare_visible_positions_and_preserve_markup(self):
+        from .body_compare import checked_render
+        from .markdown_media import MARKDOWN
+        def compare(original,md):
+            return checked_render('<div id="js_content">'+original+'</div>',MARKDOWN.parse(md))
+        markup,report=compare("<section><p>甲</p></section><div hidden><br>装饰</div><p>乙</p>","甲\n\n乙")
+        self.assertTrue(report["structure_matches"])
+        self.assertNotIn("break_example",report)
+        markup,report=compare('<p>甲<section style="display:inline-block">乙</section>丙</p>',"甲乙丙")
+        self.assertEqual(markup,"<p>甲乙丙</p>\n")
+        self.assertTrue(report["structure_matches"])
+        markup,report=compare("<p>甲</p><p>乙</p>","[甲乙](https://example.invalid/)")
+        self.assertIn('>甲乙</a>',markup)
+        self.assertEqual((report["missing_breaks"],report["extra_breaks"]),(1,0))
+        self.assertTrue(report["break_example"]["missing"])
+        _,report=compare("<p>甲乙</p>","甲\n\n乙")
+        self.assertEqual((report["missing_breaks"],report["extra_breaks"]),(0,1))
+        markup,report=compare("<p>甲</p><p>乙</p>","甲丁")
+        self.assertIn("difference",report)
+        self.assertNotIn("restored_breaks",report)
+        markup,report=compare("<p>甲</p><p>乙<img src='a'>丙</p>","甲乙丙![图](a)")
+        self.assertNotIn("restored_breaks",report)
+
     def test_body_difference_shown_on_review_then_cleared_on_reread_and_frozen(self):
         directory=self.source(49)
         folder=self.root/directory

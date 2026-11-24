@@ -10,7 +10,10 @@
         <p>原 HTML　{{report.difference.source || '（此处已结束）'}}</p>
         <p>转载稿　{{report.difference.draft || '（此处已结束）'}}</p>
       </details>
-      <p v-if="!report.structure_matches">排版结构有变化。{{structure || '标题、列表等元素的排列顺序有变化。'}}</p>
+      <p v-if="report.structure_counts">排版结构有变化。{{structure || '标题、列表等元素的排列顺序有变化。'}}</p>
+      <p v-if="report.break_example">段落或换行位置有差异。转载稿缺少 {{report.missing_breaks}} 处，多出 {{report.extra_breaks}} 处。
+        首处在「{{report.break_example.before}}」与「{{report.break_example.after}}」之间，{{report.break_example.missing?'原 HTML 在此断开。':'转载稿在此断开。'}}</p>
+      <p v-if="report.restored_breaks">已按原 HTML 恢复 {{report.restored_breaks}} 处段落或换行。</p>
       <p v-if="report.restored_bold">已按原 HTML 恢复 {{report.restored_bold}} 处加粗。</p>
     </template>
   </section>

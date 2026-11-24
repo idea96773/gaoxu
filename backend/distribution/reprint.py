@@ -522,8 +522,12 @@ def overview(db,bid,platforms=()):
     items=db.execute(f"""SELECT r.id,r.line,r.note,r.canonical,r.owner,q.title,q.state,q.sha,j.id AS prepare_job,
         {REVIEW_REVISION} revision,j.state AS prepare_state,j.attempts AS prepare_attempts,
         CASE WHEN q.state='preparing' AND j.state='ready' AND j.failure<>'' THEN j.due END AS prepare_retry_at,
-        s.id AS schedule_job,s.attempts AS schedule_attempts,s.failure AS schedule_failure FROM rows r
+        s.id AS schedule_job,s.attempts AS schedule_attempts,s.failure AS schedule_failure,
+        (r.canonical IS NOT NULL OR sel.row_id IS NOT NULL) AS can_identify_source,
+        (SELECT m.new_directory FROM reprint_source_moves m WHERE m.job=j.id ORDER BY attempt DESC LIMIT 1) AS relocated_directory
+        FROM rows r
         JOIN reprint_reviews q ON r.id=q.row_id
+        LEFT JOIN reprint_selections sel ON sel.row_id=r.id
         LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'
         LEFT JOIN jobs s ON s.row_id=r.id AND s.stage='reprint_schedule' WHERE r.batch=? ORDER BY r.line""",(bid,)).fetchall()
     assignments=db.execute("""SELECT a.row_id,a.platform,a.reused,j.account,j.slot,j.due,j.state,j.id,j.receipt,f.draft,
@@ -601,6 +605,62 @@ def register(api,path,current_root,body):
             row=db.execute("""SELECT b.id FROM batches b JOIN reprint_batches r ON r.batch=b.id
                 WHERE b.request_key=?""",(key,)).fetchone()
         return jsonify(id=row["id"] if row else None),200,{"Cache-Control":"no-store"}
+
+    @api.post("/reprints/<bid>/<int:rid>/relocate")
+    def relocate(bid,rid):
+        data=body()
+        directory=data.get("directory")
+        validate_directories([directory])
+        root=data.get("expected_root")
+        key=data.get("selection_key")
+        attempt=data.get("expected_attempt")
+        if (not isinstance(root,str) or not root or type(attempt) is not int or attempt<1
+                or not isinstance(key,str) or not re.fullmatch(r"(url|file)-[0-9a-f]{64}",key)):
+            raise ValueError("请重新选择文章目录并核对当前失败记录")
+        query="""SELECT j.id,j.attempts,j.state job_state,b.control,q.state,r.canonical,s.root,s.directory,sel.selection_key
+            FROM rows r JOIN batches b ON b.id=r.batch JOIN reprint_reviews q ON q.row_id=r.id
+            JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare' JOIN reprint_sources s ON s.row_id=r.id
+            LEFT JOIN reprint_selections sel ON sel.row_id=r.id WHERE b.id=? AND r.id=?"""
+        def check(db):
+            row=db.execute(query,(bid,rid)).fetchone()
+            if not row:
+                raise KeyError("找不到该文章的读取任务")
+            prior=db.execute("SELECT new_root,new_directory,selection_key FROM reprint_source_moves WHERE job=? AND attempt=?",
+                             (row["id"],attempt)).fetchone()
+            if prior and tuple(prior)==(root,directory,key):
+                return row,True
+            if (prior or row["control"]!="active" or row["state"]!="invalid" or row["job_state"]!="failed"
+                    or row["attempts"]!=attempt):
+                raise ValueError("批次或读取任务状态已变化，请刷新后再操作")
+            if not (row["canonical"] or row["selection_key"]):
+                raise ValueError("原选稿缺少可核对的文章标识，请恢复原目录或重新选稿")
+            check_library_root(current_root(),data)
+            return row,False
+        with transaction(path,False) as db:
+            row,replayed=check(db)
+            if replayed:
+                return jsonify(job=row["id"])
+        try:
+            header=selected_header(root,directory)
+        except OSError as exc:
+            raise ValueError("新目录无法读取，请等待下载完成后重新选择") from exc
+        ref,sha=header["source"],header["markdown_sha"]
+        kind,value=("url",ref) if ref else ("file",sha)
+        if not value or key!=selection_key(root,directory,kind,value):
+            raise ValueError("新目录中的文章已变化，请重新选取")
+        now=int(time.time())
+        with transaction(path) as db:
+            row,replayed=check(db)
+            if not replayed:
+                check_selected_source(row,ref,sha,full=True)
+                db.execute("INSERT INTO reprint_source_moves VALUES(?,?,?,?,?,?,?,?)",
+                           (row["id"],attempt,now,row["root"],row["directory"],root,directory,key))
+                db.execute("UPDATE reprint_sources SET root=?,directory=? WHERE row_id=?",(root,directory,rid))
+                db.execute("INSERT OR REPLACE INTO reprint_selections VALUES(?,?)",(rid,key))
+                db.execute("UPDATE jobs SET state='ready',due=?,finished=NULL,failure='' WHERE id=?",(now,row["id"]))
+                db.execute("UPDATE rows SET note='' WHERE id=?",(rid,))
+                db.execute("UPDATE reprint_reviews SET state='preparing' WHERE row_id=?",(rid,))
+        return jsonify(job=row["id"])
 
     @api.post("/reprints/<bid>/<int:rid>/reread",defaults={"action":"reread"})
     @api.post("/reprints/<bid>/<int:rid>/return",defaults={"action":"return"})

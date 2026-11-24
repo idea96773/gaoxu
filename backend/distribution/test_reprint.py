@@ -54,6 +54,43 @@ class Reprint(unittest.TestCase):
             self.assertEqual(result.status_code, 200)
             return result.json["items"]
 
+    def test_relocate_failed_source_preserves_selection_and_peer_schedule(self):
+        dirs=[self.source(i) for i in (1,2)]
+        catalog=self.client.get(BASE+"library").json
+        request=dict(request_id="move",directories=dirs,targets=self.targets,rules={},
+                     selections={item["directory"]:dict(title=item["title"],key=item["selection_key"]) for item in catalog["items"]})
+        bid=self.client.post(BASE+"reprints",json=request).json["id"]
+        new=self.root/"移动后的文章"
+        (self.root/dirs[0]).rename(new)
+        self.prepare()
+        failed,peer=self.batch(bid)["reviews"]
+        self.assertEqual(failed["state"],"invalid")
+        self.approve(bid,[peer])
+        scheduled=self.batch(bid)["deliveries"]
+        options={r["directory"]:r["selection_key"] for r in self.client.get(BASE+"library").json["items"]}
+        route=BASE+f"reprints/{bid}/{failed['id']}/relocate"
+        def relocate(directory,**overrides):
+            payload=dict(directory=directory,expected_root=catalog["root"],selection_key=options[directory],
+                         expected_attempt=failed["prepare_attempts"])
+            return self.client.post(route,json=payload|overrides)
+        self.assertEqual(relocate(dirs[1]).status_code,400)
+        self.assertEqual(relocate(new.name,expected_root="old").status_code,400)
+        self.assertEqual(relocate(new.name,selection_key=options[dirs[1]]).status_code,400)
+        self.assertEqual(relocate(new.name,expected_attempt=0).status_code,400)
+        self.client.post(BASE+f"batches/{bid}/pause",json={})
+        self.assertEqual(relocate(new.name).status_code,400)
+        self.client.post(BASE+f"batches/{bid}/resume",json={})
+        self.assertEqual(relocate(new.name).json,{"job":failed["prepare_job"]})
+        self.client=create_app(self.path,self.root).test_client()
+        self.prepare()
+        self.assertEqual(relocate(new.name).json,{"job":failed["prepare_job"]})
+        batch=self.batch(bid)
+        recovered=batch["reviews"][0]
+        self.assertEqual((recovered["state"],recovered["relocated_directory"],recovered["prepare_attempts"]),
+                         ("pending",new.name,failed["prepare_attempts"]+1))
+        self.assertEqual(batch["deliveries"],scheduled)
+        self.assertEqual(self.client.post(BASE+"reprints",json=request).json["id"],bid)
+
     def test_background_approval_recovers_and_rolls_back_only_the_conflicting_article(self):
         bid=self.create([self.source(i) for i in (11,12,13)])
         self.prepare()

@@ -45,7 +45,11 @@
         <el-button v-if="row.prepare_job" link @click="$emit('job',row.prepare_job)">读取记录（{{row.prepare_attempts}} 次）</el-button>
         <el-button v-if="row.schedule_job" link @click="$emit('job',row.schedule_job)">分稿排期记录 #{{row.schedule_job}}</el-button>
         <p v-if="row.state==='pending' && row.schedule_failure" role="alert">{{row.schedule_failure}}</p>
-        <el-button v-if="row.prepare_state==='failed' && active" link type="primary" @click="$emit('retry',row.prepare_job,row.prepare_attempts)">重新读取这篇</el-button></template></el-table-column>
+        <p v-if="row.relocated_directory">重新选定的目录　{{row.relocated_directory}}</p>
+        <template v-if="row.prepare_state==='failed' && active">
+          <el-button link type="primary" @click="$emit('retry',row.prepare_job,row.prepare_attempts)">重新读取这篇</el-button>
+          <el-button v-if="row.can_identify_source" link @click="chooseDirectory(row)">从新目录重试</el-button>
+        </template></template></el-table-column>
       <el-table-column label="进度" width="116"><template #default="{row}">{{row.progress==='pending'?'待审核':row.progress==='returned'?'审核退回':label(row.progress)}}
         <small v-if="row.prepare_retry_at">{{active?'下次可重读 '+date(row.prepare_retry_at):'批次继续后重读'}}</small>
         <small v-if="row.state==='duplicate' && row.delivery_progress"> · 关联任务{{label(row.delivery_progress)}}</small></template></el-table-column>
@@ -62,6 +66,15 @@
           <a :href="'/api/distribution/editorial/'+a.draft+'/export'">下载冻结稿</a></div>
         <span v-if="!row.assignments.length && row.state!=='pending'">—</span></template></el-table-column>
     </el-table>
+    <el-dialog v-model="moving" title="从新目录重试" append-to-body width="min(620px, 94vw)">
+      <p>请从当前保存目录选择《{{moveTarget?.title}}》。系统会核对原文标识，再重新读取这一篇。</p>
+      <p v-if="moveRoot">{{moveRoot}}</p>
+      <el-select v-model="moveDir" filterable placeholder="输入文章标题或目录名筛选" aria-label="新的文章目录" :loading="loadingDirs" style="width:100%">
+        <el-option v-for="item in moveOptions" :key="item.directory" :value="item.directory" :label="item.title+' · '+item.directory" />
+      </el-select>
+      <p v-if="moveError" role="alert">{{moveError}}</p>
+      <template #footer><el-button @click="moving=false">关闭</el-button><el-button type="primary" :loading="busy" :disabled="!moveDir || loadingDirs" @click="relocate">核对并重读</el-button></template>
+    </el-dialog>
     <el-drawer v-model="opened" append-to-body :title="(names[previewPlatform] || '转载稿')+'审核预览'" size="min(820px, 96vw)">
       <template v-if="view"><p v-if="previewTask">{{previewTask.reused?'沿用冻结稿':'已冻结'}} · 任务 #{{previewTask.job}} · {{previewTask.account}}</p>
         <ReprintApproval v-if="previewTask" :info="previewTask.approval" :date="date" />
@@ -89,6 +102,28 @@ const priorIds=r=>Object.fromEntries((r.prior_jobs || []).map(job=>[job.platform
 const reviewKey=r=>[r.id,r.revision,r.sha,r.previous_attempt??r.schedule_attempts??0,JSON.stringify(r.expected_prior || priorIds(r))].join(':')
 const checked=computed(()=>pending.value.filter(r=>ids.value.includes(reviewKey(r))))
 const active=computed(()=>props.batch.control==='active')
+const moving=ref(false),moveTarget=ref(null),moveDir=ref(''),moveRoot=ref(''),moveOptions=ref([]),moveError=ref(''),loadingDirs=ref(false)
+watch(()=>props.batch.id,()=>{moving.value=false;moveTarget.value=null})
+async function chooseDirectory(row){
+  moveTarget.value=row;moving.value=true;moveDir.value='';moveRoot.value='';moveOptions.value=[];moveError.value='';loadingDirs.value=true
+  try{
+    const catalog=await props.api('library')
+    if(moveTarget.value!==row)return
+    moveRoot.value=catalog.root;moveOptions.value=catalog.items.filter(item=>item.selection_key)
+    if(!moveOptions.value.length)moveError.value='当前保存目录里没有可核对的文章，请检查下载目录设置。'
+  }catch(e){if(moveTarget.value===row)moveError.value=e.message}
+  finally{if(moveTarget.value===row)loadingDirs.value=false}
+}
+async function relocate(){
+  const row=moveTarget.value,item=moveOptions.value.find(entry=>entry.directory===moveDir.value)
+  if(!item || !row)return
+  busy.value=true;moveError.value=''
+  try{
+    await props.api('reprints/'+props.batch.id+'/'+row.id+'/relocate',{directory:item.directory,expected_root:moveRoot.value,
+      selection_key:item.selection_key,expected_attempt:row.prepare_attempts})
+    moving.value=false;emit('refresh');ElMessage.success('已核对来源，原读取任务已重新入队')
+  }catch(e){moveError.value=e.message}finally{busy.value=false}
+}
 const planning=ref(false),forecast=ref(null),startAt=ref('')
 const selection=computed(()=>JSON.stringify([props.batch.id,active.value,startAt.value,checked.value.map(reviewKey)]))
 const planRows=computed(()=>(forecast.value?.items||[]).flatMap(r=>(r.assignments||[]).map(a=>({...a,title:r.title}))))

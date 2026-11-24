@@ -15,9 +15,11 @@
       <input v-model="startAt" type="datetime-local" :disabled="busy">
     </label>
     <div class="bar"><label><input type="checkbox" :checked="pending.length>0 && checked.length===pending.length" :disabled="!canSelect || !pending.length || busy" @change="selectAll"> 全选待审核</label>
+      <el-button v-if="pending.length" :loading="comparing" :disabled="busy || planning || !canSelect" @click="selectCompared">仅勾选正文对照未见差异的稿件</el-button>
       <el-button :disabled="busy || planning || !canSelect || !checked.length" @click="changeSelection(checked,false)">撤回所选</el-button>
       <el-button :loading="planning" :disabled="busy || !active || !checked.length" @click="plan">预览分稿与排期</el-button>
       <el-button type="primary" :loading="busy" :disabled="planning || !active || !approvable.length" @click="approve">{{startAt?'审核并锁定预览排期':'审核通过并自动排期'}}（{{approvable.length}}）</el-button></div>
+    <p v-if="comparisonSummary" role="status">{{comparisonSummary}}</p>
     <section v-if="forecast" aria-label="分稿与排期预览">
       <p>预计排期 · 北京时间，试算于 {{date(forecast.calculated_at)}}。{{startAt?'审核后按表中账号和时间排期；遇到冲突的文章会退回待审。':'正式时段以审核时可用名额为准。'}}</p>
       <p v-for="r in forecast.items.filter(r=>r.error)" :key="r.id" role="alert">《{{r.title}}》暂缓审核：{{r.error}}</p>
@@ -32,6 +34,8 @@
     <el-table :data="batch.reviews" row-key="id">
       <el-table-column width="50"><template #default="{row}"><input type="checkbox" :aria-label="'选择审核 '+row.title" :disabled="row.state!=='pending'||!canSelect||busy" v-model="ids" :value="reviewKey(row)"></template></el-table-column>
       <el-table-column label="转载文章" min-width="190"><template #default="{row}"><b>{{row.line}} · {{row.title}}</b><p v-if="row.note">{{row.note}}</p>
+        <p v-if="row.state==='pending' && comparisons.get(reviewKey(row))==='unchecked'">平台稿缺少完整的原 HTML 对照记录，可单篇预览审核。</p>
+        <p v-if="row.state==='pending' && comparisons.get(reviewKey(row))==='different' && !(row.text_changed || row.structure_changed || row.links_changed)">平台稿正文对照有差异，请预览正文与配图。</p>
         <p v-if="row.state==='pending' && (row.text_changed || row.structure_changed)">请在预览中核对{{row.text_changed?'正文文字':''}}{{row.text_changed && row.structure_changed?'和':''}}{{row.structure_changed?'排版结构':''}}差异。</p>
         <p v-if="row.state==='pending' && row.links_changed">正文网页链接有差异，请预览并核对目标地址。</p>
         <p v-if="row.state==='returned' && row.returns?.length">退回原因　{{row.returns[0].reason}}</p>
@@ -112,6 +116,14 @@ const reviewKey=r=>[r.id,r.revision,r.sha,r.previous_attempt??r.schedule_attempt
 const checked=computed(()=>pending.value.filter(r=>ids.value.includes(reviewKey(r))))
 const active=computed(()=>props.batch.control==='active')
 const canSelect=computed(()=>active.value || props.batch.control==='paused')
+const comparing=ref(false),comparisons=ref(new Map())
+const comparisonSummary=computed(()=>{
+  if(!comparisons.value.size || !pending.value.length)return ''
+  const counts={matched:0,different:0,unchecked:0,fresh:0}
+  for(const row of pending.value)counts[comparisons.value.get(reviewKey(row)) || 'fresh']++
+  return '待审稿正文对照：未见差异 '+counts.matched+' 篇，有差异 '+counts.different+' 篇，资料不足 '+counts.unchecked+' 篇'+
+    (counts.fresh?'，待重新对照 '+counts.fresh+' 篇':'')+'。'
+})
 const moving=ref(false),moveTarget=ref(null),moveDir=ref(''),moveRoot=ref(''),moveOptions=ref([]),moveError=ref(''),loadingDirs=ref(false)
 watch(()=>props.batch.id,()=>{moving.value=false;moveTarget.value=null})
 async function chooseDirectory(row){
@@ -160,6 +172,28 @@ const pool=computed(()=>Object.entries(props.names).flatMap(([p,label])=>{
   return accounts.length?[label+' · '+accounts.join('、')]:[]
 }).join('　/　'))
 function selectAll(e){ids.value=e.target.checked?pending.value.map(reviewKey):[]}
+async function selectCompared(){
+  const bid=props.batch.id
+  const initial=new Set(pending.value.map(reviewKey))
+  busy.value=true;comparing.value=true;error.value=''
+  try{
+    const data=await props.api('reprints/'+bid+'/body-comparisons')
+    if(bid!==props.batch.id || !canSelect.value)return
+    const found=new Map(data.items.map(item=>[item.id,item]))
+    const next=new Map()
+    for(const row of pending.value){
+      const key=reviewKey(row),item=found.get(row.id)
+      if(!initial.has(key) || !item || item.sha!==row.sha || item.revision!==row.revision)continue
+      const prior=priorIds(row)
+      if(Object.keys(prior).length!==Object.keys(item.prior).length || Object.keys(prior).some(p=>prior[p]!==item.prior[p]))continue
+      next.set(key,item.status)
+    }
+    comparisons.value=next
+    ids.value=[...next].filter(([,status])=>status==='matched').map(([key])=>key)
+    if(!next.size && pending.value.length)error.value='待审稿已变化，请重新读取正文对照结果。'
+  }catch(e){error.value=e.message}
+  finally{comparing.value=false;busy.value=false}
+}
 async function changeSelection(rows,restore){
   const bid=props.batch.id,items=rows.map(({id,sha,revision})=>({id,sha,revision}))
   if(!restore){
@@ -265,5 +299,5 @@ async function approve(){
 </script>
 <style scoped>
 .plain-preview p{white-space:pre-wrap}.plain-preview img{display:block;max-width:100%;height:auto}
-.bar{display:flex;align-items:center;gap:18px;margin:18px 0}.assignment{padding:6px 0}.assignment small{display:block}.assignment a{color:var(--el-color-primary);font-size:12px}iframe{width:100%;height:72vh;border:0}p{overflow-wrap:anywhere}
+.bar{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin:18px 0}.bar .el-button{margin-left:0}.assignment{padding:6px 0}.assignment small{display:block}.assignment a{color:var(--el-color-primary);font-size:12px}iframe{width:100%;height:72vh;border:0}p{overflow-wrap:anywhere}
 </style>

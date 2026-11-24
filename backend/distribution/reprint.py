@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 from flask import jsonify, request
-from .body_compare import checked_render
+from .body_compare import checked_render, review_comparison
 
 from .delivery import check_delivery_account, existing_deliveries, schedule_in
 from .editorial import checked_link
@@ -859,6 +859,39 @@ def register(api,path,current_root,body):
             view=reviewed["editions"][platform] if "editions" in reviewed else reviewed
             return jsonify(snapshot=view,platform=platform,edition_sha=digest(compact(view)),sha=r["sha"],
                            revision=r["revision"],job=None,account=None,reused=False)
+
+    @api.get("/reprints/<bid>/body-comparisons")
+    def compare_pending_reviews(bid):
+        # The ordinary polling overview stays small. Inspect snapshots only on request.
+        with transaction(path,False) as db:
+            batch=db.execute("""SELECT b.targets FROM reprint_batches rb JOIN batches b ON b.id=rb.batch
+                WHERE rb.batch=?""",(bid,)).fetchone()
+            if not batch:
+                raise KeyError("找不到转载批次")
+            platforms=pools_for(json.loads(batch["targets"]))
+            pending=db.execute(f"""SELECT r.id,r.canonical,q.sha,{REVIEW_REVISION} revision
+                FROM rows r JOIN reprint_reviews q ON q.row_id=r.id
+                LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'
+                WHERE r.batch=? AND q.state='pending' ORDER BY r.line""",(bid,)).fetchall()
+            history=existing_deliveries(db,[row["canonical"] for row in pending])
+            items=[]
+            for row in pending:
+                prior=history.get(row["canonical"],{})
+                states=set()
+                try:
+                    review=reviewed_snapshot(db.execute("SELECT sha,snapshot FROM reprint_reviews WHERE row_id=?",(row["id"],)).fetchone())
+                    for platform in platforms:
+                        edition=review["editions"][platform] if "editions" in review else review
+                        states.add(review_comparison(edition))
+                        if platform in prior:
+                            frozen=db.execute("SELECT sha,snapshot FROM frozen_deliveries WHERE job=?",(prior[platform]["id"],)).fetchone()
+                            states.add(review_comparison(reviewed_snapshot(frozen)))
+                except (KeyError,TypeError,ValueError,AttributeError):
+                    states.add("unchecked")
+                status="different" if "different" in states else "unchecked" if "unchecked" in states else "matched"
+                items.append(dict(id=row["id"],revision=row["revision"],sha=row["sha"],status=status,
+                                  prior={p:prior[p]["id"] for p in platforms if p in prior}))
+            return jsonify(items=items),200,{"Cache-Control":"no-store"}
 
     @api.post("/reprints/<bid>/plan")
     def preview_plan(bid):

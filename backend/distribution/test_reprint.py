@@ -1019,6 +1019,40 @@ class Reprint(unittest.TestCase):
             self.assertIn(original.replace("&","&amp;"),frozen["html"])
             self.assertEqual(frozen["reader_url"],DESTINATION)
 
+    def test_batch_comparison_selects_only_documented_matches_including_reused_editions(self):
+        from .body_compare import review_comparison
+        dirs=[self.source(i) for i in range(5)]
+        def source_html(i,body):
+            (self.root/dirs[i]/"正文.html").write_text('<div id="js_content"><p>'+body+
+                '</p><img src="img/0.png"></div>',encoding="utf-8")
+        for i in [0,1,2,3]:
+            source_html(i,f"第{i}篇的本地正文。")
+        source_html(1,'<a href="https://example.invalid">第1篇的本地正文。</a>')
+        with (self.root/dirs[3]/"正文.md").open("a",encoding="utf-8") as stream:
+            stream.write("\n\n![另一处配图](img/0.png)")
+        self.targets=[dict(platform="zhihu",account="模拟A")]
+        prior=self.create([dirs[1]])
+        self.prepare()
+        self.approve(prior,self.batch(prior)["reviews"])
+        reused,=self.batch(prior)["deliveries"]
+        source_html(1,"第1篇的本地正文。")
+        source_html(2,"与送审稿不同的文字")
+        self.targets.append(dict(platform="toutiao",account="模拟B"))
+        bid=self.create(dirs,"mixed")
+        self.prepare()
+        def comparison():
+            return self.client.get(BASE+"reprints/"+bid+"/body-comparisons").json["items"]
+        reports=comparison()
+        self.assertEqual([r["status"] for r in reports],["matched","different","different","different","unchecked"])
+        self.assertEqual(reports[1]["prior"],{"zhihu":reused["id"]})
+        self.assertEqual(self.batch(bid)["deliveries"],[])
+        rows=self.batch(bid)["reviews"]
+        self.approve(bid,[rows[0]])
+        self.assertEqual([r["id"] for r in comparison()],[r["id"] for r in rows[1:]])
+        self.assertEqual({r["row_id"] for r in self.batch(bid)["deliveries"]},{rows[0]["id"]})
+        self.assertEqual(review_comparison({"images":[],"html_image_count":0,
+            "body_comparison":{"status":"compared","structure_matches":True}}),"unchecked")
+
     def test_body_link_comparison_tracks_occurrences_and_order(self):
         from .body_compare import checked_render
         from .markdown_media import MARKDOWN

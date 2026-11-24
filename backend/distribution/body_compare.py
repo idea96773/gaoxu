@@ -173,6 +173,24 @@ def compare_links(original,draft,left,right):
     return result
 
 
+def review_comparison(view):
+    """Summarize the evidence saved with this exact platform edition."""
+    report=view.get("body_comparison") or {}
+    if report.get("status")!="compared":
+        return "unchecked"
+    links=report.get("web_links") or {}
+    images=view.get("images")
+    count=view.get("html_image_count")
+    have_images=isinstance(images,list) and type(count) is int
+    if ("difference" in report or report.get("structure_matches") is False or "source_only" in links
+            or (have_images and count!=len(images))):
+        return "different"
+    if (report.get("structure_matches") is True and have_images and links.get("positions_compared") is True
+            and type(links.get("source_count")) is int and links["source_count"]==links.get("draft_count")):
+        return "matched"
+    return "unchecked"
+
+
 def checked_render(source,tokens):
     rendered=MARKDOWN.renderer.render(tokens,MARKDOWN.options,{})
     if not source.strip():

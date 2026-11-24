@@ -17,8 +17,10 @@ def local_component_ready():
 
 def status(db):
     now=int(time.time())
-    runtime=db.execute("""SELECT r.port,r.check_only,r.phase,r.seen,s.job FROM zhihu_bridge_runtime r
+    runtime=db.execute("""SELECT r.port,r.check_only,r.phase,r.seen,coalesce(s.job,c.job) job,c.session choice_session
+        FROM zhihu_bridge_runtime r
         LEFT JOIN zhihu_bridge_scope s ON s.singleton=r.singleton AND s.session=r.session
+        LEFT JOIN zhihu_bridge_choice c ON c.singleton=r.singleton AND c.session=r.session
         WHERE r.singleton=1""").fetchone()
     identity=db.execute("SELECT user_id,name FROM draft_bridge WHERE singleton=1 AND seen BETWEEN ? AND ?",
                         (now-45,now)).fetchone()
@@ -34,7 +36,8 @@ def status(db):
     return dict(connected=connected,account=dict(identity) if identity and identity["user_id"] else None,
                 bridge=dict(component_ready=local_component_ready(),
                             online=online or bool(identity),phase=phase,port=runtime["port"] if online else None,
-                            check_only=bool(online and runtime["check_only"]),job_id=runtime["job"] if online else None))
+                            check_only=bool(online and runtime["check_only"]),job_id=runtime["job"] if online else None,
+                            choice_session=runtime["choice_session"] if online else None))
 
 
 def heartbeat(path,uid=None,name="",*,session=None,phase="connected"):
@@ -49,11 +52,14 @@ def heartbeat(path,uid=None,name="",*,session=None,phase="connected"):
 
 
 @contextmanager
-def listener(path,port,check_only,session,job_id=None):
+def listener(path,port,check_only,session,job_id=None,*,pick_one=False):
     stopped=threading.Event()
     with transaction(path) as db:
         db.execute("DELETE FROM draft_bridge")
         db.execute("DELETE FROM zhihu_bridge_scope")
+        db.execute("DELETE FROM zhihu_bridge_choice")
+        if pick_one:
+            db.execute("INSERT INTO zhihu_bridge_choice(singleton,session) VALUES(1,?)",(session,))
         if job_id is not None:
             db.execute("INSERT INTO zhihu_bridge_scope(singleton,session,job) VALUES(1,?,?)",(session,job_id))
         db.execute("INSERT OR REPLACE INTO zhihu_bridge_runtime VALUES(1,?,?,?,'listening',?)",
@@ -75,3 +81,4 @@ def listener(path,port,check_only,session,job_id=None):
             if db.execute("DELETE FROM zhihu_bridge_runtime WHERE session=?",(session,)).rowcount:
                 db.execute("DELETE FROM draft_bridge")
                 db.execute("DELETE FROM zhihu_bridge_scope WHERE session=?",(session,))
+                db.execute("DELETE FROM zhihu_bridge_choice WHERE session=?",(session,))

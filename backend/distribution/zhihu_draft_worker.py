@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from .markdown_media import replace_media_urls
 from .draft_bridge import heartbeat, listener
 from . import draft_images, frozen_reprint
-from .platform_draft import DraftUrlConflict, authorized_source, claim, remember_receipt, require_rights, transition
+from .platform_draft import DraftUrlConflict, authorized_source, claim, recover_interrupted, remember_receipt, require_rights, transition
 from .runtime import instance_lock
 from .store import DEFAULT_DB, initialize, transaction
 
@@ -184,10 +184,12 @@ def run_task(path,task,bridge):
         raise
 
 
-def serve_bridge(path,port,extension_id,token,check_only=False,job_id=None,expected_sha=None):
+def serve_bridge(path,port,extension_id,token,check_only=False,job_id=None,expected_sha=None,*,pick_one=False):
     from websockets.sync.server import serve
     gate=threading.Lock()
     session=uuid.uuid4().hex
+    if pick_one and (check_only or job_id is not None or expected_sha is not None):
+        raise ValueError("管理台单篇选稿需独立启动")
     def handle(socket):
         if not gate.acquire(blocking=False):
             socket.close(1008,"已有扩展连接")
@@ -201,7 +203,7 @@ def serve_bridge(path,port,extension_id,token,check_only=False,job_id=None,expec
                     uid,name=bridge.identity()
                     confirmed=True
                     heartbeat(path,uid,name,session=session)
-                    task=claim(path,uid,job_id,expected_sha) if uid and not check_only else None
+                    task=claim(path,uid,job_id,expected_sha,choice_session=session if pick_one else None) if uid and not check_only else None
                     if task:
                         heartbeat(path,uid,name,session=session,phase="working")
                         run_task(path,task,bridge)
@@ -225,16 +227,12 @@ def serve_bridge(path,port,extension_id,token,check_only=False,job_id=None,expec
             if row["control"]=="cancelled" or row["state"]=="cancelled":
                 raise ValueError("所选任务已取消，请重新选择知乎转载任务")
     with instance_lock(str(path)+".draft-worker.lock"), serve(handle,"127.0.0.1",port,origins=["chrome-extension://"+extension_id]) as server:
-        if not check_only:
+        if not check_only and not pick_one:
             with transaction(path) as db:
-                now=int(time.time())
-                db.execute("""UPDATE platform_drafts SET state='failed',reason='准备过程中断，可重试',updated=?
-                    WHERE state='preparing' AND (? IS NULL OR job=?)""",(now,job_id,job_id))
-                db.execute("""UPDATE platform_drafts SET state='unknown',reason='保存期间中断，请核对草稿箱',updated=?
-                    WHERE state='sending' AND (? IS NULL OR job=?)""",(now,job_id,job_id))
-        with listener(path,port,check_only,session,job_id):
+                recover_interrupted(db,int(time.time()),job_id)
+        with listener(path,port,check_only,session,job_id,pick_one=pick_one):
             mode="仅核对连接" if check_only else "草稿交付"
-            scope=f"任务 #{job_id}" if job_id is not None else "账号已确认队列"
+            scope="管理台选择一篇" if pick_one else (f"任务 #{job_id}" if job_id is not None else "账号已确认队列")
             print(f"稿序草稿桥已启动 ws://127.0.0.1:{port}（{mode} · {scope}）",flush=True)
             server.serve_forever()
 
@@ -245,6 +243,7 @@ if __name__=="__main__":
     parser.add_argument("--port",type=int,default=9537)
     parser.add_argument("--extension-id",required=True)
     parser.add_argument("--check-only",action="store_true")
+    parser.add_argument("--pick-one",action="store_true",help="等待管理台明确确认一份稿件，限定本次连接只处理该任务")
     parser.add_argument("--expected-sha",help="管理台返回的单篇冻结版本摘要")
     parser.add_argument("--job",type=int,help="只处理这个已冻结的知乎转载交付任务编号")
     args=parser.parse_args()
@@ -258,6 +257,6 @@ if __name__=="__main__":
     if not secret:
         parser.error("需要扩展连接 Token")
     try:
-        serve_bridge(args.db,args.port,args.extension_id,secret,args.check_only,args.job,args.expected_sha)
+        serve_bridge(args.db,args.port,args.extension_id,secret,args.check_only,args.job,args.expected_sha,pick_one=args.pick_one)
     except ValueError as exc:
         parser.exit(1,f"{exc}\n")

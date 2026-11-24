@@ -137,6 +137,13 @@ def new_draft_record(db,row,target,state,now):
     return outbox
 
 
+def recover_interrupted(db,now,job_id=None):
+    db.execute("""UPDATE platform_drafts SET state='failed',reason='准备过程中断，可重试',updated=?
+        WHERE state='preparing' AND (? IS NULL OR job=?)""",(now,job_id,job_id))
+    db.execute("""UPDATE platform_drafts SET state='unknown',reason='保存期间中断，请核对草稿箱',updated=?
+        WHERE state='sending' AND (? IS NULL OR job=?)""",(now,job_id,job_id))
+
+
 def register(api,path,body):
     def require_local():
         if not local_console_request():
@@ -236,9 +243,9 @@ def register(api,path,body):
         with transaction(path) as db:
             now=int(time.time())
             existing=db.execute("SELECT * FROM platform_drafts WHERE job=?",(job,)).fetchone()
-            if action in ("queue","cancel") and "expected_event" in data:
+            if action=="recover_interrupted" or (action in ("queue","cancel") and "expected_event" in data):
                 latest=db.execute("SELECT max(id) FROM platform_draft_events WHERE outbox=?",(existing["id"],)).fetchone()[0] if existing else 0
-                if type(data["expected_event"]) is not int or data["expected_event"]!=latest:
+                if type(data.get("expected_event")) is not int or data["expected_event"]!=latest:
                     return jsonify(error="草稿任务状态已变化，请核对最新处理记录后操作"),409
             if action=="scope":
                 scope=data.get("scope")
@@ -289,6 +296,18 @@ def register(api,path,body):
                     checked_url(db,{"id":outbox,"url":""},url)
                     db.execute("UPDATE platform_drafts SET url=? WHERE id=?",(url,outbox))
                     db.execute("INSERT INTO zhihu_restore_reviews VALUES(?,?,'found',?)",(outbox,recovery["generation"],now))
+            elif action=="recover_interrupted":
+                connection=bridge_status(db)
+                bridge=connection["bridge"]
+                if (not bridge["choice_session"] or bridge["choice_session"]!=data.get("choice_session")
+                        or bridge["job_id"] is not None or not connection["account"]
+                        or not existing or existing["state"] not in ("preparing","sending")
+                        or connection["account"]["user_id"]!=existing["user_id"]
+                        or data.get("user_id")!=existing["user_id"] or data.get("sha")!=existing["sha"]):
+                    raise ValueError("请使用刚启动且尚未选稿的单篇助手，在原接收账号核对中断记录")
+                # This listener owns the worker lock and has never claimed a job.
+                # Only the preceding process could have left this record in flight.
+                recover_interrupted(db,now,job)
             elif action=="queue":
                 row=source(db,job)
                 if row["control"]!="active" or row["state"]=="cancelled":
@@ -296,6 +315,9 @@ def register(api,path,body):
                 connection=bridge_status(db)
                 if connection["bridge"]["check_only"]:
                     raise ValueError("当前仅核对连接。保存草稿前请切换草稿桥到交付模式")
+                choice=connection["bridge"]["choice_session"]
+                if choice!=data.get("choice_session"):
+                    return jsonify(error="草稿助手已切换，请核对当前连接后重新确认单篇任务"),409
                 selected=connection["bridge"]["job_id"]
                 if selected is not None and selected!=job:
                     raise ValueError(f"草稿桥仅处理任务 #{selected}，请核对所选任务")
@@ -313,6 +335,8 @@ def register(api,path,body):
                 if existing:
                     if existing["user_id"]!=account["user_id"] or existing["sha"]!=row["sha"]:
                         raise ValueError("此稿已有其他账号或版本的保存记录")
+                    if choice and selected is None and existing["state"] not in ("queued","failed","cancelled"):
+                        raise ValueError("此稿已有处理记录，请先核对草稿箱")
                     if existing["state"] in ("failed","cancelled"):
                         db.execute("UPDATE platform_drafts SET state='queued',reason='',updated=? WHERE id=?",(now,existing["id"]))
                 else:
@@ -322,6 +346,12 @@ def register(api,path,body):
                     outbox=new_draft_record(db,row,account,"queued",now)
                     if recovery:
                         db.execute("INSERT INTO zhihu_restore_reviews VALUES(?,?,'absent',?)",(outbox,recovery["generation"],now))
+                if choice:
+                    # Pin the scope in the same transaction as the authorized outbox record.
+                    updated=db.execute("""UPDATE zhihu_bridge_choice SET job=?,sha=? WHERE session=?
+                        AND (job IS NULL OR (job=? AND sha=?))""",(job,row["sha"],choice,job,row["sha"]))
+                    if updated.rowcount!=1:
+                        raise ValueError("单篇助手选择已变化，请刷新任务详情")
             elif action=="cancel" and existing and existing["state"] in ("queued","preparing"):
                 db.execute("UPDATE platform_drafts SET state='cancelled',reason='已在管理台取消草稿任务',updated=? WHERE job=?",(now,job))
             elif action=="inspect":
@@ -349,8 +379,15 @@ def register(api,path,body):
         return jsonify(ok=True)
 
 
-def claim(path,user_id,job_id=None,expected_sha=None):
+def claim(path,user_id,job_id=None,expected_sha=None,*,choice_session=None):
     with transaction(path) as db:
+        if choice_session is not None:
+            choice=db.execute("""SELECT c.job,c.sha FROM zhihu_bridge_choice c JOIN zhihu_bridge_runtime r
+                ON r.singleton=c.singleton AND r.session=c.session WHERE c.session=? AND c.job IS NOT NULL""",
+                (choice_session,)).fetchone()
+            if not choice:
+                return None
+            job_id,expected_sha=choice
         row=db.execute("""SELECT t.* FROM platform_drafts t JOIN jobs j ON j.id=t.job JOIN rows r ON r.id=j.row_id
              JOIN batches b ON b.id=r.batch WHERE t.state='queued' AND t.user_id=? AND b.control='active'
              AND j.state!='cancelled' AND (? IS NULL OR t.job=?) AND (? IS NULL OR t.sha=?)

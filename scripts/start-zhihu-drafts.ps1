@@ -3,6 +3,7 @@ param(
     [Parameter(ParameterSetName='Worker')][ValidatePattern('^[a-p]{32}$')][string]$ExtensionId,
     [ValidateRange(1024,65535)][int]$Port=9537,
     [Parameter(ParameterSetName='Worker')][switch]$CheckOnly,
+    [Parameter(ParameterSetName='Worker')][switch]$PickOne,
     [Parameter(ParameterSetName='Worker')][ValidateNotNullOrEmpty()][string]$Database,
     [Parameter(Mandatory,ParameterSetName='Inspect')][ValidateRange(1,9223372036854775807)][long]$InspectJob,
     [Parameter(ParameterSetName='Worker')][ValidateRange(1,9223372036854775807)][long]$JobId,
@@ -59,7 +60,8 @@ try {
     if ($Guided) {
         Write-Host '1  仅核对扩展连接和知乎账号（默认）'
         Write-Host '2  仅处理指定任务已确认的草稿'
-        $choice=Read-Host '请选择 1 或 2，直接回车选择 1'
+        Write-Host '3  连接后在管理台选定一篇草稿'
+        $choice=Read-Host '请选择 1、2 或 3，直接回车选择 1'
         switch ($choice.Trim()) {
             ''  { $CheckOnly=$true }
             '1' { $CheckOnly=$true }
@@ -69,10 +71,12 @@ try {
                     throw '任务编号必须是有效的正整数。'
                 }
             }
-            default {throw '请选择 1 或 2。'}
+            '3' { $PickOne=$true }
+            default {throw '请选择 1、2 或 3。'}
         }
     }
     $target=$null
+    if ($PickOne -and ($CheckOnly -or $JobId)) {throw '管理台单篇选稿不能与核对模式或指定任务编号同时使用。'}
     if ($Database) {
         $Database=(Get-Item -LiteralPath $Database -ErrorAction Stop).FullName
         if (!(Test-Path -LiteralPath $Database -PathType Leaf)) {throw '请选择已有任务库文件。'}
@@ -87,6 +91,7 @@ try {
     }
     $workerArgs=@('-m','distribution.zhihu_draft_worker','--db',$Database,'--extension-id',$ExtensionId,'--port',"$Port")
     if ($CheckOnly) { $workerArgs+='--check-only' }
+    if ($PickOne) { $workerArgs+='--pick-one' }
     if ($JobId -gt 0) { $workerArgs+=@('--job',"$JobId") }
     if ($target -and $target.sha) { $workerArgs+=@('--expected-sha',$target.sha) }
     & $python @workerArgs

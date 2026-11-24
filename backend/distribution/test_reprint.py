@@ -1312,6 +1312,72 @@ class Reprint(unittest.TestCase):
         self.assertEqual(claim_draft(self.path,"fixture")["job"],older["id"])
         self.assertEqual(self.client.get(candidates).json["total"],0)
 
+    def test_console_choice_confirms_one_frozen_job_per_bridge_session(self):
+        from .draft_bridge import heartbeat, listener
+        from .platform_draft import claim as claim_draft, transition
+        self.targets=[dict(platform="zhihu",account="模拟A")]
+        bid=self.create([self.source(i) for i in (70,71,72)])
+        self.prepare()
+        self.approve(bid,self.batch(bid)["reviews"])
+        older,*candidates=self.batch(bid)["deliveries"]
+        def url(j):
+            return BASE+f"jobs/{j['id']}/platform-draft"
+        def queue(j,session,**overrides):
+            with self.app.test_client() as client:
+                revision=client.get(url(j)).json["rights"]["revision"]
+                return client.post(url(j),json=dict(action="queue",scope_revision=revision,sha=j["sha"],
+                    user_id="fixture",consent=True,choice_session=session)|overrides)
+        def recover(j,session):
+            detail=self.client.get(url(j)).json
+            return self.client.post(url(j),json=dict(action="recover_interrupted",choice_session=session,
+                expected_event=detail["state_history"][0]["id"],user_id="fixture",sha=j["sha"]))
+        with listener(self.path,9541,False,"queue"):
+            heartbeat(self.path,"fixture","测试账号",session="queue")
+            bound=self.client.post(BASE+"zhihu-draft-accounts",json=dict(action="bind",alias="模拟A",revision=0,user_id="fixture"))
+            self.assertEqual(bound.status_code,200)
+            for j in [older,*candidates]:
+                revision=self.client.get(url(j)).json["rights"]["revision"]
+                result=self.client.post(url(j),json=dict(action="scope",scope="zhihu_draft",rights_confirmed=True,
+                    scope_revision=revision,user_id="fixture",sha=j["sha"]))
+                self.assertEqual(result.status_code,200)
+            self.assertEqual(queue(older,None).status_code,200)
+        with listener(self.path,9541,False,"choice",pick_one=True):
+            heartbeat(self.path,"fixture","测试账号",session="choice")
+            self.assertIsNone(claim_draft(self.path,"fixture",choice_session="choice"))
+            self.assertEqual(queue(older,None).status_code,409)
+            self.assertEqual(queue(candidates[0],"choice",sha=older["sha"]).status_code,400)
+            self.assertIsNone(self.client.get(url(older)).json["bridge"]["job_id"])
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results=list(pool.map(lambda j:queue(j,"choice"),candidates))
+            self.assertCountEqual([r.status_code for r in results],[200,400])
+            winner=candidates[next(i for i,r in enumerate(results) if r.status_code==200)]
+            self.assertEqual(self.client.get(url(older)).json["bridge"]["job_id"],winner["id"])
+            self.assertEqual(queue(winner,"choice").status_code,200)
+            self.assertIsNone(claim_draft(self.path,"wrong",choice_session="choice"))
+            received=claim_draft(self.path,"fixture",choice_session="choice")
+            self.assertEqual((received["job"],received["sha"]),(winner["id"],winner["sha"]))
+            self.assertEqual(recover(winner,"choice").status_code,400)
+            self.assertIsNone(claim_draft(self.path,"fixture",choice_session="choice"))
+        with listener(self.path,9541,False,"next",pick_one=True):
+            heartbeat(self.path,"wrong","其他账号",session="next")
+            self.assertEqual(recover(winner,"next").status_code,400)
+            heartbeat(self.path,"fixture","测试账号",session="next")
+            self.assertEqual(recover(winner,"next").status_code,200)
+            self.assertEqual(self.client.get(url(winner)).json["record"]["state"],"failed")
+            self.assertIsNone(claim_draft(self.path,"fixture",choice_session="next"))
+            self.assertEqual(queue(older,"choice").status_code,409)
+            self.assertEqual(queue(older,"next").status_code,200)
+            self.assertIsNone(claim_draft(self.path,"fixture",choice_session="choice"))
+            sending=claim_draft(self.path,"fixture",choice_session="next")
+            self.assertEqual(sending["job"],older["id"])
+            self.assertTrue(transition(self.path,sending,"preparing","sending"))
+        with listener(self.path,9541,False,"recover",pick_one=True):
+            heartbeat(self.path,"fixture","测试账号",session="recover")
+            self.assertEqual(recover(older,"recover").status_code,200)
+            self.assertEqual(self.client.get(url(older)).json["record"]["state"],"unknown")
+            self.assertEqual(queue(older,"recover").status_code,400)
+            self.assertIsNone(claim_draft(self.path,"fixture",choice_session="recover"))
+
     def test_zhihu_draft_recipient_follows_frozen_identity(self):
         # All identities and heartbeats are fixtures in this test's temporary database.
         from .zhihu_draft_worker import heartbeat

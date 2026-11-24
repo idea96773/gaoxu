@@ -131,6 +131,9 @@ CREATE TABLE IF NOT EXISTS zhihu_bridge_runtime (
  check_only INTEGER NOT NULL, phase TEXT NOT NULL, seen INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS zhihu_bridge_scope (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), session TEXT NOT NULL, job INTEGER NOT NULL REFERENCES jobs(id));
+CREATE TABLE IF NOT EXISTS zhihu_bridge_choice (
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), session TEXT NOT NULL, job INTEGER REFERENCES jobs(id), sha TEXT,
+ CHECK ((job IS NULL)=(sha IS NULL)));
 CREATE TABLE IF NOT EXISTS zhihu_draft_bindings (
  alias TEXT PRIMARY KEY, user_id TEXT UNIQUE, name TEXT NOT NULL, revision INTEGER NOT NULL,
  updated INTEGER NOT NULL);

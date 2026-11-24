@@ -20,8 +20,11 @@
       <a v-if="record.url" :href="record.url" target="_blank" rel="noopener noreferrer">打开知乎草稿</a>
     </p>
     <p v-if="record?.reason">{{record.reason}}</p>
-    <p v-if="bridge?.phase==='offline' && record?.state==='sending'">助手已离线，草稿可能已保存。请先在「{{record.name}}」的草稿箱查找本文，再以单篇交付模式启动任务 #{{job.job.id}}，记录核对结果。</p>
-    <p v-else-if="bridge?.phase==='offline' && record?.state==='preparing'">助手在准备配图期间离线。请以单篇交付模式启动任务 #{{job.job.id}}，刷新后可查看中断记录并重新确认保存。</p>
+    <div v-if="(bridge?.phase==='offline' || awaitingChoice) && ['sending','preparing'].includes(record?.state)">
+      <p>{{record.state==='sending'?'上次保存结果待核对，请在「'+record.name+'」的草稿箱查找本文。':'上次配图准备已中断，登记后可以重新确认保存。'}}</p>
+      <el-button v-if="awaitingChoice && account?.user_id===record.user_id" :disabled="busy" @click="recoverInterrupted">登记此稿中断</el-button>
+      <p v-else>启动助手选项 3 并登录原接收账号，可在本页登记中断。</p>
+    </div>
     <details v-if="stateHistory.length"><summary>草稿处理记录（最近 {{stateHistory.length}} 条）</summary>
       <ol><li v-for="event in stateHistory" :key="event.id">{{date(event.changed)}} · {{labels[event.state] || event.state}}
         <small v-if="event.baseline">升级时保留的最后状态</small><small v-if="event.reason">{{event.reason}}</small></li></ol>
@@ -40,7 +43,7 @@
       <p>恢复副本中没有此稿的保存记录。请先在指定账号的知乎草稿箱查找《{{job.delivery.snapshot.title}}》。</p>
       <el-button v-if="recipient" :disabled="busy" @click="recoverExisting">关联已找到的知乎草稿</el-button>
     </div>
-    <el-button v-if="canSend" type="primary" :loading="busy" @click="enqueue">保存到 {{account.name}} 的草稿箱</el-button>
+    <el-button v-if="canSend" type="primary" :loading="busy" @click="enqueue">{{awaitingChoice?'选定本稿并':''}}保存到 {{account.name}} 的草稿箱</el-button>
     <el-button v-if="record && ['queued','preparing'].includes(record.state)" :disabled="busy" @click="change({action:'cancel',expected_event:eventId})">取消草稿任务</el-button>
     <DraftInspection v-if="record && ['saved','unknown','needs_review','verified'].includes(record.state)"
       :key="record.id+':'+receiptUrl" :api="api" :path="path" :record="record" :receipt-url="receiptUrl" :entries="inspections" :snapshot="job.delivery.snapshot"
@@ -68,9 +71,10 @@ const stateHistory=ref([])
 const eventId=computed(()=>stateHistory.value[0]?.id ?? 0)
 const labels={queued:'等待保存',preparing:'准备配图',sending:'正在请求保存',saved:'已找到草稿，待核对',verified:'已人工核对',needs_review:'核对发现问题',unknown:'回执不确定，需核对草稿箱',failed:'准备失败',cancelled:'已取消'}
 const path='jobs/'+props.job.job.id+'/platform-draft'
+const awaitingChoice=computed(()=>!!bridge.value?.choice_session && !bridge.value.job_id)
 const canSend=computed(()=>!bridge.value?.check_only && (!bridge.value?.job_id || bridge.value.job_id===props.job.job.id) &&
     permitted.value && recipient.value && account.value && control.value==='active' && recipient.value.user_id===account.value.user_id && !cancelled.value && (!record.value ||
-    (['failed','cancelled'].includes(record.value.state) && record.value.user_id===account.value.user_id)))
+    ((['failed','cancelled'].includes(record.value.state) || (awaitingChoice.value && record.value.state==='queued')) && record.value.user_id===account.value.user_id)))
 let stopped=false,timer,sequence=0
 async function load(){
   const n=++sequence
@@ -88,9 +92,14 @@ async function change(data){
 }
 async function enqueue(){
   const target=account.value,revision=grant.value.revision,generation=recovery.value?.generation,expected=eventId.value
-  const message='将已冻结的《'+props.job.delivery.snapshot.title+'》及其配图发送至知乎账号「'+target.name+'」（'+target.user_id+'）的草稿箱。'
+  const choice=bridge.value?.choice_session
+  const message=(choice?'本次助手仅处理任务 #'+props.job.job.id+'。':'')+'将已冻结的《'+props.job.delivery.snapshot.title+'》及其配图发送至知乎账号「'+target.name+'」（'+target.user_id+'）的草稿箱。'
   try{await ElMessageBox.confirm(message+(generation?' 请确认已在该账号查找，草稿箱中没有这篇稿件。':''),'确认保存平台草稿',{confirmButtonText:generation?'已核对无此稿，保存草稿':'仅保存草稿',cancelButtonText:'返回'})}catch{return}
-  await change({action:'queue',consent:true,user_id:target.user_id,sha:props.job.delivery.sha,scope_revision:revision,generation,checked_absent:!!generation,expected_event:expected})
+  await change({action:'queue',consent:true,user_id:target.user_id,sha:props.job.delivery.sha,scope_revision:revision,generation,checked_absent:!!generation,expected_event:expected,choice_session:choice})
+}
+async function recoverInterrupted(){
+  await change({action:'recover_interrupted',choice_session:bridge.value.choice_session,expected_event:eventId.value,
+    sha:record.value.sha,user_id:record.value.user_id})
 }
 async function recoverExisting(){
   const target=recipient.value,generation=recovery.value.generation

@@ -130,6 +130,10 @@ def search(db, args, *, include_recipients=False):
                     "verified":"draft_state='verified'","waiting":"draft_state='queued'",
                     "saving":"draft_state IN ('preparing','sending')","failed":"draft_state='failed'",
                     "uncertain":"draft_state='unknown'","cancelled":"draft_state='cancelled'"}
+        conditions["unsubmitted_reprint"]="""platform='zhihu' AND stage='deliver' AND state!='cancelled'
+            AND control='active' AND draft_state IS NULL AND EXISTS (
+                SELECT 1 FROM frozen_deliveries f JOIN drafts d ON d.id=f.draft
+                WHERE f.job=job_id AND d.provider='reprint' AND d.state='approved')"""
         if review not in conditions:
             raise ValueError("未知的平台草稿核对状态")
         filters.append(conditions[review])

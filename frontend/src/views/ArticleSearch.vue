@@ -15,6 +15,7 @@
           <option v-for="s in ['ready','running','done','failed','paused','cancelled']" :key="s" :value="s">{{label(s)}}</option></select></label>
         <label v-if="showZhihu">知乎接收账号<input v-model.trim="form.draft_recipient" type="search" placeholder="锁定的昵称或完整账号 ID"></label>
         <label v-if="showZhihu">知乎草稿状态<select v-model="form.draft_review"><option value="">全部</option>
+          <option value="unsubmitted_reprint">运行中批次 · 尚未建草稿任务的冻结转载稿</option>
           <option value="waiting">等待保存</option><option value="saving">正在准备或保存</option><option value="failed">准备失败</option>
           <option value="awaiting">待人工核对</option><option value="uncertain">回执不确定</option>
           <option value="issue">核对发现问题</option><option value="verified">已核对通过</option><option value="cancelled">已取消</option></select></label>

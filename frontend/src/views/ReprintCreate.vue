@@ -32,7 +32,7 @@
         <small v-else-if="!item.source">原文链接待识别，按当前 Markdown 文件选稿</small>
         <small v-else-if="selectedPlatforms.length">{{missing(item).length?'待补排　'+missing(item).map(p=>channels[p]).join('、'):'所选平台均已有任务'}}</small>
         <el-button v-for="job in item.deliveries" :key="job.id" type="primary" link @click="$emit('job',job.id)">
-          {{channels[job.platform] || job.platform}} · {{job.account}} · {{job.control==='paused' && job.state==='ready'?'批次暂停':states[job.state] || job.state}} ›
+          {{channels[job.platform] || job.platform}} · {{job.account}} · {{job.control==='paused' && job.state==='ready'?'批次暂停':states[job.state] || job.state}}{{job.control==='cancelled'?' · 原批次已取消':''}} ›
         </el-button>
       </div>
       <p v-if="!filtered.length && !loading">没有找到符合条件的文章。</p>

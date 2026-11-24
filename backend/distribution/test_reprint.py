@@ -602,6 +602,11 @@ class Reprint(unittest.TestCase):
         self.prepare()
         self.approve(bid,self.batch(bid)["reviews"])
         older,selected=sorted(self.batch(bid)["deliveries"],key=lambda job:job["id"])
+        candidates=BASE+"article-search?draft_review=unsubmitted_reprint&platform=zhihu"
+        self.assertEqual({r["job_id"] for r in self.client.get(candidates).json["items"]},{older["id"],selected["id"]})
+        self.client.post(BASE+f"batches/{bid}/pause",json={})
+        self.assertEqual(self.client.get(candidates).json["total"],0)
+        self.client.post(BASE+f"batches/{bid}/resume",json={})
         accounts=BASE+"zhihu-draft-accounts"
 
         def endpoint(job):
@@ -639,6 +644,7 @@ class Reprint(unittest.TestCase):
             self.assertEqual(self.client.get(endpoint(older)).json["record"]["state"],"queued")
         self.assertIsNone(self.client.get(accounts).json["bridge"]["job_id"])
         self.assertEqual(claim_draft(self.path,"fixture")["job"],older["id"])
+        self.assertEqual(self.client.get(candidates).json["total"],0)
 
     def test_zhihu_draft_recipient_follows_frozen_identity(self):
         # All identities and heartbeats are fixtures in this test's temporary database.

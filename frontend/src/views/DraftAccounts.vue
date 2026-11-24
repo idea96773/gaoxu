@@ -13,6 +13,7 @@
       <el-button type="primary" :disabled="loading || busy || !live || !alias || current?.user_id===live.user_id" @click="change('bind')">绑定当前登录账号</el-button>
       <el-button v-if="current?.user_id" :disabled="loading || busy" @click="change('unlink')">解除后续分稿绑定</el-button>
       <el-button :disabled="busy" :loading="loading" @click="load">刷新账号</el-button>
+      <el-button @click="$emit('find-drafts',alias)">{{alias?'查看此别名的待建草稿':'查看全部待建草稿'}}</el-button>
     </div>
     <p v-if="notice" role="status">{{notice}}</p>
     <el-alert v-if="error || connectionError" :title="error || connectionError" type="error" :closable="false"/>
@@ -23,7 +24,7 @@ import {ref,computed,onMounted,onBeforeUnmount} from 'vue'
 import {ElMessageBox} from 'element-plus'
 import BridgeConnection from './BridgeConnection.vue'
 const props=defineProps({api:Function,initialAlias:String})
-const emit=defineEmits(['changed'])
+const emit=defineEmits(['changed','find-drafts'])
 const alias=ref(props.initialAlias || ''),rows=ref([]),live=ref(null),bridge=ref(null)
 const loading=ref(false),busy=ref(false),notice=ref(''),error=ref('')
 const connectionError=ref('')

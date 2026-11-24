@@ -94,7 +94,7 @@
       <FailedJobs v-if="failuresOpen" :api="api" :date="date" :label="label" :version="String(retryVersion)" @job="openJob" @retried="refresh" />
     </el-dialog>
     <el-dialog v-model="accountsOpen" title="知乎草稿账号" append-to-body width="min(650px, 95vw)">
-      <DraftAccounts v-if="accountsOpen" :api="api" :initial-alias="draftAlias" @changed="bindingVersion++" />
+      <DraftAccounts v-if="accountsOpen" :api="api" :initial-alias="draftAlias" @changed="bindingVersion++" @find-drafts="findDrafts" />
     </el-dialog>
     <el-dialog v-model="runtimeOpen" title="运行记录" width="min(920px, 95vw)">
       <el-tabs v-if="runtimeOpen" model-value="runtime">
@@ -189,6 +189,12 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 const accountsOpen=ref(false),draftAlias=ref(''),bindingVersion=ref(0)
 function openDraftAccounts(alias){draftAlias.value=alias;accountsOpen.value=true}
+function findDrafts(alias){
+  accountsOpen.value=false;jobOpen.value=false
+  const query={view:'search',platform:'zhihu',draft_review:'unsubmitted_reprint'}
+  if(alias)query.account=alias
+  router.push({query})
+}
 const runtimeOpen=ref(false),failuresOpen=ref(false),retryVersion=ref(0)
 const cancellingJob=ref(false)
 const route=useRoute(),router=useRouter()

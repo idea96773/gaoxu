@@ -149,7 +149,7 @@ def register(api,path,body):
                                title=json.loads(frozen["snapshot"])["title"],sha=frozen["sha"],
                                account=frozen["account"],slot=frozen["slot"])
             record=db.execute("SELECT * FROM platform_drafts WHERE job=?",(job,)).fetchone()
-            row=db.execute("""SELECT j.account,b.control,f.sha FROM jobs j JOIN frozen_deliveries f ON f.job=j.id JOIN rows r ON r.id=j.row_id
+            row=db.execute("""SELECT j.account,j.state,b.control,f.sha FROM jobs j JOIN frozen_deliveries f ON f.job=j.id JOIN rows r ON r.id=j.row_id
                 JOIN batches b ON b.id=r.batch WHERE j.id=? AND j.platform='zhihu'""",(job,)).fetchone()
             if not row:
                 raise KeyError("找不到知乎任务")
@@ -165,7 +165,7 @@ def register(api,path,body):
                 receipt=db.execute("""SELECT r.edit_url FROM zhihu_draft_receipts r WHERE r.outbox=?
                     AND NOT EXISTS (SELECT 1 FROM platform_drafts t WHERE t.url=r.edit_url AND t.id!=r.outbox)""",
                     (record["id"],)).fetchone()
-            return jsonify(**bridge_status(db),recipient=target,recipient_source=via,control=row["control"],
+            return jsonify(**bridge_status(db),recipient=target,recipient_source=via,control=row["control"],job_state=row["state"],
                            rights=grant,permitted=bool(target and rights.permits(grant,row["sha"],target["user_id"])),
                            rights_history=[dict(event) for event in changes],
                            reusable_images=len(draft_images.confirmed(db,record["id"],grant["revision"])) if record else 0,

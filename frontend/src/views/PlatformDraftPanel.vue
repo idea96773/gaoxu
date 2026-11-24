@@ -4,11 +4,13 @@
     <p>分稿别名　{{job.job.account}}　<el-button link @click="$emit('accounts',job.job.account)">管理知乎账号</el-button></p>
     <p>{{recipientSource==='binding'?'本次保存将锁定账号':'本稿指定账号'}}　{{recipient?.name || '待绑定'}}
       <small v-if="recipient">账号 ID　{{recipient.user_id}}</small></p>
-    <BridgeConnection :bridge="bridge" :account="account" :target="recipient" :job-id="job.job.id"/>
+    <p v-if="cancelled">这份稿件的{{control==='cancelled'?'所属批次':'排期任务'}}已取消。可在此查看历史记录。</p>
+    <p v-else-if="control==='paused'">批次已暂停，继续批次后可办理草稿交付。</p>
+    <BridgeConnection v-else :bridge="bridge" :account="account" :target="recipient" :job-id="job.job.id"/>
     <div v-if="grant" class="scope">
       <p>转载授权　<strong>{{grant.scope==='local'?'仅本地试稿':'可用于指定知乎账号的草稿箱'}}</strong>
         <small v-if="grant.scope==='zhihu_draft'">获准账号 ID　{{grant.user_id}}</small></p>
-      <el-button v-if="recipient && !permitted && control!=='cancelled' && job.job.state!=='cancelled'" link type="primary" :disabled="busy" @click="setScope('zhihu_draft')">记录此账号的草稿授权</el-button>
+      <el-button v-if="recipient && !permitted && !cancelled" link type="primary" :disabled="busy" @click="setScope('zhihu_draft')">记录此账号的草稿授权</el-button>
       <el-button v-if="grant.scope==='zhihu_draft'" link :disabled="busy" @click="setScope('local')">改为仅本地试稿</el-button>
       <details v-if="history.length"><summary>近期授权记录</summary>
         <small v-for="(event,index) in history" :key="index">{{date(event.confirmed)}}　{{event.scope==='local'?'仅本地试稿':'知乎草稿 · '+event.user_id}}</small>
@@ -23,7 +25,7 @@
     <p v-if="reusableImages && ['queued','preparing','failed','cancelled'].includes(record?.state)">
       本稿可沿用 {{reusableImages}} 张已转存配图，共 {{uniqueImages}} 张不同配图。
     </p>
-    <p v-if="!record && !recipient">在「管理知乎账号」中将分稿别名与指定登录账号绑定。</p>
+    <p v-if="!record && !recipient && !cancelled">在「管理知乎账号」中将分稿别名与指定登录账号绑定。</p>
     <el-button v-if="canSend" type="primary" :loading="busy" @click="enqueue">保存到 {{account.name}} 的草稿箱</el-button>
     <el-button v-if="record && ['queued','preparing'].includes(record.state)" :disabled="busy" @click="change({action:'cancel'})">取消草稿任务</el-button>
     <DraftInspection v-if="record && ['saved','unknown','needs_review','verified'].includes(record.state)"
@@ -40,6 +42,8 @@ import BridgeConnection from './BridgeConnection.vue'
 const props=defineProps({api:Function,job:Object,bindingsVersion:Number,date:Function})
 defineEmits(['accounts','inspected'])
 const recipient=ref(null),recipientSource=ref(''),control=ref('')
+const jobState=ref(props.job.job.state)
+const cancelled=computed(()=>control.value==='cancelled' || jobState.value==='cancelled')
 const grant=ref(null),history=ref([]),permitted=ref(false)
 const receiptUrl=ref('')
 const reusableImages=ref(0)
@@ -48,14 +52,14 @@ const bridge=ref(null),account=ref(null),record=ref(null),inspections=ref([]),bu
 const labels={queued:'等待保存',preparing:'准备配图',sending:'正在请求保存',saved:'已找到草稿，待核对',verified:'已人工核对',needs_review:'核对发现问题',unknown:'回执不确定，需核对草稿箱',failed:'准备失败',cancelled:'已取消'}
 const path='jobs/'+props.job.job.id+'/platform-draft'
 const canSend=computed(()=>!bridge.value?.check_only && (!bridge.value?.job_id || bridge.value.job_id===props.job.job.id) &&
-    permitted.value && recipient.value && account.value && control.value==='active' && recipient.value.user_id===account.value.user_id && props.job.job.state!=='cancelled' && (!record.value ||
+    permitted.value && recipient.value && account.value && control.value==='active' && recipient.value.user_id===account.value.user_id && !cancelled.value && (!record.value ||
     (['failed','cancelled'].includes(record.value.state) && record.value.user_id===account.value.user_id)))
 let stopped=false,timer,sequence=0
 async function load(){
   const n=++sequence
   try{const info=await props.api(path);if(!stopped && n===sequence){bridge.value=info.bridge;account.value=info.account;record.value=info.record;recipient.value=info.recipient;recipientSource.value=info.recipient_source;control.value=info.control
     grant.value=info.rights;permitted.value=info.permitted;history.value=info.rights_history;inspections.value=info.inspections || [];reusableImages.value=info.reusable_images || 0
-    receiptUrl.value=info.unverified_edit_url || ''}}
+    jobState.value=info.job_state;receiptUrl.value=info.unverified_edit_url || ''}}
   catch(e){if(!stopped && n===sequence){bridge.value=null;account.value=null;grant.value=null;permitted.value=false;reusableImages.value=0;error.value=e.message}}
 }
 async function poll(){await load();if(!stopped)timer=setTimeout(poll,4000)}

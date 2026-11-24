@@ -4,6 +4,7 @@ $root=Split-Path $PSScriptRoot -Parent
 $python=Join-Path $root '.dist-venv/Scripts/python.exe'
 $backend=Join-Path $root 'backend'
 $state=Join-Path $root 'data/distribution'
+. (Join-Path $PSScriptRoot 'console-target.ps1')
 if (!(Test-Path -LiteralPath $python) -or (!$RetireOnly -and !(Test-Path -LiteralPath (Join-Path $root 'frontend/dist/index.html')))) {
     throw '请按 DISTRIBUTION.md 安装隔离依赖并构建管理台。'
 }
@@ -98,16 +99,10 @@ try {
             throw '绑定的任务库或回执库不可读取，请检查原磁盘和文件。'
         }
         $env:DIST_DB=$RequiredDatabase
-        if (Get-NetTCPConnection -LocalPort 5419 -State Listen -ErrorAction SilentlyContinue) {
-            $probe=New-Object Net.WebClient
-            try {
-                $probe.Proxy=$null
-                $live=$probe.DownloadString('http://127.0.0.1:5419/api/distribution/health') | ConvertFrom-Json
-            } finally {$probe.Dispose()}
-            if ($live.application -ne 'gaoxu' -or $live.database -ne $RequiredDatabase) {
-                throw '正在运行的管理台使用其他任务库或版本过旧，请核对后再启动绑定的任务库。'
-            }
-        }
+    }
+    $expectedDatabase=Get-GaoxuDatabase $root $env:DIST_DB
+    if (Get-NetTCPConnection -LocalPort 5419 -State Listen -ErrorAction SilentlyContinue) {
+        $null=Read-GaoxuConsole $expectedDatabase
     }
     if ($RefreshCode -or $RetireOnly) {
         $prior=@(foreach ($component in 'distribution.api','distribution.engine') {
@@ -131,18 +126,9 @@ for ($i=0;$i -lt 12;$i++) {
         throw '服务进程已退出，请查看对应 err.log。'
     }
     try {
-        $request=[Net.HttpWebRequest]::Create('http://127.0.0.1:5419/api/distribution/health')
-        $request.Proxy=$null
-        $request.Timeout=2500
-        $request.ReadWriteTimeout=2500
-        $response=$request.GetResponse()
-        try {
-            $reader=[IO.StreamReader]::new($response.GetResponseStream())
-            try {$status=$reader.ReadToEnd() | ConvertFrom-Json} finally {$reader.Dispose()}
-        } finally {$response.Dispose()}
+        $status=Read-GaoxuConsole $expectedDatabase
         $versionsMatch=!$RefreshCode -or ($status.api_build -eq $expectedBuild -and $status.worker_build -eq $expectedBuild)
-        if ($status.application -eq 'gaoxu' -and $status.worker_online -and $versionsMatch -and
-            (!$RequiredDatabase -or $status.database -eq $RequiredDatabase)) {$ready=$true;break}
+        if ($status.worker_online -and $versionsMatch) {$ready=$true;break}
     } catch {}
     Start-Sleep -Milliseconds 400
 }

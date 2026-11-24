@@ -12,9 +12,14 @@ $requirements = Join-Path $PSScriptRoot 'gaoxu-requirements.txt'
 
 $releaseScript = Join-Path $PSScriptRoot 'gaoxu_release.py'
 $starter = Join-Path $PSScriptRoot 'start-distribution.ps1'
+. (Join-Path $PSScriptRoot 'console-target.ps1')
 
 function Invoke-GaoxuLaunch {
     if ($CheckOnly -and $Rebuild) { throw '请选择只读检查或重新构建其中一个操作。' }
+    $expectedDatabase = Get-GaoxuDatabase $root $env:DIST_DB
+    if (Get-NetTCPConnection -LocalPort 5419 -State Listen -ErrorAction SilentlyContinue) {
+        $null = Read-GaoxuConsole $expectedDatabase
+    }
     if (!(Test-Path -LiteralPath $python -PathType Leaf)) {
         if ($CheckOnly) { throw '项目的 Python 环境尚未就绪。' }
         if (Test-Path -LiteralPath $environmentPath) { throw "已有环境缺少 Python，请检查 $environmentPath" }
@@ -87,9 +92,7 @@ except OSError:
 
     if ($CheckOnly) {
         if (Get-NetTCPConnection -LocalPort 5419 -State Listen -ErrorAction SilentlyContinue) {
-            $client=New-Object Net.WebClient
-            try {$client.Proxy=$null;$health=$client.DownloadString('http://127.0.0.1:5419/api/distribution/health') | ConvertFrom-Json}
-            finally {$client.Dispose()}
+            $health=Read-GaoxuConsole $expectedDatabase
             $build=& $python -B $releaseScript backend-id
             if ($health.application -ne 'gaoxu' -or !$health.worker_online -or
                 $health.api_build -ne $build -or $health.worker_build -ne $build) {

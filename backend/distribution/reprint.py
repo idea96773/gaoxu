@@ -326,9 +326,12 @@ def check_prior(history,pools,expected):
         raise ValueError("计划沿用的任务已变化，请刷新后重新核对需排期的平台")
 
 
-def plan_selection(db,bid,items,now):
+def plan_selection(db,bid,items,now,start_at=None):
     if not isinstance(items,list) or not 1<=len(items)<=100:
         raise ValueError("请选择 1 至 100 篇待审转载稿")
+    if start_at is not None and (type(start_at) is not int or not now <= start_at <= now+366*86400):
+        raise ValueError("请选择未来一年内的排期起点（北京时间）")
+    first_slot = now if start_at is None else start_at
     batch=db.execute("""SELECT b.targets,b.control,b.rules FROM batches b JOIN reprint_batches rb ON rb.batch=b.id
         WHERE b.id=?""",(bid,)).fetchone()
     if not batch or batch["control"]!="active":
@@ -362,7 +365,9 @@ def plan_selection(db,bid,items,now):
                     continue
                 account=accounts[positions[p]%len(accounts)]
                 check_delivery_account(db, row["canonical"], p, account)
-                slot=available_slot(now,p,account,rules,bookings[p])
+                slot=available_slot(first_slot,p,account,rules,bookings[p])
+                if start_at is not None and slot > now+366*86400:
+                    raise ValueError("此稿在未来一年内没有可锁定的时段，请调整起点或账号规则")
                 assignments.append(dict(platform=p,account=account,slot=slot,prior_job=None))
             # Apply this article to the in-memory forecast only after all its platforms succeeded.
             for a in assignments:
@@ -376,22 +381,24 @@ def plan_selection(db,bid,items,now):
     return dict(calculated_at=now,items=result)
 
 
-def approve_one(path,bid,rid,sha,now,revision=1,expected_prior=None,expected_accounts=None):
+def approve_one(path,bid,rid,sha,now,revision=1,expected_prior=None,expected_accounts=None,expected_slots=None):
     with transaction(path) as db:
-        state=approve_in(db,bid,rid,sha,now,revision,expected_prior,expected_accounts)
+        state=approve_in(db,bid,rid,sha,now,revision,expected_prior,expected_accounts,expected_slots)
         # Older clients confirm synchronously. A successful new decision also
         # resolves this article's previously failed background scheduling job.
         prior=db.execute("""UPDATE jobs SET state='done',attempts=attempts+1,failure='',finished=?
             WHERE row_id=? AND stage='reprint_schedule' AND state='failed' RETURNING id,attempts""",(now,rid)).fetchone()
         if prior:
             decision=dict(sha=sha,revision=revision,expected_prior=expected_prior,expected_accounts=expected_accounts)
+            if expected_slots is not None:
+                decision["expected_slots"]=expected_slots
             db.execute("UPDATE reprint_schedule_inputs SET decision=?,confirmed=? WHERE job=?",(compact(decision),now,prior["id"]))
             db.execute("INSERT INTO attempts(job,seq,started,ended,outcome) VALUES(?,?,?,?,'done')",
                        (prior["id"],prior["attempts"],now,now))
         return state
 
 
-def approve_in(db,bid,rid,sha,now,revision,expected_prior,expected_accounts,confirmed_at=None):
+def approve_in(db,bid,rid,sha,now,revision,expected_prior,expected_accounts,expected_slots=None,confirmed_at=None):
     row=db.execute(f"""SELECT q.*,r.canonical,b.targets,b.control,{REVIEW_REVISION} revision
         FROM reprint_reviews q JOIN rows r ON r.id=q.row_id LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'
         JOIN batches b ON b.id=r.batch WHERE b.id=? AND r.id=?""",(bid,rid)).fetchone()
@@ -409,6 +416,11 @@ def approve_in(db,bid,rid,sha,now,revision,expected_prior,expected_accounts,conf
     check_prior(history,pools,expected_prior)
     if expected_accounts is not None and (not isinstance(expected_accounts,dict) or expected_accounts.keys()!=pools.keys()):
         raise ValueError("预览的平台与本批次不一致，请重新预览排期")
+    if expected_slots is not None and (
+            not isinstance(expected_slots,dict) or expected_slots.keys()!=pools.keys()
+            or any(type(stamp) is not int for stamp in expected_slots.values())
+            or expected_prior is None or expected_accounts is None):
+        raise ValueError("锁定排期需要每个平台的预计时间、账号和沿用任务，请重新预览")
     for p,accounts in pools.items():
         prior=history.get(p)
         view=reviewed["editions"][p] if "editions" in reviewed else reviewed
@@ -417,6 +429,8 @@ def approve_in(db,bid,rid,sha,now,revision,expected_prior,expected_accounts,conf
         if expected_accounts is not None and expected_accounts[p]!=account:
             raise ValueError("预计分稿账号已变化，请重新预览后再审核")
         if prior:
+            if expected_slots is not None and prior["slot"]!=expected_slots[p]:
+                raise ValueError("沿用任务的排期已变化，请重新预览")
             if expected_prior is None:
                 frozen_sha=db.execute("SELECT sha FROM frozen_deliveries WHERE job=?",(prior["id"],)).fetchone()[0]
                 if frozen_sha!=digest(compact(view)):
@@ -425,7 +439,8 @@ def approve_in(db,bid,rid,sha,now,revision,expected_prior,expected_accounts,conf
             continue
         did=db.execute("""INSERT INTO drafts(row_id,platform,account,rev,state,title,body,provider,frozen)
             VALUES(?,?,?,?,'approved',?,?,'reprint',?)""",(rid,p,account,revision,view["title"],view["text"],compact(view))).lastrowid
-        job=schedule_in(db,did,{},now)
+        booking={} if expected_slots is None else {"time":expected_slots[p]}
+        job=schedule_in(db,did,booking,now)
         db.execute("INSERT INTO reprint_assignments VALUES(?,?,?,0)",(rid,p,job["id"]))
         db.execute("INSERT OR REPLACE INTO account_rotation VALUES(?,?)",(pool,(position+1)%len(accounts)))
         assigned.append(dict(platform=p,account=account))
@@ -448,7 +463,10 @@ def queue_review(db,bid,item,now):
         LEFT JOIN reprint_schedule_inputs i ON i.job=s.id WHERE r.batch=? AND r.id=?""",(bid,rid)).fetchone()
     if not row or row["sha"]!=item.get("sha") or row["revision"]!=item["revision"]:
         raise ValueError("审核条目与预览版本不一致")
-    decision=compact({key:item.get(key) for key in ("sha","revision","expected_prior","expected_accounts")})
+    reviewed={key:item.get(key) for key in ("sha","revision","expected_prior","expected_accounts")}
+    if item.get("expected_slots") is not None:
+        reviewed["expected_slots"]=item["expected_slots"]
+    decision=compact(reviewed)
     if row["state"] in ("approved","duplicate"):
         return dict(id=rid,state=row["state"],job=row["job"])
     if row["control"]=="cancelled":
@@ -478,7 +496,7 @@ def execute_approval(db,job,now):
             raise ValueError("找不到此稿的审核受理记录")
         decision=json.loads(record["decision"])
         approve_in(db,record["batch"],job["row_id"],decision["sha"],now,decision["revision"],
-                   decision["expected_prior"],decision["expected_accounts"],record["confirmed"])
+                   decision["expected_prior"],decision["expected_accounts"],decision.get("expected_slots"),record["confirmed"])
     except (ValueError,KeyError,TypeError,sqlite3.IntegrityError) as exc:
         db.execute("ROLLBACK TO freeze_article")
         db.execute("UPDATE reprint_reviews SET state='pending' WHERE row_id=? AND state='scheduling'",(job["row_id"],))
@@ -672,9 +690,9 @@ def register(api,path,current_root,body):
 
     @api.post("/reprints/<bid>/plan")
     def preview_plan(bid):
-        items=body().get("items")
+        data=body()
         with transaction(path,False) as db:
-            return jsonify(plan_selection(db,bid,items,int(time.time()))),200,{"Cache-Control":"no-store"}
+            return jsonify(plan_selection(db,bid,data.get("items"),int(time.time()),data.get("start_at"))),200,{"Cache-Control":"no-store"}
 
     @api.post("/reprints/<bid>/approve")
     def approve_reprints(bid):
@@ -698,7 +716,8 @@ def register(api,path,current_root,body):
                 if type(rid) is not int:
                     raise ValueError("审核条目无效")
                 state=approve_one(path,bid,rid,review.get("sha"),int(time.time()),
-                                  review.get("revision",1),review.get("expected_prior"),review.get("expected_accounts"))
+                                  review.get("revision",1),review.get("expected_prior"),review.get("expected_accounts"),
+                                  review.get("expected_slots"))
                 result.append(dict(id=rid,state=state))
             except ValueError as exc:
                 result.append(dict(id=rid,error=str(exc)))

@@ -11,11 +11,14 @@
     </details>
     <p>本批新稿的目标公众号文章　{{batch.destination}}</p>
     <p v-for="p in previewPlatforms" :key="p">{{names[p]}}新稿文末　{{batch.links?.[p]?.mode==='omit'?'不追加延伸阅读':batch.links?.[p]?.short || batch.destination}}</p>
+    <label v-if="active && pending.length">新任务最早排期（北京时间，可选）
+      <input v-model="startAt" type="datetime-local" :disabled="busy">
+    </label>
     <div class="bar"><label><input type="checkbox" :checked="pending.length>0 && checked.length===pending.length" :disabled="!active || !pending.length" @change="selectAll"> 全选待审核</label>
       <el-button :loading="planning" :disabled="busy || !active || !checked.length" @click="plan">预览分稿与排期</el-button>
-      <el-button type="primary" :loading="busy" :disabled="planning || !active || !approvable.length" @click="approve">审核通过并自动排期（{{approvable.length}}）</el-button></div>
+      <el-button type="primary" :loading="busy" :disabled="planning || !active || !approvable.length" @click="approve">{{startAt?'审核并锁定预览排期':'审核通过并自动排期'}}（{{approvable.length}}）</el-button></div>
     <section v-if="forecast" aria-label="分稿与排期预览">
-      <p>预计排期 · 北京时间，试算于 {{date(forecast.calculated_at)}}。正式时段以审核时可用名额为准。</p>
+      <p>预计排期 · 北京时间，试算于 {{date(forecast.calculated_at)}}。{{startAt?'审核后按表中账号和时间排期；遇到冲突的文章会退回待审。':'正式时段以审核时可用名额为准。'}}</p>
       <p v-for="r in forecast.items.filter(r=>r.error)" :key="r.id" role="alert">《{{r.title}}》暂缓审核：{{r.error}}</p>
       <el-table v-if="planRows.length" :data="planRows" max-height="340">
         <el-table-column prop="title" label="文章" min-width="180" />
@@ -84,18 +87,23 @@ const priorIds=r=>Object.fromEntries((r.prior_jobs || []).map(job=>[job.platform
 const reviewKey=r=>[r.id,r.revision,r.sha,r.previous_attempt??r.schedule_attempts??0,JSON.stringify(r.expected_prior || priorIds(r))].join(':')
 const checked=computed(()=>pending.value.filter(r=>ids.value.includes(reviewKey(r))))
 const active=computed(()=>props.batch.control==='active')
-const planning=ref(false),forecast=ref(null)
-const selection=computed(()=>JSON.stringify([props.batch.id,active.value,checked.value.map(reviewKey)]))
+const planning=ref(false),forecast=ref(null),startAt=ref('')
+const selection=computed(()=>JSON.stringify([props.batch.id,active.value,startAt.value,checked.value.map(reviewKey)]))
 const planRows=computed(()=>(forecast.value?.items||[]).flatMap(r=>(r.assignments||[]).map(a=>({...a,title:r.title}))))
 const plannedAssignments=computed(()=>new Map((forecast.value?.items||[]).filter(r=>!r.error).map(r=>[r.id,r.assignments])))
-const approvable=computed(()=>forecast.value?checked.value.filter(r=>plannedAssignments.value.has(r.id)):checked.value)
+const approvable=computed(()=>forecast.value?checked.value.filter(r=>plannedAssignments.value.has(r.id)):(startAt.value?[]:checked.value))
 const reviewItem=row=>({id:row.id,sha:row.sha,revision:row.revision,expected_prior:priorIds(row),previous_attempt:row.schedule_attempts||0})
 watch(selection,()=>{forecast.value=null},{flush:'sync'})
 async function plan(){
   const key=selection.value
   planning.value=true;error.value=''
   try{
-    const result=await props.api('reprints/'+props.batch.id+'/plan',{items:checked.value.map(reviewItem)})
+    const data={items:checked.value.map(reviewItem)}
+    if(startAt.value){
+      data.start_at=Date.parse(startAt.value+'+08:00')/1000
+      if(!Number.isSafeInteger(data.start_at))throw Error('请输入有效的北京时间')
+    }
+    const result=await props.api('reprints/'+props.batch.id+'/plan',data)
     if(selection.value===key)forecast.value=result
   }catch(e){if(selection.value===key){forecast.value=null;error.value=e.message}}
   finally{planning.value=false}
@@ -172,6 +180,7 @@ async function approve(){
   const items=approvable.value.map(row=>{
     const item=reviewItem(row),assignments=plannedAssignments.value.get(row.id)
     if(assignments)item.expected_accounts=Object.fromEntries(assignments.map(a=>[a.platform,a.account]))
+    if(startAt.value && assignments)item.expected_slots=Object.fromEntries(assignments.map(a=>[a.platform,a.slot]))
     return item
   })
   try{await ElMessageBox.confirm('确认已审核这 '+items.length+' 篇原文、配图和文末链接，可在本地试稿并按规则模拟交付？新冻结稿的授权范围为「仅本地试稿」。','确认转载审核',{confirmButtonText:'确认模拟排期',cancelButtonText:'返回'})}catch{return}

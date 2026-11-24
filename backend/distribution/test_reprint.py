@@ -135,6 +135,49 @@ class Reprint(unittest.TestCase):
         unchanged=self.batch(bid)["reviews"][0]
         self.assertEqual((unchanged["state"],unchanged["assignments"]),("pending",[]))
 
+    def test_locked_schedule_survives_restart_and_isolates_a_lost_slot(self):
+        self.targets=[dict(platform=p,account="甲") for p in ("zhihu","toutiao")]
+        bid=self.create([self.source(31),self.source(32)])
+        self.targets=[dict(platform="toutiao",account="乙")]
+        other=self.create([self.source(33)],"competing")
+        self.prepare()
+        start=int(datetime.now(BEIJING).replace(hour=9,minute=0,second=0,microsecond=0).timestamp())+86400
+
+        def preview(batch):
+            items=[dict(id=r["id"],sha=r["sha"],revision=r["revision"],expected_prior={})
+                   for r in self.batch(batch)["reviews"]]
+            url=BASE+f"reprints/{batch}/plan"
+            self.assertEqual(self.client.post(url,json=dict(items=items,start_at=1)).status_code,400)
+            result=self.client.post(url,json=dict(items=items,start_at=start)).json
+            for item,plan in zip(items,result["items"],strict=True):
+                item["expected_accounts"]={a["platform"]:a["account"] for a in plan["assignments"]}
+                item["expected_slots"]={a["platform"]:a["slot"] for a in plan["assignments"]}
+            return items
+
+        items=preview(bid)
+        self.assertEqual(items[0]["expected_slots"],dict(zhihu=start,toutiao=start))
+        self.assertEqual(items[1]["expected_slots"],dict(zhihu=start+30,toutiao=start+30))
+        competitor=preview(other)
+        def approve(batch,selected,background):
+            return self.client.post(BASE+f"reprints/{batch}/approve",
+                    json=dict(items=selected,approved=True,background=background)).json["items"]
+        self.assertEqual(approve(other,competitor,False)[0]["state"],"approved")
+        queued=approve(bid,items,True)
+        self.assertEqual(approve(bid,items,True),queued)
+        self.client=create_app(self.path,self.root).test_client()
+        for accepted in queued:
+            ticket=claim(self.path,int(time.time()))
+            self.assertEqual(ticket[0],accepted["job"])
+            execute(self.path,ticket,int(time.time()))
+        batch=self.batch(bid)
+        failed,approved=batch["reviews"]
+        self.assertEqual((failed["state"],failed["assignments"]),("pending",[]))
+        self.assertIn("冲突",failed["schedule_failure"])
+        jobs=batch["deliveries"]
+        self.assertEqual(approved["state"],"approved")
+        self.assertCountEqual([(j["row_id"],j["platform"],j["slot"]) for j in jobs],
+                              [(approved["id"],p,start+30) for p in ("zhihu","toutiao")])
+
     def test_saved_settings_are_bound_once_and_replay_survives_rule_change(self):
         directory=self.source(14)
         catalog=self.client.get(BASE+"library").json

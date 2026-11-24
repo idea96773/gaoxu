@@ -77,9 +77,9 @@ tool('reprint_preview','按平台读取转载待审稿或已有任务绑定的�
   return {sha,edition_sha,revision,platform:a.platform,job,account,reused,title:snapshot.title,text:snapshot.text,images:snapshot.images,link:snapshot.link}
 })
 tool('publish_plan','只读试算本批所选待审转载稿的分稿账号及北京时间排期。按传入顺序计算；从 batch_status 取每行 id、sha、revision。prior_job 表示沿用已有排期，时间为 Unix 秒。审核时按当时的可用名额正式排期。',{
-  batch:batchId,items:z.array(z.object({id:jobId,sha:z.string().regex(/^[a-f0-9]{64}$/),revision:jobId,
+  batch:batchId,start_at:z.number().int().positive().optional().describe('新任务最早排期，Unix 秒；沿用任务保留原排期'),items:z.array(z.object({id:jobId,sha:z.string().regex(/^[a-f0-9]{64}$/),revision:jobId,
     expected_prior:z.record(z.string(),jobId).optional()})).min(1).max(100)
-},({batch,items})=>api('reprints/'+batch+'/plan',{items}))
+},({batch,items,start_at})=>api('reprints/'+batch+'/plan',{items,start_at}))
 tool('article_search','按标题、平台、账号以及北京时间日期跨批次查询模拟记录',{
   schedule_state:scheduleState,
   title:z.string().optional(),platform:target.shape.platform.optional(),account:z.string().optional(),

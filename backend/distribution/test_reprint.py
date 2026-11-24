@@ -937,6 +937,68 @@ class Reprint(unittest.TestCase):
         self.assertEqual((info["record"]["state"],info["record"]["url"],info["unverified_edit_url"]),
                          ("verified",actual,None))
 
+    def test_restore_reconciles_drafts_saved_after_snapshot_before_queueing(self):
+        from . import backup, platform_draft
+        from .draft_bridge import heartbeat
+        uid="restore-fixture"
+        self.targets=[dict(platform="zhihu",account="模拟")]
+        heartbeat(self.path,uid,"模拟")
+        bind=self.client.post(BASE+"zhihu-draft-accounts",json=dict(action="bind",alias="模拟",revision=0,user_id=uid))
+        self.assertEqual(bind.status_code,200)
+        bid=self.create([self.source(i) for i in (81,82,83)])
+        self.prepare()
+        self.approve(bid,self.batch(bid)["reviews"])
+        found,absent,queued=self.batch(bid)["deliveries"]
+        def endpoint(job):
+            return BASE+f"jobs/{job['id']}/platform-draft"
+        def grant(client,job):
+            info=client.get(endpoint(job)).json
+            result=client.post(endpoint(job),json=dict(action="scope",scope="zhihu_draft",user_id=uid,sha=job["sha"],
+                               scope_revision=info["rights"]["revision"],rights_confirmed=True))
+            self.assertEqual(result.status_code,200)
+            return client.get(endpoint(job)).json["rights"]["revision"]
+        def send(job,revision,**extra):
+            return dict(action="queue",consent=True,user_id=uid,sha=job["sha"],scope_revision=revision,**extra)
+        old={j["id"]:grant(self.client,j) for j in (found,absent,queued)}
+        self.assertEqual(self.client.post(endpoint(queued),json=send(queued,old[queued["id"]])).status_code,200)
+        bundle=backup.create(self.path,self.root/"backup")
+        link="https://zhuanlan.zhihu.com/p/81001/edit"
+        self.assertEqual(self.client.post(endpoint(found),json=send(found,old[found["id"]])).status_code,200)
+        original=platform_draft.claim(self.path,uid,found["id"])
+        platform_draft.transition(self.path,original,"preparing","sending")
+        platform_draft.transition(self.path,original,"sending","saved",url=link)
+        restored=backup.restore(bundle,self.root/"recovered")/backup.DATABASES[0]
+        client=create_app(restored,self.root).test_client()
+        self.assertIsNone(platform_draft.claim(restored,uid))
+        self.assertEqual(client.get(endpoint(queued)).json["record"]["state"],"unknown")
+        info=client.get(endpoint(found)).json
+        self.assertEqual(info["rights"]["scope"],"local")
+        self.assertIsNone(info["record"])
+        generation=info["recovery"]["generation"]
+        register=dict(action="recover_existing",checked=True,generation=generation,user_id=uid,sha=found["sha"],url=link)
+        self.assertEqual(client.post(endpoint(found),json=register|dict(generation="stale")).status_code,400)
+        for _ in range(2):
+            self.assertEqual(client.post(endpoint(found),json=register).status_code,200)
+        recovered=client.get(endpoint(found)).json
+        self.assertEqual(recovered["recovery_review"]["result"],"found")
+        self.assertEqual((recovered["record"]["state"],recovered["record"]["url"]),("saved",link))
+        self.assertFalse(recovered["permitted"])
+        self.assertEqual(client.post(endpoint(absent),json=register|dict(sha=absent["sha"])).status_code,400)
+        self.assertIsNone(client.get(endpoint(absent)).json["record"])
+        heartbeat(restored,uid,"模拟")
+        revision=grant(client,absent)
+        self.assertNotEqual(revision,old[absent["id"]])
+        payload=send(absent,revision)
+        self.assertEqual(client.post(endpoint(absent),json=payload).status_code,400)
+        for _ in range(2):
+            self.assertEqual(client.post(endpoint(absent),json=payload|dict(generation=generation,checked_absent=True)).status_code,200)
+        self.assertEqual(platform_draft.claim(restored,uid)["job"],absent["id"])
+        self.assertEqual(client.get(endpoint(absent)).json["recovery_review"]["result"],"absent")
+        self.assertIsNone(platform_draft.claim(restored,uid))
+        self.assertTrue(self.client.get(endpoint(found)).json["permitted"])
+        self.assertEqual(self.client.get(endpoint(queued)).json["record"]["state"],"queued")
+        self.assertIsNone(self.client.get(endpoint(absent)).json["recovery"])
+
     def test_pending_draft_address_cannot_be_claimed_by_two_tasks(self):
         from . import platform_draft, rights, zhihu_draft_worker
 

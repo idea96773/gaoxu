@@ -20,6 +20,7 @@
       <a v-if="record.url" :href="record.url" target="_blank" rel="noopener noreferrer">打开知乎草稿</a>
     </p>
     <p v-if="record?.reason">{{record.reason}}</p>
+    <p v-if="recoveryReview">恢复后核对 · {{date(recoveryReview.checked_at)}} · {{recoveryReview.result==='found'?'在指定账号找到并关联草稿':'确认指定账号未找到此稿后加入队列'}}</p>
     <p v-if="record?.state==='unknown' && receiptUrl">扩展曾返回编辑地址，接收账号仍待核对。请在「{{record.name}}」的浏览器中
       <a :href="receiptUrl" target="_blank" rel="noopener noreferrer">打开待核对草稿</a>，核对账号和内容后填写下方核对表。
       <el-button link :disabled="busy" @click="dismissReceipt">标记此地址与本稿不符</el-button></p>
@@ -29,6 +30,10 @@
       本稿可沿用 {{reusableImages}} 张已转存配图，共 {{uniqueImages}} 张不同配图。
     </p>
     <p v-if="!record && !recipient && !cancelled">在「管理知乎账号」中将分稿别名与指定登录账号绑定。</p>
+    <div v-if="recovery && !record">
+      <p>恢复副本中没有此稿的保存记录。请先在指定账号的知乎草稿箱查找《{{job.delivery.snapshot.title}}》。</p>
+      <el-button v-if="recipient" :disabled="busy" @click="recoverExisting">关联已找到的知乎草稿</el-button>
+    </div>
     <el-button v-if="canSend" type="primary" :loading="busy" @click="enqueue">保存到 {{account.name}} 的草稿箱</el-button>
     <el-button v-if="record && ['queued','preparing'].includes(record.state)" :disabled="busy" @click="change({action:'cancel'})">取消草稿任务</el-button>
     <DraftInspection v-if="record && ['saved','unknown','needs_review','verified'].includes(record.state)"
@@ -48,6 +53,7 @@ const recipient=ref(null),recipientSource=ref(''),control=ref('')
 const jobState=ref(props.job.job.state)
 const cancelled=computed(()=>control.value==='cancelled' || jobState.value==='cancelled')
 const grant=ref(null),history=ref([]),permitted=ref(false)
+const recovery=ref(null),recoveryReview=ref(null)
 const receiptUrl=ref(''),dismissedReceipt=ref(null)
 const reusableImages=ref(0)
 const uniqueImages=computed(()=>new Set(props.job.delivery.snapshot.images).size)
@@ -61,7 +67,7 @@ let stopped=false,timer,sequence=0
 async function load(){
   const n=++sequence
   try{const info=await props.api(path);if(!stopped && n===sequence){bridge.value=info.bridge;account.value=info.account;record.value=info.record;recipient.value=info.recipient;recipientSource.value=info.recipient_source;control.value=info.control
-    grant.value=info.rights;permitted.value=info.permitted;history.value=info.rights_history;inspections.value=info.inspections || [];reusableImages.value=info.reusable_images || 0
+    grant.value=info.rights;permitted.value=info.permitted;recovery.value=info.recovery;recoveryReview.value=info.recovery_review;history.value=info.rights_history;inspections.value=info.inspections || [];reusableImages.value=info.reusable_images || 0
     jobState.value=info.job_state;receiptUrl.value=info.unverified_edit_url || '';dismissedReceipt.value=info.dismissed_receipt}}
   catch(e){if(!stopped && n===sequence){bridge.value=null;account.value=null;grant.value=null;permitted.value=false;reusableImages.value=0;error.value=e.message}}
 }
@@ -72,9 +78,18 @@ async function change(data){
   finally{await load();busy.value=false}
 }
 async function enqueue(){
-  const target=account.value,revision=grant.value.revision
-  try{await ElMessageBox.confirm('将已冻结的《'+props.job.delivery.snapshot.title+'》及其配图发送至知乎账号「'+target.name+'」（'+target.user_id+'）的草稿箱。','确认保存平台草稿',{confirmButtonText:'仅保存草稿',cancelButtonText:'返回'})}catch{return}
-  await change({action:'queue',consent:true,user_id:target.user_id,sha:props.job.delivery.sha,scope_revision:revision})
+  const target=account.value,revision=grant.value.revision,generation=recovery.value?.generation
+  const message='将已冻结的《'+props.job.delivery.snapshot.title+'》及其配图发送至知乎账号「'+target.name+'」（'+target.user_id+'）的草稿箱。'
+  try{await ElMessageBox.confirm(message+(generation?' 请确认已在该账号查找，草稿箱中没有这篇稿件。':''),'确认保存平台草稿',{confirmButtonText:generation?'已核对无此稿，保存草稿':'仅保存草稿',cancelButtonText:'返回'})}catch{return}
+  await change({action:'queue',consent:true,user_id:target.user_id,sha:props.job.delivery.sha,scope_revision:revision,generation,checked_absent:!!generation})
+}
+async function recoverExisting(){
+  const target=recipient.value,generation=recovery.value.generation
+  let input
+  try{input=await ElMessageBox.prompt('请在「'+target.name+'」（'+target.user_id+'）确认《'+props.job.delivery.snapshot.title+'》，粘贴该稿的知乎编辑地址。','关联已找到的知乎草稿',{
+    confirmButtonText:'关联到此冻结稿',cancelButtonText:'返回',inputPlaceholder:'https://zhuanlan.zhihu.com/p/…/edit'
+  })}catch{return}
+  await change({action:'recover_existing',generation,checked:true,user_id:target.user_id,sha:props.job.delivery.sha,url:input.value?.trim()})
 }
 async function dismissReceipt(){
   const data={action:'dismiss_receipt',user_id:record.value.user_id,sha:record.value.sha,url:receiptUrl.value,checked:true}

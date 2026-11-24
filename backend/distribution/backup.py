@@ -7,13 +7,14 @@ import re
 import shutil
 import sqlite3
 import tempfile
+import uuid
 from contextlib import ExitStack, closing
 from datetime import datetime
 from pathlib import Path
 
 from .delivery import bound_snapshot, confirmed_receipt
 from .editorial import export_image
-from .store import BEIJING, DEFAULT_DB, delivery_key, ledger_path, operation_key
+from .store import BEIJING, DEFAULT_DB, RESTORE_CONTEXT_SCHEMA, delivery_key, ledger_path, operation_key
 
 DATABASES=("dry-run.sqlite","dry-run.sqlite.simulator")
 
@@ -189,6 +190,16 @@ def restore(bundle,destination):
         # Saved-but-unconfirmed receipts require a human check after a restore.
         # A backup can predate a subsequent external write: never replay live drafts.
         with closing(database(result/DATABASES[0],"rw")) as db:
+            db.execute("BEGIN IMMEDIATE")
+            restored_at=int(datetime.now(BEIJING).timestamp())
+            db.execute(RESTORE_CONTEXT_SCHEMA)
+            db.execute("""INSERT OR REPLACE INTO restore_context SELECT 1,?,coalesce(max(id),0),? FROM jobs""",
+                       (uuid.uuid4().hex,restored_at))
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='reprint_rights'").fetchone():
+                # A later revocation on the original instance is invisible to an older snapshot.
+                db.execute("""INSERT INTO reprint_rights(job,sha,scope,user_id,confirmed)
+                    SELECT r.job,r.sha,'local','',? FROM reprint_rights r WHERE r.scope='zhihu_draft'
+                    AND r.id=(SELECT max(x.id) FROM reprint_rights x WHERE x.job=r.job)""",(restored_at,))
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='backup_policy'").fetchone():
                 db.execute("DELETE FROM backup_policy")
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='zhihu_bridge_runtime'").fetchone():
@@ -198,11 +209,10 @@ def restore(bundle,destination):
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='zhihu_draft_images'").fetchone():
                 db.execute("DELETE FROM zhihu_draft_images")
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='platform_drafts'").fetchone():
-                db.execute("BEGIN IMMEDIATE")
-                db.execute("""UPDATE platform_drafts SET state='unknown',reason='从备份恢复，请先核对知乎草稿箱'
-                    WHERE state IN ('queued','preparing','sending','failed','cancelled')""")
+                db.execute("""UPDATE platform_drafts SET state='unknown',reason='从备份恢复，请先核对知乎草稿箱',
+                    updated=? WHERE state IN ('queued','preparing','sending','failed','cancelled')""",(restored_at,))
                 db.execute("DELETE FROM draft_bridge")
-                db.commit()
+            db.commit()
         result.rename(destination)
     return destination.resolve()
 

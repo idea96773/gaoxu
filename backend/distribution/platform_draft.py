@@ -111,6 +111,21 @@ def local_console_request():
     return host in ("127.0.0.1","localhost","::1") and (not origin or origin==request.host_url.rstrip("/"))
 
 
+def restore_context(db,job):
+    return db.execute("SELECT generation,restored_at FROM restore_context WHERE max_job>=?",(job,)).fetchone()
+
+
+def new_draft_record(db,row,target,state,now):
+    uid=target["user_id"]
+    prior=db.execute("SELECT job FROM platform_drafts WHERE canonical=? AND user_id=?",(row["canonical"],uid)).fetchone()
+    if prior:
+        raise ValueError(f"该账号已有同一篇文章的草稿任务 #{prior[0]}，请查看原任务")
+    outbox=db.execute("""INSERT INTO platform_drafts(job,canonical,sha,user_id,name,state,updated)
+        VALUES(?,?,?,?,?,?,?)""",(row["id"],row["canonical"],row["sha"],uid,target["name"],state,now)).lastrowid
+    db.execute("INSERT OR IGNORE INTO zhihu_draft_recipients VALUES(?,?,?)",(row["id"],uid,target["name"]))
+    return outbox
+
+
 def register(api,path,body):
     def require_local():
         if not local_console_request():
@@ -176,6 +191,9 @@ def register(api,path,body):
             if not row:
                 raise KeyError("找不到知乎任务")
             target,via=recipient(db,job,row["account"],record)
+            recovery=restore_context(db,job) if not record else None
+            review=db.execute("SELECT result,checked_at FROM zhihu_restore_reviews WHERE outbox=?",
+                              (record["id"],)).fetchone() if record else None
             grant=rights.current(db,job)
             changes=db.execute("""SELECT scope,user_id,confirmed FROM reprint_rights WHERE job=?
                 ORDER BY id DESC LIMIT 10""",(job,))
@@ -189,7 +207,8 @@ def register(api,path,body):
                 record["state"]=="unknown" and not record["url"]) else None
             return jsonify(**bridge_status(db),recipient=target,recipient_source=via,control=row["control"],job_state=row["state"],
                            rights=grant,permitted=bool(target and rights.permits(grant,row["sha"],target["user_id"])),
-                           rights_history=[dict(event) for event in changes],
+                           rights_history=[dict(event) for event in changes],recovery=dict(recovery) if recovery else None,
+                           recovery_review=dict(review) if review else None,
                            reusable_images=len(draft_images.confirmed(db,record["id"],grant["revision"])) if record else 0,
                            record=dict(record) if record else None,inspections=inspections,
                            unverified_edit_url=pending_url,
@@ -235,6 +254,23 @@ def register(api,path,body):
                     if existing:
                         db.execute("DELETE FROM zhihu_draft_images WHERE outbox=?",(existing["id"],))
                     rights.record(db,job,row["sha"],scope,uid,now)
+            elif action=="recover_existing":
+                row=source(db,job)
+                recovery=restore_context(db,job)
+                target,_=recipient(db,job,row["account"],existing)
+                if (not recovery or data.get("generation")!=recovery["generation"] or data.get("checked") is not True
+                        or not target or target["user_id"]!=data.get("user_id") or row["sha"]!=data.get("sha")):
+                    raise ValueError("请核对恢复副本、冻结稿版本及指定接收账号")
+                url=edit_url(data.get("url"))
+                if existing:
+                    if (existing["state"] not in ("saved","verified","needs_review") or existing["url"]!=url
+                            or existing["sha"]!=row["sha"] or existing["user_id"]!=target["user_id"]):
+                        raise ValueError("这份任务已有草稿记录，请刷新核对")
+                else:
+                    outbox=new_draft_record(db,row,target,"saved",now)
+                    checked_url(db,{"id":outbox,"url":""},url)
+                    db.execute("UPDATE platform_drafts SET url=? WHERE id=?",(url,outbox))
+                    db.execute("INSERT INTO zhihu_restore_reviews VALUES(?,?,'found',?)",(outbox,recovery["generation"],now))
             elif action=="queue":
                 row=source(db,job)
                 if row["control"]!="active" or row["state"]=="cancelled":
@@ -262,13 +298,12 @@ def register(api,path,body):
                     if existing["state"] in ("failed","cancelled"):
                         db.execute("UPDATE platform_drafts SET state='queued',reason='',updated=? WHERE id=?",(now,existing["id"]))
                 else:
-                    prior=db.execute("SELECT job FROM platform_drafts WHERE canonical=? AND user_id=?",
-                                     (row["canonical"],account["user_id"])).fetchone()
-                    if prior:
-                        raise ValueError(f"该账号已有同一篇文章的草稿任务 #{prior[0]}，请查看原任务")
-                    db.execute("""INSERT INTO platform_drafts(job,canonical,sha,user_id,name,state,updated)
-                        VALUES(?,?,?,?,?,'queued',?)""",(job,row["canonical"],row["sha"],account["user_id"],account["name"],now))
-                    db.execute("INSERT OR IGNORE INTO zhihu_draft_recipients VALUES(?,?,?)",(job,account["user_id"],account["name"]))
+                    recovery=restore_context(db,job)
+                    if recovery and (data.get("generation")!=recovery["generation"] or data.get("checked_absent") is not True):
+                        raise ValueError("恢复点之后可能已保存过这篇稿，请先核对指定账号的草稿箱")
+                    outbox=new_draft_record(db,row,account,"queued",now)
+                    if recovery:
+                        db.execute("INSERT INTO zhihu_restore_reviews VALUES(?,?,'absent',?)",(outbox,recovery["generation"],now))
             elif action=="cancel" and existing and existing["state"] in ("queued","preparing"):
                 db.execute("UPDATE platform_drafts SET state='cancelled',updated=? WHERE job=?",(now,job))
             elif action=="inspect":

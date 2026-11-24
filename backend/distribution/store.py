@@ -18,7 +18,10 @@ PLATFORMS = {"zhihu": "知乎", "xiaohongshu": "小红书", "toutiao": "今日�
 DEFAULT_DB = Path(__file__).resolve().parents[2] / "data" / "distribution" / "dry-run.sqlite"
 DEFAULT_RULE = {"gap": 60, "account_cap": 10, "platform_cap": 20, "start_hour": 0, "end_hour": 24,
                 "weekdays_only": False, "holidays": [], "workdays": []}
-SCHEMA = """
+RESTORE_CONTEXT_SCHEMA = """CREATE TABLE IF NOT EXISTS restore_context (
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), generation TEXT NOT NULL,
+ max_job INTEGER NOT NULL, restored_at INTEGER NOT NULL)"""
+SCHEMA = RESTORE_CONTEXT_SCHEMA + ";\n" + """
 CREATE TABLE IF NOT EXISTS batches (
  id TEXT PRIMARY KEY, request_key TEXT UNIQUE NOT NULL, digest TEXT NOT NULL, created INTEGER NOT NULL,
  control TEXT NOT NULL, targets TEXT NOT NULL, rules TEXT NOT NULL);
@@ -134,6 +137,9 @@ CREATE TABLE IF NOT EXISTS platform_drafts (
  UNIQUE(canonical,user_id));
 CREATE UNIQUE INDEX IF NOT EXISTS platform_drafts_job ON platform_drafts(job);
 CREATE INDEX IF NOT EXISTS platform_drafts_queue ON platform_drafts(state,user_id,id);
+CREATE TABLE IF NOT EXISTS zhihu_restore_reviews (
+ outbox INTEGER PRIMARY KEY REFERENCES platform_drafts(id), generation TEXT NOT NULL,
+ result TEXT NOT NULL CHECK(result IN ('found','absent')), checked_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS zhihu_draft_receipts (
  outbox INTEGER PRIMARY KEY REFERENCES platform_drafts(id), edit_url TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS zhihu_receipt_url ON zhihu_draft_receipts(edit_url);

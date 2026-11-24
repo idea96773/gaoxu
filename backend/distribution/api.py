@@ -370,7 +370,7 @@ def make_blueprint(path,fixed_root):
         return jsonify(configure_library(path,fixed_root,body()))
 
     def current_root():
-        return Path(library_settings(path,fixed_root)["root"])
+        return library_settings(path,fixed_root)["root"]
 
     @api.get("/library")
     def library():

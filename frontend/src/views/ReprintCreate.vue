@@ -4,8 +4,8 @@
     <p v-if="pending" role="status">上次提交 {{pending.data.directories.length}} 篇，回执待核对。重试将使用上次提交的选稿和设置。
       <el-button link :disabled="busy || loading" @click="recover">查找原批次</el-button></p>
     <div :inert="busy || loading">
-    <small>{{root}}</small> <el-button link @click="reloadLibrary(root)">刷新目录</el-button>
-    <LibrarySettings :api="api" :disabled="loading || busy" @saved="reloadLibrary" />
+    <template v-if="root"><small>{{root}}</small> <el-button link @click="reloadLibrary(root)">刷新目录</el-button></template>
+    <LibrarySettings :api="api" :disabled="loading || busy" :needs-setup="needsSetup" @saved="reloadLibrary" />
     <p><el-input v-model="filter" placeholder="搜索文章标题或目录" clearable /></p>
     <div class="coverage-tools">
       <label>来源公众号 <select v-model="sourceName"><option value="">全部公众号</option>
@@ -174,6 +174,7 @@ for(const p of Object.keys(channels)){
 }
 const sessionKey='gaoxu.reprint.selection.v1'
 const pending=ref(null),storageError=ref('')
+const needsSetup=ref(false)
 let initialized=false
 
 function editState(){
@@ -299,6 +300,7 @@ async function saveDefaults(){
 }
 let openRequest=0
 function applyLibrary(data){
+  needsSetup.value=!data.root
   if(root.value && root.value!==data.root && dirs.value.length){
     dirs.value=[];notice.value='保存目录已更换，请从当前目录重新选稿'
   }

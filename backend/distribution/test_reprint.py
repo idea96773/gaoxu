@@ -302,6 +302,30 @@ class Reprint(unittest.TestCase):
         self.assertEqual(pinned[:-1], recent)
         self.assertEqual((pinned[-1]["id"], pinned[-1]["rows_total"]), (bid, 1))
 
+    def test_clean_install_waits_for_local_library_configuration(self):
+        from .library import library_settings
+        fresh=self.root/"new-install.sqlite"
+        self.assertEqual(library_settings(fresh),dict(root="",revision=0,editable=True))
+        self.assertFalse(fresh.exists())
+        with patch.dict("os.environ",{"DIST_LIBRARY":""}):
+            ui=create_app(fresh).test_client()
+            with patch("distribution.library.os.walk",side_effect=AssertionError("未配置时不能扫描目录")):
+                self.assertEqual(ui.get(BASE+"library").json,dict(items=[],root=""))
+                self.assertEqual(ui.get(BASE+"library?page=1&page_size=5").json["total"],0)
+                for endpoint in ("library","reprints"):
+                    result=ui.post(BASE+endpoint,json=dict(directories=["."],request_id="choose-first",targets=self.targets))
+                    self.assertEqual(result.status_code,400)
+                    self.assertIn("保存目录设置",result.json["error"])
+            folder=self.root/"我的导出"
+            rel=export_folder(folder,1).relative_to(folder).as_posix()
+            response=ui.post(BASE+"library-settings",json=dict(root=str(folder),revision=0))
+            self.assertEqual(response.json,dict(root=str(folder),revision=1,editable=True))
+            reopened=create_app(fresh).test_client()
+            result=reopened.get(BASE+"library").json
+            self.assertEqual((result["root"],result["items"][0]["directory"]),(str(folder),rel))
+            self.assertEqual(reopened.post(BASE+"reprints",json=dict(directories=[rel],request_id="choose-first",
+                             targets=self.targets,expected_root=str(folder))).status_code,201)
+
     def test_library_switch_preserves_submitted_sources_and_rejects_stale_selection(self):
         from .library import library_settings
         old=self.root/"old"

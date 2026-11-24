@@ -121,7 +121,7 @@
     <el-dialog v-model="showImport" title="导入文章" width="min(660px, 94vw)" :close-on-click-modal="false">
       <el-radio-group v-model="source"><el-radio-button value="library">固定保存目录</el-radio-button><el-radio-button value="folder">另选文件夹</el-radio-button><el-radio-button value="url">链接模拟</el-radio-button></el-radio-group>
       <div v-if="source==='library'" class="input-block"><p>{{libraryRoot || 'Easy WeChat 保存目录'}}</p>
-        <LibrarySettings :api="api" :disabled="scanning || submitting" @saved="scan" />
+        <LibrarySettings :api="api" :disabled="scanning || submitting" :needs-setup="scanned && !libraryRoot" @saved="scan" />
         <el-button @click="scan" :loading="scanning">读取新文章</el-button>
         <small v-if="scanned">共 {{libraryItems.length}} 个文章目录，{{libraryItems.filter(x=>!x.known).length}} 个未入库。已选 {{selectedDirs.length}} 个。</small>
         <el-select v-if="scanned" v-model="selectedDirs" multiple filterable collapse-tags :multiple-limit="100" placeholder="选择要导入的文章" style="width:100%;margin-top:10px">

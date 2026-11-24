@@ -11,7 +11,6 @@ from .folders import MAX_FILE_BYTES, MEDIA, export_header, export_metadata, mark
 from .search import day_start
 from .store import canonicalize, compact, digest, transaction
 
-DEFAULT_LIBRARY = Path("E:/新公众号文章下载EasyWechatDownload/10个账号文章筛选")
 EXPORT_CHANGED = "读取期间下载目录中的正文或配图发生变化，请等待这篇下载完成"
 
 
@@ -31,7 +30,7 @@ def library_settings(path, fixed=None):
                 saved=db.execute("SELECT root,revision FROM library_settings WHERE singleton=1").fetchone()
         finally:
             db.close()
-    return dict(root=saved[0] if saved else str(DEFAULT_LIBRARY),revision=saved[1] if saved else 0,editable=True)
+    return dict(root=saved[0] if saved else "",revision=saved[1] if saved else 0,editable=True)
 
 
 def configure_library(path,fixed,data):
@@ -54,7 +53,7 @@ def configure_library(path,fixed,data):
     with transaction(path) as db:
         row=db.execute("SELECT root,revision FROM library_settings WHERE singleton=1").fetchone()
         revision=row["revision"] if row else 0
-        current=Path(row["root"]) if row else DEFAULT_LIBRARY
+        current=Path(row["root"]) if row else None
         if folder!=current:
             if type(data.get("revision")) is not int or data["revision"]!=revision:
                 raise ValueError("另一窗口已更换目录，请重新读取设置后保存")
@@ -64,6 +63,8 @@ def configure_library(path,fixed,data):
 
 
 def check_library_root(root,data):
+    if not root:
+        raise ValueError("请先在「保存目录设置」中指定 Easy WeChat 的下载目录")
     if "expected_root" in data and data["expected_root"]!=str(root):
         raise ValueError("文章保存目录已更换，请重新读取目录并选稿")
 
@@ -118,6 +119,8 @@ def selected_header(root,relative):
 
 
 def discover(root):
+    if not root:
+        return []
     root=Path(root)
     if not root.is_dir() or not safe_entry(root):
         raise ValueError("固定保存目录不可用")

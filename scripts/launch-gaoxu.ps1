@@ -57,12 +57,13 @@ from distribution import api, engine
         $checkLibrary = @'
 import json
 import os
-from pathlib import Path
 from distribution.library import library_settings
 from distribution.store import DEFAULT_DB
 
-root = Path(library_settings(os.environ.get('DIST_DB') or DEFAULT_DB, os.environ.get('DIST_LIBRARY'))['root'])
-print(json.dumps({'path': str(root)}, ensure_ascii=True))
+root = library_settings(os.environ.get('DIST_DB') or DEFAULT_DB, os.environ.get('DIST_LIBRARY'))['root']
+print(json.dumps({'path': root}, ensure_ascii=True))
+if not root:
+    raise SystemExit(3)
 try:
     with os.scandir(root) as entries:
         next(entries, None)
@@ -71,10 +72,12 @@ except OSError:
 '@
         $libraryInfo = & $python -B -c $checkLibrary
         $libraryResult = $LASTEXITCODE
-        if ($libraryResult -notin 0,2) { throw '无法读取文章目录配置。' }
+        if ($libraryResult -notin 0,2,3) { throw '无法读取文章目录配置。' }
         $libraryPath = ($libraryInfo | ConvertFrom-Json).path
         if ($libraryResult -eq 0) {
             Write-Host "文章目录可读取 | $libraryPath"
+        } elseif ($libraryResult -eq 3) {
+            Write-Host '首次选稿时，请在「批量转载 → 保存目录设置」中填写本机 Easy WeChat 保存路径。'
         } else {
             Write-Warning "文章目录不可读取 | $libraryPath"
             if ($CheckOnly) { throw '请核对 Easy WeChat 保存位置、DIST_LIBRARY 和目录的读取权限。' }

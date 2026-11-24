@@ -1,5 +1,5 @@
 <template>
-  <details class="library-settings" @toggle="toggle">
+  <details class="library-settings" :open="needsSetup" @toggle="toggle">
     <summary>保存目录设置</summary>
     <label>Easy WeChat 保存路径
       <el-input v-model.trim="folder" :readonly="!settings?.editable" :disabled="loading || saving"
@@ -16,7 +16,7 @@
 </template>
 <script setup>
 import {ref} from 'vue'
-const props=defineProps({api:Function,disabled:Boolean})
+const props=defineProps({api:Function,disabled:Boolean,needsSetup:Boolean})
 const emit=defineEmits(['saved'])
 const settings=ref(null),folder=ref(''),loading=ref(false),saving=ref(false),message=ref('')
 function toggle(event){if(event.target.open && !loading.value && !saving.value)read()}

@@ -31,6 +31,7 @@
     <el-table :data="batch.reviews" row-key="id">
       <el-table-column width="50"><template #default="{row}"><input type="checkbox" :aria-label="'选择审核 '+row.title" :disabled="row.state!=='pending'||!active" v-model="ids" :value="reviewKey(row)"></template></el-table-column>
       <el-table-column label="转载文章" min-width="190"><template #default="{row}"><b>{{row.line}} · {{row.title}}</b><p v-if="row.note">{{row.note}}</p>
+        <p v-if="row.state==='pending' && (row.text_changed || row.structure_changed)">请在预览中核对{{row.text_changed?'正文文字':''}}{{row.text_changed && row.structure_changed?'和':''}}{{row.structure_changed?'排版结构':''}}差异。</p>
         <p v-if="row.state==='returned' && row.returns?.length">退回原因　{{row.returns[0].reason}}</p>
         <details v-if="row.returns?.length"><summary>退回记录（{{row.returns.length}}）</summary>
           <p v-for="entry in row.returns" :key="entry.revision">第 {{entry.revision}} 版 · {{date(entry.returned_at)}}　{{entry.reason}}
@@ -81,7 +82,7 @@
         <p v-else>本批送审稿 · 第 {{ previewRevision }} 版</p>
         <p>{{view.images.length}} 处配图 · {{view.link.mode==='omit'?'不追加延伸阅读':'读者链接　'+(view.link.short || view.link.destination)}}</p>
         <p v-if="view.html_image_count != null">已按原 HTML 顺序核对 {{view.html_image_count}} 处配图<span v-if="view.images.length>view.html_image_count">，请核对 Markdown 多出的 {{view.images.length-view.html_image_count}} 处配图</span>。</p>
-        <p v-else-if="view.html_image_count===null">本次按 Markdown 原稿读取配图，下载目录中没有可供比对的 HTML。</p>
+        <ReprintBodyComparison :report="view.body_comparison"/>
         <p v-if="view.link.mode==='short'">目标公众号文章　{{view.link.destination}}</p>
         <ReprintFrame v-if="view.html" title="审核版转载正文" :html="view.html" />
         <article v-else class="plain-preview"><h3>{{view.title}}</h3><p>{{view.text}}</p><img v-for="src in localImages" :key="src" :src="src" alt="冻结稿配图"></article></template>
@@ -92,6 +93,7 @@
 import {ref,computed,watch} from 'vue'
 import ReprintFrame from './ReprintFrame.vue'
 import ReprintApproval from './ReprintApproval.vue'
+import ReprintBodyComparison from './ReprintBodyComparison.vue'
 import {ElMessageBox,ElMessage} from 'element-plus'
 const props=defineProps({batch:Object,api:Function,names:Object,label:Function,date:Function})
 const clock=m=>[Math.floor(m/60),m%60].map(n=>String(n).padStart(2,'0')).join(':')

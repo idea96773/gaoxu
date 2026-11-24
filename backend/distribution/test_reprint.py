@@ -735,6 +735,61 @@ class Reprint(unittest.TestCase):
         self.assertEqual(self.batch(duplicate)["reviews"][0]["delivery_progress"],"partial")
         self.assertEqual(set(catalog_item()["deliveries"]),{"toutiao"})
 
+    def test_compare_visible_original_and_restore_only_verified_emphasis(self):
+        from .body_compare import checked_render
+        from .markdown_media import MARKDOWN
+        def compare(original,md):
+            return checked_render('<div id="js_content">'+original+'</div>',MARKDOWN.parse(md))
+        html,report=compare('<p>甲<strong>《原文》</strong>乙</p><style>ignore</style><p hidden>ignore</p>',
+                            '甲**《原文》**乙')
+        self.assertIn('甲<strong>《原文》</strong>乙',html)
+        self.assertEqual(report["restored_bold"],1)
+        self.assertNotIn("difference",report)
+        for original,md in [("甲《原文》乙","甲**《原文》**乙"),
+                            ("甲<strong>《原文》</strong>乙","甲`**《原文》**`乙"),
+                            ("甲<strong>《原文》</strong>乙丙","甲**《原文》**乙"),
+                            ("甲《原文》乙<strong>《原文》</strong>","甲**《原文》**乙《原文》")]:
+            html,report=compare(original,md)
+            self.assertEqual(report["restored_bold"],0)
+            self.assertIn('**',html)
+        _,literal=compare("甲**《原文》**乙","甲**《原文》**乙")
+        self.assertNotIn("difference",literal)
+        self.assertEqual(checked_render("<p>文章</p>",[])[1]["status"],"no_body")
+        self.assertEqual(checked_render("",[])[1]["status"],"no_html")
+        self.assertEqual(checked_render('<div id="js_content"></div>'*2,[])[1]["status"],"no_body")
+
+    def test_body_difference_shown_on_review_then_cleared_on_reread_and_frozen(self):
+        directory=self.source(49)
+        folder=self.root/directory
+        original='<div id="js_content"><h2>示例</h2><p>正文保留尾段</p><img src="img/0.png"></div>'
+        (folder/"正文.html").write_text(original,encoding="utf-8")
+        md=folder/"正文.md"
+        md.write_text(md.read_text(encoding="utf-8").replace("第49篇的本地正文。","示例\n\n正文"),encoding="utf-8")
+        bid=self.create([directory])
+        self.prepare()
+        row=self.batch(bid)["reviews"][0]
+        self.assertTrue(row["text_changed"] and row["structure_changed"])
+        route=BASE+f"reprints/{bid}/{row['id']}"
+        view=self.client.get(route+"?platform=zhihu").json["snapshot"]
+        diff=view["body_comparison"]
+        self.assertEqual(diff["difference"]["source"],"保留尾段")
+        self.assertEqual(diff["structure_counts"]["h2"],[1,0])
+        md.write_text(md.read_text(encoding="utf-8").replace("示例\n\n正文","## 示例\n\n正文保留尾段"),encoding="utf-8")
+        response=self.client.post(route+"/reread",json={"sha":row["sha"],"revision":row["revision"]})
+        self.assertEqual(response.status_code,200,response.json)
+        self.prepare()
+        row=self.batch(bid)["reviews"][0]
+        self.assertFalse(row["text_changed"] or row["structure_changed"])
+        self.approve(bid,[row])
+        assignment=self.batch(bid)["reviews"][0]["assignments"][0]
+        frozen=self.client.get(BASE+f"jobs/{assignment['id']}/reprint-check").json
+        self.assertTrue(frozen["body_comparison"]["structure_matches"])
+        self.assertNotIn("difference",frozen["body_comparison"])
+        self.assertIn("<h2>示例</h2>",frozen["html"])
+        archive=self.client.get(BASE+f"editorial/{assignment['draft']}/export")
+        with zipfile.ZipFile(io.BytesIO(archive.data)) as pack:
+            self.assertEqual(json.loads(pack.read("metadata.json"))["body_comparison"],frozen["body_comparison"])
+
     def test_linked_reference_images_remain_portable_and_code_examples_stay_text(self):
         from urllib.parse import quote
         directory=self.source(49)

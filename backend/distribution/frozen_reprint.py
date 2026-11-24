@@ -97,4 +97,4 @@ def inspect(db,row):
     return dict(job=row["id"],draft=row["draft"],revision=row["revision"],sha=row["sha"],planned=row["slot"],approval=row["approval"],
                 platform=row["platform"],account=row["account"],title=title,html=markup,images=parser.refs,
                 unique_images=len(distinct),media_bytes=size,source_url=source_url,link_mode=mode,
-                reader_url=reader_url,destination=link.get("destination",""))
+                reader_url=reader_url,destination=link.get("destination",""),body_comparison=view.get("body_comparison"))

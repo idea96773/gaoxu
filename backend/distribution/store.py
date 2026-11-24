@@ -83,6 +83,9 @@ CREATE TABLE IF NOT EXISTS reprint_source_moves (
 CREATE TABLE IF NOT EXISTS reprint_reviews (
  row_id INTEGER PRIMARY KEY REFERENCES rows(id), title TEXT NOT NULL, state TEXT NOT NULL,
  sha TEXT NOT NULL, snapshot TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS reprint_body_differences (
+ row_id INTEGER PRIMARY KEY REFERENCES reprint_reviews(row_id), review_sha TEXT NOT NULL,
+ text_changed INTEGER NOT NULL, structure_changed INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS reprint_returns (
  row_id INTEGER NOT NULL REFERENCES reprint_reviews(row_id), revision INTEGER NOT NULL, sha TEXT NOT NULL,
  reason TEXT NOT NULL, returned_at INTEGER NOT NULL, resumed_at INTEGER,

@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 from flask import jsonify, request
+from .body_compare import checked_render
 
 from .delivery import check_delivery_account, existing_deliveries, schedule_in
 from .editorial import checked_link
@@ -82,7 +83,7 @@ def review_snapshot(doc, destination, platforms, links, html_image_refs):
     credit="转载"+(" · "+source if source else "")
     source_url=doc["source_url"]
     header=f'<h1>{html.escape(title)}</h1><p>{html.escape(credit)}　<a href="{html.escape(source_url,quote=True)}">原文地址</a></p>'
-    raw=MARKDOWN.renderer.render(tokens,MARKDOWN.options,{})
+    raw,comparison=checked_render(doc.get("original_html") or "",tokens)
     heading=f"# {title}\n\n{credit}　[原文地址]({source_url})\n\n"
 
     def edition(rule):
@@ -95,7 +96,7 @@ def review_snapshot(doc, destination, platforms, links, html_image_refs):
         markdown=heading+body+(f"\n\n[延伸阅读]({url})" if append else "")+"\n"
         return dict(kind="reprint",title=title,text=body+("\n\n延伸阅读："+url if append else ""),
                     source_url=source_url,images=images,html=header+raw+(anchor if append else ""),
-                    markdown=markdown,files=files,format="原文转载",
+                    markdown=markdown,files=files,format="原文转载",body_comparison=comparison,
                     html_image_count=len(html_image_refs) if html_image_refs is not None else None,
                     link=dict(mode=mode,destination=destination if mode!="omit" else "",short=short,label="延伸阅读"))
 
@@ -329,6 +330,11 @@ def prepare_one(path,ticket,now):
         db.execute("UPDATE rows SET url=?,canonical=?,note='' WHERE id=?",(item["url"],"folder:"+item["canonical"],rid))
         db.execute("UPDATE reprint_reviews SET title=?,state='pending',sha=?,snapshot=? WHERE row_id=?",
                    (item["doc"]["title"],sha,payload,rid))
+        report=(next(iter(view["editions"].values())) if "editions" in view else view)["body_comparison"]
+        db.execute("DELETE FROM reprint_body_differences WHERE row_id=?",(rid,))
+        if report["status"]=="compared" and ("difference" in report or not report["structure_matches"]):
+            db.execute("INSERT INTO reprint_body_differences VALUES(?,?,?,?)",
+                       (rid,sha,"difference" in report,not report["structure_matches"]))
         close_attempt(db,job,now,"done")
 
 
@@ -531,10 +537,11 @@ def overview(db,bid,platforms=()):
         {REVIEW_REVISION} revision,j.state AS prepare_state,j.attempts AS prepare_attempts,
         CASE WHEN q.state='preparing' AND j.state='ready' AND j.failure<>'' THEN j.due END AS prepare_retry_at,
         s.id AS schedule_job,s.attempts AS schedule_attempts,s.failure AS schedule_failure,
-        (r.canonical IS NOT NULL OR sel.row_id IS NOT NULL) AS can_identify_source,
+        diff.text_changed,diff.structure_changed,(r.canonical IS NOT NULL OR sel.row_id IS NOT NULL) AS can_identify_source,
         (SELECT m.new_directory FROM reprint_source_moves m WHERE m.job=j.id ORDER BY attempt DESC LIMIT 1) AS relocated_directory
         FROM rows r
         JOIN reprint_reviews q ON r.id=q.row_id
+        LEFT JOIN reprint_body_differences diff ON diff.row_id=q.row_id AND diff.review_sha=q.sha
         LEFT JOIN reprint_selections sel ON sel.row_id=r.id
         LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'
         LEFT JOIN jobs s ON s.row_id=r.id AND s.stage='reprint_schedule' WHERE r.batch=? ORDER BY r.line""",(bid,)).fetchall()

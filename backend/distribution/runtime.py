@@ -1,10 +1,29 @@
 """Local process ownership and read-only scheduler diagnostics."""
 import os
+import json
+import subprocess
 import time
 from contextlib import contextmanager
 from pathlib import Path
 
 from .store import transaction
+
+
+def windows_startup_status(path):
+    if os.name!="nt":
+        raise ValueError("此检查适用于 Windows 管理台")
+    script=Path(__file__).resolve().parents[2]/"scripts"/"windows-startup.ps1"
+    shell=Path(os.environ["SystemRoot"])/"System32/WindowsPowerShell/v1.0/powershell.exe"
+    try:
+        proc=subprocess.run([str(shell),"-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass",
+                             "-File",str(script),"-Action","Status","-AsJson"],capture_output=True,
+                            check=True,timeout=10,creationflags=subprocess.CREATE_NO_WINDOW)
+        info=json.loads(proc.stdout.decode("utf-8-sig"))
+    except (OSError,ValueError,subprocess.SubprocessError) as exc:
+        raise ValueError("无法读取 Windows 自启动配置，请核对当前用户的任务计划程序权限") from exc
+    database=Path(path).resolve()
+    expected=info["expected_database"]
+    return dict(info,database=str(database),matches=Path(expected).resolve()==database if expected else None)
 
 
 def reload_request():

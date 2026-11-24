@@ -312,6 +312,13 @@ def make_blueprint(path,fixed_root):
     def runtime_status():
         return jsonify(health(path,details=True))
 
+    @api.get("/windows-startup")
+    def windows_startup():
+        if not platform_draft.local_console_request():
+            raise ValueError("请从本机稿序管理台查看 Windows 配置")
+        from .runtime import windows_startup_status
+        return jsonify(windows_startup_status(path))
+
     @api.post("/backup-settings")
     def backup_settings():
         from .daily_backup import configure

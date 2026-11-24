@@ -23,6 +23,21 @@
       <el-descriptions-item label="待核对的平台草稿回执">{{status.unknown_drafts}}</el-descriptions-item>
     </el-descriptions>
     <span v-else-if="!problem">正在读取服务状态…</span>
+    <section class="backup">
+      <h3>Windows 自启动</h3>
+      <el-button :loading="checkingStartup" @click="checkStartup">检查本机自启动配置</el-button>
+      <template v-if="startup">
+        <p>{{!startup.registered?'当前 Windows 用户尚未为此稿序目录配置自启动':!startup.enabled?'自启动已禁用':
+          startup.triggers.length?'已配置，触发方式为'+startup.triggers.join('、'):'已注册，缺少启用的触发条件'}}</p>
+        <p>当前任务库　{{startup.database}}</p>
+        <p v-if="!startup.enabled">如需在登录 Windows 后自动恢复排期，可在稿序项目目录运行
+          <code>.\scripts\windows-startup.ps1 -Action Enable -Trigger Logon</code>。</p>
+        <p v-if="startup.enabled && startup.expected_database">按当前配置预计使用　{{startup.expected_database}}
+          <strong v-if="startup.matches===false"> · 与当前任务库不同</strong></p>
+        <p v-else-if="startup.enabled">请在任务计划程序核对启动命令及运行账号的 DIST_DB 设置。</p>
+      </template>
+      <el-alert v-if="startupError" :title="startupError" type="warning" :closable="false"/>
+    </section>
     <section v-if="status?.backup" class="backup">
       <h3>每日备份</h3>
       <p>{{status.backup.enabled?'每天 '+clock(status.backup.minute)+'（北京时间）':'未启用'}}
@@ -49,6 +64,13 @@
 import {ref,onMounted,onBeforeUnmount} from 'vue'
 const props=defineProps({api:Function,date:Function})
 const status=ref(null),problem=ref('')
+const startup=ref(null),checkingStartup=ref(false),startupError=ref('')
+async function checkStartup(){
+  checkingStartup.value=true;startupError.value=''
+  try{startup.value=await props.api('windows-startup')}
+  catch(e){startup.value=null;startupError.value=e.message}
+  finally{checkingStartup.value=false}
+}
 const editing=ref(false),enabled=ref(false),at=ref('03:00'),revision=ref(0),saving=ref(false),saveError=ref('')
 const backupStates={waiting:'等待备份时间',running:'正在备份',success:'已完成',failed:'失败'}
 const clock=minute=>[Math.floor(minute/60),minute%60].map(n=>String(n).padStart(2,'0')).join(':')

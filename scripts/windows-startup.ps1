@@ -1,7 +1,8 @@
 ﻿param(
     [ValidateSet('Status','Enable','Disable')][string]$Action='Status',
     [ValidateSet('Logon','Startup')][string]$Trigger='Logon',
-    [ValidateRange(1,8)][int]$Concurrency=1
+    [ValidateRange(1,8)][int]$Concurrency=1,
+    [switch]$AsJson
 )
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
@@ -28,6 +29,32 @@ if ($existing -and $existing.Definition.RegistrationInfo.Description -ne $descri
     throw "同名任务不属于此稿序目录，请先检查任务计划程序：$taskName"
 }
 if ($Action -eq 'Status') {
+    if ($AsJson) {
+        [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+        $report=[ordered]@{registered=[bool]$existing;enabled=$false;triggers=@();expected_database=$null}
+        if ($existing) {
+            $definition=$existing.Definition
+            $report.enabled=$existing.Enabled -and (!(Test-Path -LiteralPath $policy) -or [IO.File]::ReadAllText($policy).Trim() -ne 'disabled')
+            $report.triggers=@(foreach ($item in $definition.Triggers) {
+                if ($item.Enabled) {switch ([int]$item.Type) {8 {'开机'} 9 {'用户登录'} default {'其他触发方式'}}}
+            })
+            $actionItem=$definition.Actions.Item(1)
+            $expectedArgs='-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File "'+$script+'" -Concurrency '
+            if ($definition.Actions.Count -eq 1 -and $actionItem.Arguments -match ('^'+[regex]::Escape($expectedArgs)+'[1-8]$') -and
+                $actionItem.Path -and [IO.Path]::GetFullPath($actionItem.Path) -eq [IO.Path]::GetFullPath((Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe')) -and
+                $definition.Principal.UserId -in ($user.Name,$user.User.Value)) {
+                $database=[Environment]::GetEnvironmentVariable('DIST_DB','User')
+                if (!$database) {$database=[Environment]::GetEnvironmentVariable('DIST_DB','Machine')}
+                if (!$database) {$report.expected_database=Join-Path $state 'dry-run.sqlite'}
+                elseif ($database -match '^[A-Za-z]:[\\/]') {$report.expected_database=[IO.Path]::GetFullPath($database)}
+                elseif (![IO.Path]::IsPathRooted($database) -and !$database.Contains(':')) {
+                    $report.expected_database=[IO.Path]::GetFullPath((Join-Path (Join-Path $root 'backend') $database))
+                }
+            }
+        }
+        $report | ConvertTo-Json -Compress
+        return
+    }
     if (!$existing) {Write-Output "尚未为当前用户和目录配置自启动。任务名 $taskName";return}
     Get-ScheduledTask -TaskName $taskName -TaskPath '\' | Select-Object TaskName,State,Triggers
     Get-ScheduledTaskInfo -TaskName $taskName -TaskPath '\' | Select-Object LastRunTime,LastTaskResult

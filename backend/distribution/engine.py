@@ -49,7 +49,7 @@ def claim(path, now, lease=30, *, preparation=None):
 def close_attempt(db, j, now, state, reason="", due=None, received_at=None):
     db.execute("""UPDATE jobs SET state=?,failure=?,token=NULL,lease_until=NULL,due=coalesce(?,due),
                 finished=CASE WHEN ?='done' THEN ? ELSE NULL END WHERE id=?""",
-               (state,reason,due,state,now if received_at is None else received_at,j["id"]))
+               (state,"" if state=="done" else reason,due,state,now if received_at is None else received_at,j["id"]))
     db.execute("UPDATE attempts SET ended=?,outcome=?,reason=? WHERE job=? AND seq=?",
                (now,state,reason,j["id"],j["attempts"]))
 
@@ -61,6 +61,19 @@ def simulated_receipt(path, key, now):
 def lookup_receipt(path, key):
     with transaction(ledger_path(path),False) as ledger:
         return ledger.execute("SELECT * FROM receipts WHERE key=?",(key,)).fetchone()
+
+def reconcile_send(path,db,job,now):
+    try:
+        prior=(receipt(path,db,job) if job["stage"]=="deliver"
+               else lookup_receipt(path,operation_key(job)))
+    except ValueError as exc:
+        close_attempt(db,job,now,"failed",str(exc))
+        return True
+    if not prior:
+        return False
+    db.execute("UPDATE jobs SET receipt=? WHERE id=?",(prior["remote_id"],job["id"]))
+    close_attempt(db,job,now,"done","已核对模拟接收端的既有回执",received_at=prior["submitted"])
+    return True
 
 def publish_time(db, job, now, rules):
     stamp = max(now, job["slot"], job["due"])
@@ -123,14 +136,7 @@ def execute(path, ticket, now, fault=None, after_send=None):
         st, rid, p, acct = j["stage"], j["row_id"], j["platform"], j["account"]
         # Look up a previously accepted send before gate checks or retries.
         if st == "publish" or (st=="deliver" and j["attempts"]>1):
-            try:
-                prior = lookup_receipt(path,operation_key(j)) if st=="publish" else receipt(path,db,j)
-            except ValueError as exc:
-                close_attempt(db,j,now,"failed",str(exc))
-                return
-            if prior:
-                db.execute("UPDATE jobs SET receipt=? WHERE id=?",(prior["remote_id"],jid))
-                close_attempt(db,j,now,"done",received_at=prior["submitted"])
+            if reconcile_send(path,db,j,now):
                 return
         if j["control"] != "active":
             close_attempt(db,j,now,"cancelled" if j["control"]=="cancelled" else "ready")
@@ -222,10 +228,19 @@ def execute(path, ticket, now, fault=None, after_send=None):
         except SimulatedFailure as e:
             close_attempt(db,j,now,"failed",str(e))
         except TimeoutError as e:
-            # Confirmed transient failure in the simulator. Recovery checks the remote key first.
-            budget = db.execute("SELECT count(*) FROM attempts WHERE job=? AND reason LIKE '暂时错误%'",(jid,)).fetchone()[0]
-            reason = f"暂时错误：{e}"
-            close_attempt(db,j,now,"ready" if budget<2 else "failed",reason,now+min(300,2**(budget+1)))
+            if st in ("publish","deliver") and reconcile_send(path,db,j,now):
+                return
+            # Pauses, recovered leases and schedule deferrals do not consume a retry.
+            # The prefix also recognizes timeout records created by older workers.
+            retries=db.execute("""SELECT count(*) FROM attempts WHERE job=? AND outcome='ready'
+                AND reason LIKE '暂时错误%' AND seq>coalesce((SELECT max(seq) FROM attempts
+                WHERE job=? AND outcome IN ('failed','done')),0)""",(jid,jid)).fetchone()[0]
+            if retries<2:
+                delay=(2,4)[retries]
+                reason=f"暂时错误：{e}。{delay} 秒后可开始本轮第 {retries+1}/2 次自动重试"
+                close_attempt(db,j,now,"ready",reason,now+delay)
+            else:
+                close_attempt(db,j,now,"failed",f"暂时错误：{e}。本轮两次自动重试已用完，可单独重试此项")
 
 def tick(path, now=None, *, preparation=None, **kwargs):
     claimed_at = int(time.time()) if now is None else int(now)

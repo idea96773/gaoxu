@@ -427,6 +427,11 @@ def make_blueprint(path,fixed_root):
     @api.get("/jobs/<int:jid>")
     def job(jid):
         with transaction(path,False) as db:
+            if request.args.get("progress")=="1":
+                progress=db.execute("SELECT state,attempts,slot,due,finished,receipt,failure FROM jobs WHERE id=?",(jid,)).fetchone()
+                if not progress:
+                    raise KeyError("找不到任务")
+                return jsonify(dict(progress)),200,{"Cache-Control":"no-store"}
             j=db.execute("""SELECT j.*,r.url,r.batch FROM jobs j JOIN rows r ON r.id=j.row_id WHERE j.id=?""",(jid,)).fetchone()
             if not j:
                 raise KeyError("找不到任务")

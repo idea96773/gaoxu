@@ -62,6 +62,49 @@ class FrozenDelivery(unittest.TestCase):
         res = subprocess.run([sys.executable,"-c",code,str(self.path),str(when)],cwd=Path(__file__).resolve().parents[1])
         self.assertEqual(res.returncode,37)
 
+    def test_operator_retry_gets_fresh_backoff_and_reconciles_last_response_timeout(self):
+        draft,_=self.freeze(self.targets[0])
+        peer,_=self.freeze(self.targets[1])
+        jid=self.schedule(draft,self.slot)["id"]
+        peer_id=self.schedule(peer,self.slot+12)["id"]
+        original=self.detail(jid)
+        def timeout():
+            raise TimeoutError("模拟接收端超时")
+        def before_send(job):
+            if job["id"]==jid:
+                timeout()
+        for offset in (0,2,6,12):
+            self.assertTrue(tick(self.path,self.slot+offset,fault=before_send))
+        self.assertEqual(self.detail(peer_id)["job"]["state"],"done")
+        failed=self.detail(jid)["job"]
+        self.assertEqual((failed["state"],failed["attempts"]),("failed",3))
+        result=self.post("failed-jobs/retry",dict(items=[dict(id=jid,batch=self.bid,expected_attempt=3)]))
+        self.assertTrue(result["items"][0]["queued"])
+        self.assertTrue(tick(self.path,self.slot+20,fault=before_send))
+        current=self.detail(jid)["job"]
+        self.assertEqual((current["state"],current["due"]),("ready",self.slot+22))
+        progress=self.client.get(BASE+f"jobs/{jid}?progress=1")
+        self.assertEqual((progress.json["attempts"],progress.json["due"]),(4,self.slot+22))
+        self.assertNotIn("delivery",progress.json)
+        self.client=create_app(self.path).test_client()
+        self.assertFalse(tick(self.path,self.slot+21))
+        self.assertTrue(tick(self.path,self.slot+22,fault=before_send))
+        self.assertEqual(self.detail(jid)["job"]["due"],self.slot+26)
+        # The receiver accepts the last attempt, but the worker loses its acknowledgment.
+        self.assertTrue(tick(self.path,self.slot+26,after_send=timeout))
+        done=self.detail(jid)
+        self.assertEqual((done["job"]["state"],done["job"]["attempts"],done["job"]["finished"]),("done",6,self.slot+26))
+        self.assertEqual([h["outcome"] for h in sorted(done["history"],key=lambda h:h["seq"])],
+                         ["ready","ready","failed","ready","ready","done"])
+        self.assertEqual((done["delivery"]["sha"],done["job"]["slot"],done["job"]["account"]),
+                         (original["delivery"]["sha"],self.slot,self.targets[0]["account"]))
+        self.assertTrue(done["delivery"]["received"]["matches"])
+        self.assertIn("回执",done["history"][-1]["reason"])
+        self.assertEqual(done["job"]["failure"],"")
+        self.assertFalse(tick(self.path,self.slot+300))
+        with transaction(ledger_path(self.path),False) as ledger:
+            self.assertEqual(ledger.execute("SELECT count(*) FROM delivered_drafts").fetchone()[0],2)
+
     def test_binding_and_concurrent_duplicates(self):
         did,frozen=self.freeze(self.targets[0])
         path=f"editorial/{did}/schedule"

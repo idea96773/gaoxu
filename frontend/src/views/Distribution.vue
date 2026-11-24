@@ -172,7 +172,9 @@
         </div>
         <p>状态 {{label(job.job.state)}} · 执行 {{job.job.attempts}} 次</p>
         <p>计划 {{date(job.job.slot)}}　完成 {{date(job.job.finished)}}</p><p>模拟回执 {{job.job.receipt||'—'}}</p><p>{{job.job.failure}}</p>
-        <p v-if="job.job.slot && job.job.due>job.job.slot">顺延执行时间　{{date(job.job.due)}}</p>
+        <p v-if="job.job.state==='ready' && job.job.failure?.startsWith('暂时错误')">下次可重试时间　{{date(job.job.due)}}（北京时间）</p>
+        <p v-else-if="job.job.slot && job.job.due>job.job.slot && job.job.state!=='failed'">顺延执行时间　{{date(job.job.due)}}</p>
+        <p v-if="jobUpdateError" role="alert">{{jobUpdateError}}</p>
         <p v-if="job.cancellation">{{job.cancellation.scope==='task'?'单项取消':'随批次取消'}}于 {{date(job.cancellation.cancelled_at)}}</p>
         <el-button v-if="job.cancel_guard" plain type="danger" :loading="cancellingJob" @click="cancelJob">取消此账号的排期</el-button>
         <RescheduleJob v-if="jobOpen && ['publish','deliver'].includes(job.job.stage) && job.job.state==='ready'"
@@ -370,8 +372,36 @@ async function cancelBatch(){
   await control('cancel',id)
 }
 async function openArticle(id){await action(async()=>{article.value=await api('articles/'+id);articleOpen.value=true})}
-async function openJob(id){await action(async()=>{job.value=await api('jobs/'+id);jobOpen.value=true})}
-async function retry(id,attempt){await action(async()=>{await api('jobs/'+id+'/retry',attempt===undefined?{}:{expected_attempt:attempt});retryVersion.value++;if(jobOpen.value)job.value=await api('jobs/'+id);ElMessage.success('已重新排队')})}
+const jobUpdateError=ref('')
+let jobRequest=0
+async function openJob(id){
+  const seq=++jobRequest
+  await action(async()=>{
+    const latest=await api('jobs/'+id)
+    if(seq===jobRequest){job.value=latest;jobOpen.value=true;jobUpdateError.value=''}
+  })
+}
+async function updateOpenJob(force=false){
+  const current=job.value
+  if(!jobOpen.value || !current)return
+  const seq=jobRequest,path='jobs/'+current.job.id
+  const stillOpen=()=>!closed && jobOpen.value && seq===jobRequest && job.value===current
+  try{
+    if(!force){
+      const progress=await api(path+'?progress=1')
+      if(!stillOpen())return
+      if(Object.entries(progress).every(([k,v])=>current.job[k]===v)){jobUpdateError.value='';return}
+    }
+    const latest=await api(path)
+    if(stillOpen()){job.value=latest;jobUpdateError.value=''}
+  }catch(e){if(stillOpen())jobUpdateError.value='任务状态刷新失败，正在显示上次读取的记录。'+e.message}
+}
+async function retry(id,attempt){await action(async()=>{
+  await api('jobs/'+id+'/retry',attempt===undefined?{}:{expected_attempt:attempt})
+  retryVersion.value++
+  if(jobOpen.value && job.value?.job.id===id)await updateOpenJob(true)
+  ElMessage.success('已重新排队')
+})}
 async function rescheduled(id,slot){
   ElMessage.success('任务 #'+id+' 已改期至 '+date(slot))
   retryVersion.value++
@@ -400,7 +430,7 @@ async function cancelJob(){
   }
 }
 let timer,closed=false
-async function poll(){await refresh();if(!closed)timer=setTimeout(poll,3000)}
+async function poll(){await Promise.all([refresh(),updateOpenJob()]);if(!closed)timer=setTimeout(poll,3000)}
 onMounted(poll)
 onBeforeUnmount(()=>{closed=true;clearTimeout(timer)})
 </script>

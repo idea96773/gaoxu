@@ -11,9 +11,9 @@ from pathlib import Path
 from flask import Blueprint, Flask, Response, jsonify, request, send_from_directory
 
 from . import delivery, frozen_reprint, reprint, search, platform_draft
-from .scheduling import effective_limits
+from .scheduling import available_slot, effective_limits
 from .engine import close_attempt, lookup_receipt
-from .store import BEIJING, DEFAULT_DB, PLATFORMS, booked_slot, import_batch, initialize, operation_key, transaction
+from .store import BEIJING, DEFAULT_DB, PLATFORMS, booked_slot, current_bookings, import_batch, initialize, operation_key, transaction
 from .library import catalog, catalog_page, check_library_root, configure_library, library_settings, match_links, read_selected
 
 def outcome(row, jobs, target_count):
@@ -455,6 +455,71 @@ def make_blueprint(path,fixed_root):
         with transaction(path,False) as db:
             report=frozen_reprint.inspect(db,frozen_reprint.source(db,jid))
             return jsonify(report),200,{"Cache-Control":"no-store"}
+
+    @api.post("/batches/<bid>/postpone/<action>")
+    def postpone_batch(bid,action):
+        if action not in ("preview","confirm"):
+            raise ValueError("未知的批量改期操作")
+        data=body()
+        start,items=data.get("start"),data.get("items")
+        now=int(time.time())
+        if type(start) is not int or not now<=start<=now+366*86400:
+            raise ValueError("请选择未来一年内的顺延起点（北京时间）")
+        if not isinstance(items,list) or not 1<=len(items)<=200:
+            raise ValueError("每次可顺延 1 至 200 个冻结稿任务")
+        if not all(isinstance(i,dict) and type(i.get("id")) is int and 0<i["id"]<=2**63-1 for i in items):
+            raise ValueError("交付任务编号无效")
+        if len({i["id"] for i in items})!=len(items):
+            raise ValueError("同一交付任务只能选择一次")
+        confirm=action=="confirm"
+        results=[]
+        bookings={}
+        with transaction(path,confirm) as db:
+            for item in items:
+                jid=item["id"]
+                try:
+                    job=scheduling_job(db,jid)
+                    if job["batch"]!=bid or job["stage"]!="deliver":
+                        raise ValueError("请选择本批新建的冻结稿交付任务")
+                    check_movable(path,db,job)
+                    old=job["slot"]
+                    due=max(old,job["due"])
+                    moves=db.execute("SELECT id,before_slot,after_slot FROM delivery_reschedules WHERE job=? ORDER BY id DESC LIMIT 2",
+                                     (jid,)).fetchall()
+                    previous=moves[0]["id"] if moves else 0
+                    guard=dict(slot=old,execution=due,move=previous,attempts=job["attempts"])
+                    if confirm:
+                        expected=item.get("expected")
+                        if not isinstance(expected,dict) or expected.keys()!=guard.keys() or any(type(v) is not int for v in expected.values()):
+                            raise ValueError("请先预览本批交付任务")
+                        if (moves and type(item.get("time")) is int and start<=item["time"]==old==due==moves[0]["after_slot"]
+                                and expected["slot"]==moves[0]["before_slot"] and expected["execution"]<start
+                                and expected["move"]==(moves[1]["id"] if len(moves)>1 else 0)):
+                            results.append(dict(id=jid,time=old,already=True))
+                            continue
+                        if expected!=guard:
+                            raise ValueError("任务自预览后已变化，请刷新排期")
+                    if due>=start:
+                        raise ValueError("原执行时间已达到顺延起点")
+                    platform=job["platform"]
+                    if platform not in bookings:
+                        bookings[platform]=[dict(r) for r in current_bookings(db,"deliver",platform,start)]
+                    peers=[r for r in bookings[platform] if r.get("id")!=jid]
+                    requested=item.get("time") if confirm else start
+                    if type(requested) is not int or not start<=requested<=now+366*86400:
+                        raise ValueError("预览时间无效，请重新试算")
+                    slot=available_slot(requested,platform,job["account"],json.loads(job["rules"]),peers)
+                    if slot>now+366*86400:
+                        raise ValueError("未来一年内没有可用时段")
+                    if confirm:
+                        if slot!=requested:
+                            raise ValueError("预览时段已被占用，请重新试算")
+                        delivery.apply_move(db,job,slot,now)
+                    bookings[platform]=peers+[dict(id=jid,account=job["account"],mark=slot,rules=job["rules"])]
+                    results.append(dict(id=jid,time=slot,expected=guard))
+                except (ValueError,KeyError) as exc:
+                    results.append(dict(id=jid,error=exc.args[0]))
+        return jsonify(items=results)
 
     @api.post("/failed-jobs/retry")
     def retry_failed_jobs():

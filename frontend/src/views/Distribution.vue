@@ -76,6 +76,7 @@
             <label>交付状态 <select v-model="deliveryState"><option value="">全部</option><option v-for="s in deliveryStates" :key="s" :value="s">{{label(s)}}</option></select></label>
             <small>显示 {{visibleDeliveries.length}} 份 · 同一任务只计一次</small>
           </div>
+          <PostponeDeliveries v-if="batch.reprint" :key="batch.id" :batch="batch.id" :jobs="visibleDeliveries" :api="api" :names="names" :date="date" @saved="refresh" />
           <el-table :data="visibleDeliveries" empty-text="当前没有符合条件的交付任务" @row-click="r=>openJob(r.id)">
             <el-table-column label="成稿" min-width="185"><template #default="{row}"><b v-if="row.title">{{row.title}}<br></b>#{{row.draft_id ?? row.draft}} · 第 {{row.revision}} 版</template></el-table-column>
             <el-table-column v-if="batch.reprint" label="任务来源" min-width="140"><template #default="{row}">
@@ -189,6 +190,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import ScheduleCalendar from './ScheduleCalendar.vue'
 import RescheduleJob from './RescheduleJob.vue'
+import PostponeDeliveries from './PostponeDeliveries.vue'
 import ArticleSearch from "./ArticleSearch.vue"
 import DraftAccounts from './DraftAccounts.vue'
 import PlatformDraftPanel from './PlatformDraftPanel.vue'

@@ -159,6 +159,44 @@ class Reprint(unittest.TestCase):
             self.assertEqual(sorted((j["row_id"],j["platform"],j["account"],j["slot"]) for j in jobs),
                              sorted((r["id"],a["platform"],a["account"],a["slot"]) for r in plans for a in r.get("assignments",[])))
 
+    def test_postpone_owned_jobs_with_conflicts_and_replay(self):
+        from datetime import timedelta
+        self.targets=[dict(platform="zhihu",account="甲"),dict(platform="zhihu",account="乙")]
+        dirs=[self.source(i) for i in range(3)]
+        data=dict(request_id="postpone",directories=dirs,targets=self.targets,rules=dict(platform_cap=2,gap=60))
+        bid=self.client.post(BASE+"reprints",json=data).json["id"]
+        self.prepare()
+        self.approve(bid,self.batch(bid)["reviews"])
+        jobs=self.batch(bid)["deliveries"]
+        start=int((datetime.now(BEIJING)+timedelta(days=5)).replace(hour=10,minute=0,second=0,microsecond=0).timestamp())
+        route=BASE+f"batches/{bid}/postpone/"
+        request=dict(start=start,items=[dict(id=j["id"]) for j in jobs])
+        self.client.post(BASE+f"batches/{bid}/pause",json={})
+        plan=self.client.post(route+"preview",json=request).json["items"]
+        self.assertEqual([p["time"] for p in plan[:2]],[start,start+60])
+        self.assertGreater(datetime.fromtimestamp(plan[2]["time"],BEIJING).date(),datetime.fromtimestamp(start,BEIJING).date())
+        self.assertEqual(self.batch(bid)["deliveries"],jobs)
+        other=self.create([dirs[0]],"other-batch")
+        self.assertIn("error",self.client.post(BASE+f"batches/{other}/postpone/preview",json=request).json["items"][0])
+        first=jobs[0]
+        moved=self.client.post(BASE+f"jobs/{first['id']}/reschedule",json={
+            "time":start+7*86400,"expected_slot":first["slot"],"expected_execution":first["due"]})
+        self.assertEqual(moved.status_code,200,moved.json)
+        confirmed=self.client.post(route+"confirm",json=dict(start=start,items=plan)).json["items"]
+        self.assertIn("error",confirmed[0])
+        self.assertEqual([p["time"] for p in confirmed[1:]],[p["time"] for p in plan[1:]])
+        replay=self.client.post(route+"confirm",json=dict(start=start,items=plan)).json["items"]
+        self.assertIn("error",replay[0])
+        self.assertTrue(all(entry["already"] for entry in replay[1:]))
+        self.client=create_app(self.path,self.root).test_client()
+        after={j["id"]:j for j in self.batch(bid)["deliveries"]}
+        for j,expected in zip(jobs,[start+7*86400,plan[1]["time"],plan[2]["time"]]):
+            current=after[j["id"]]
+            self.assertEqual((current["slot"],current["due"]),(expected,expected))
+            self.assertEqual((current["sha"],current["account"],current["draft_id"]),(j["sha"],j["account"],j["draft_id"]))
+            self.assertEqual(len(self.client.get(BASE+f"jobs/{j['id']}").json["delivery"]["reschedules"]),1)
+        self.assertEqual(self.batch(bid)["control"],"paused")
+
     def test_account_rotation_change_after_preview_leaves_article_pending(self):
         bid=self.create([self.source(1),self.source(2)])
         self.prepare()
@@ -1520,6 +1558,17 @@ class Reprint(unittest.TestCase):
         self.assertEqual(data["counts"], {"processing":100})
         jobs = data["deliveries"]
         self.assertEqual(len(jobs), 200)
+        start=max(j["slot"] for j in jobs)+2*86400
+        route=BASE+f"batches/{bid}/postpone/"
+        preview=self.client.post(route+"preview",json=dict(start=start,items=[dict(id=j["id"]) for j in jobs])).json["items"]
+        confirmed=self.client.post(route+"confirm",json=dict(start=start,items=preview)).json["items"]
+        self.assertEqual(confirmed,preview)
+        planned={p["id"]:p["time"] for p in preview}
+        self.assertGreaterEqual(min(planned.values()),start)
+        after=self.batch(bid)["deliveries"]
+        self.assertEqual({j["id"]:(j["account"],j["sha"],planned[j["id"]]) for j in jobs},
+                         {j["id"]:(j["account"],j["sha"],j["slot"]) for j in after})
+        jobs=after
         for platform in ("zhihu","toutiao"):
             assignments = [j for j in jobs if j["platform"]==platform]
             self.assertEqual(Counter(j["account"] for j in assignments), {"模拟A":50,"模拟B":50})

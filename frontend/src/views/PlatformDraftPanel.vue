@@ -21,7 +21,10 @@
     </p>
     <p v-if="record?.reason">{{record.reason}}</p>
     <p v-if="record?.state==='unknown' && receiptUrl">扩展曾返回编辑地址，接收账号仍待核对。请在「{{record.name}}」的浏览器中
-      <a :href="receiptUrl" target="_blank" rel="noopener noreferrer">打开待核对草稿</a>，核对账号和内容后填写下方核对表。</p>
+      <a :href="receiptUrl" target="_blank" rel="noopener noreferrer">打开待核对草稿</a>，核对账号和内容后填写下方核对表。
+      <el-button link :disabled="busy" @click="dismissReceipt">标记此地址与本稿不符</el-button></p>
+    <p v-if="dismissedReceipt">已于 {{date(dismissedReceipt.dismissed_at)}} 记录回执地址与本稿不符
+      <small>{{dismissedReceipt.edit_url}}</small></p>
     <p v-if="reusableImages && ['queued','preparing','failed','cancelled'].includes(record?.state)">
       本稿可沿用 {{reusableImages}} 张已转存配图，共 {{uniqueImages}} 张不同配图。
     </p>
@@ -29,8 +32,8 @@
     <el-button v-if="canSend" type="primary" :loading="busy" @click="enqueue">保存到 {{account.name}} 的草稿箱</el-button>
     <el-button v-if="record && ['queued','preparing'].includes(record.state)" :disabled="busy" @click="change({action:'cancel'})">取消草稿任务</el-button>
     <DraftInspection v-if="record && ['saved','unknown','needs_review','verified'].includes(record.state)"
-      :key="record.id" :api="api" :path="path" :record="record" :receipt-url="receiptUrl" :entries="inspections" :snapshot="job.delivery.snapshot"
-      :date="date" @refresh="load" @recorded="$emit('inspected')" />
+      :key="record.id+':'+receiptUrl" :api="api" :path="path" :record="record" :receipt-url="receiptUrl" :entries="inspections" :snapshot="job.delivery.snapshot"
+      :date="date" :dismissed-receipt="dismissedReceipt" @refresh="load" @recorded="$emit('inspected')" />
     <el-alert v-if="error" :title="error" type="error" :closable="false"/>
   </section>
 </template>
@@ -45,7 +48,7 @@ const recipient=ref(null),recipientSource=ref(''),control=ref('')
 const jobState=ref(props.job.job.state)
 const cancelled=computed(()=>control.value==='cancelled' || jobState.value==='cancelled')
 const grant=ref(null),history=ref([]),permitted=ref(false)
-const receiptUrl=ref('')
+const receiptUrl=ref(''),dismissedReceipt=ref(null)
 const reusableImages=ref(0)
 const uniqueImages=computed(()=>new Set(props.job.delivery.snapshot.images).size)
 const bridge=ref(null),account=ref(null),record=ref(null),inspections=ref([]),busy=ref(false),error=ref('')
@@ -59,7 +62,7 @@ async function load(){
   const n=++sequence
   try{const info=await props.api(path);if(!stopped && n===sequence){bridge.value=info.bridge;account.value=info.account;record.value=info.record;recipient.value=info.recipient;recipientSource.value=info.recipient_source;control.value=info.control
     grant.value=info.rights;permitted.value=info.permitted;history.value=info.rights_history;inspections.value=info.inspections || [];reusableImages.value=info.reusable_images || 0
-    jobState.value=info.job_state;receiptUrl.value=info.unverified_edit_url || ''}}
+    jobState.value=info.job_state;receiptUrl.value=info.unverified_edit_url || '';dismissedReceipt.value=info.dismissed_receipt}}
   catch(e){if(!stopped && n===sequence){bridge.value=null;account.value=null;grant.value=null;permitted.value=false;reusableImages.value=0;error.value=e.message}}
 }
 async function poll(){await load();if(!stopped)timer=setTimeout(poll,4000)}
@@ -72,6 +75,11 @@ async function enqueue(){
   const target=account.value,revision=grant.value.revision
   try{await ElMessageBox.confirm('将已冻结的《'+props.job.delivery.snapshot.title+'》及其配图发送至知乎账号「'+target.name+'」（'+target.user_id+'）的草稿箱。','确认保存平台草稿',{confirmButtonText:'仅保存草稿',cancelButtonText:'返回'})}catch{return}
   await change({action:'queue',consent:true,user_id:target.user_id,sha:props.job.delivery.sha,scope_revision:revision})
+}
+async function dismissReceipt(){
+  const data={action:'dismiss_receipt',user_id:record.value.user_id,sha:record.value.sha,url:receiptUrl.value,checked:true}
+  try{await ElMessageBox.confirm('确认已在「'+record.value.name+'」的草稿箱中核对，此地址与《'+props.job.delivery.snapshot.title+'》不符？标记后地址可供其他任务核对，此稿继续等待人工核对。','核对回执地址',{confirmButtonText:'确认地址不符',cancelButtonText:'返回'})}catch{return}
+  await change(data)
 }
 async function setScope(scope){
   const target=recipient.value

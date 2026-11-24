@@ -6,6 +6,7 @@
     <form v-else @submit.prevent="save">
       <p>请在「{{record.name}}」（{{record.user_id}}）的草稿编辑页核对。</p>
       <label v-if="!record.url">找到的编辑页地址 <el-input v-model.trim="url" placeholder="https://zhuanlan.zhihu.com/p/…/edit"/></label>
+      <p v-if="dismissedReceipt && !record.url && url===dismissedReceipt.edit_url" role="alert">这个地址曾被标记为与本稿不符，请在指定账号中再次核对。</p>
       <label v-for="field in fields" :key="field.key" class="item">
         <span>{{field.label}}<small>{{field.hint}}</small></span>
         <select v-model="checks[field.key]"><option value="pending">待核对</option>
@@ -23,7 +24,7 @@
 </template>
 <script setup>
 import {computed,ref} from 'vue'
-const props=defineProps({api:Function,path:String,record:Object,receiptUrl:String,entries:Array,snapshot:Object,date:Function})
+const props=defineProps({api:Function,path:String,record:Object,receiptUrl:String,dismissedReceipt:Object,entries:Array,snapshot:Object,date:Function})
 const emit=defineEmits(['refresh','recorded'])
 const editing=ref(false),busy=ref(false),error=ref(''),checks=ref({}),url=ref(''),revision=ref(0),state=ref('')
 const latest=computed(()=>props.entries[0])
@@ -48,7 +49,7 @@ async function save(){
   busy.value=true;error.value=''
   try{
     await props.api(props.path,{action:'inspect',user_id:props.record.user_id,sha:props.record.sha,
-      url:url.value,expected_state:state.value,revision:revision.value,checks:checks.value})
+      url:url.value,dismissed_at:props.dismissedReceipt?.dismissed_at,expected_state:state.value,revision:revision.value,checks:checks.value})
     editing.value=false;emit('recorded')
   }catch(e){error.value=e.message}
   finally{busy.value=false;emit('refresh')}

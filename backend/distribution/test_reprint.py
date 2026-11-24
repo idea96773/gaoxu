@@ -889,6 +889,73 @@ class Reprint(unittest.TestCase):
         self.assertEqual((info["record"]["state"],info["record"]["url"],info["unverified_edit_url"]),
                          ("verified",actual,None))
 
+    def test_pending_draft_address_cannot_be_claimed_by_two_tasks(self):
+        from . import platform_draft, rights, zhihu_draft_worker
+
+        self.targets=[dict(platform="zhihu",account="模拟")]
+        bid=self.create([self.source(85),self.source(86)])
+        self.prepare()
+        self.approve(bid,self.batch(bid)["reviews"])
+        uid="fixture-account"
+        deliveries=self.batch(bid)["deliveries"]
+        with transaction(self.path) as db:
+            for job in deliveries:
+                db.execute("""INSERT INTO platform_drafts(job,canonical,sha,user_id,name,state,updated)
+                    SELECT ?,canonical,?,?,'模拟','sending',0 FROM rows WHERE id=?""",
+                    (job["id"],job["sha"],uid,job["row_id"]))
+            tasks=[dict(row) for row in db.execute("SELECT * FROM platform_drafts ORDER BY id")]
+        link="https://zhuanlan.zhihu.com/p/8586/edit"
+        def record(task):
+            try:
+                platform_draft.remember_receipt(self.path,task,link)
+                return True
+            except platform_draft.DraftUrlConflict:
+                return False
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            result=list(pool.map(record,tasks))
+        self.assertCountEqual(result,[False,True])
+        first,other=tasks[result.index(True)],tasks[result.index(False)]
+        self.assertEqual(platform_draft.remember_receipt(self.path,first,link),link)
+        platform_draft.transition(self.path,first,"sending","unknown")
+        with transaction(self.path) as db:
+            db.execute("UPDATE platform_drafts SET state='preparing' WHERE id=?",(other["id"],))
+            rights.record(db,other["job"],other["sha"],"zhihu_draft",uid,0)
+        bridge=Mock()
+        bridge.identity.return_value=(uid,"模拟")
+        bridge.request.return_value=dict(results=[dict(platform="zhihu",draftOnly=True,success=True,postUrl=link)])
+        with patch.object(zhihu_draft_worker,"prepare_content",return_value={"title":"样稿","content":"正文"}):
+            zhihu_draft_worker.run_task(self.path,other,bridge)
+        bridge.request.assert_called_once()
+        self.client=create_app(self.path,self.root).test_client()
+        def path(task):
+            return BASE+f"jobs/{task['job']}/platform-draft"
+        uncertain=self.client.get(path(other)).json["record"]
+        self.assertEqual(uncertain["state"],"unknown")
+        self.assertIn(f"#{first['job']}",uncertain["reason"])
+        def inspect(task,url):
+            return dict(action="inspect",sha=task["sha"],user_id=uid,url=url,expected_state="unknown",
+                        revision=0,checks=dict.fromkeys(("title","layout","images","footer"),"pass"))
+        denied=self.client.post(path(other),json=inspect(other,link))
+        self.assertEqual(denied.status_code,400)
+        self.assertIn(f"#{first['job']}",denied.json["error"])
+        self.assertEqual(self.client.post(path(other),json=dict(action="confirm",checked=True,url=link)).status_code,400)
+        dismiss=dict(action="dismiss_receipt",sha=first["sha"],url=link,user_id=uid,checked=True)
+        self.assertEqual(self.client.post(path(first),json=dismiss|{"user_id":"other"}).status_code,400)
+        for _ in range(2):
+            self.assertEqual(self.client.post(path(first),json=dismiss).status_code,200)
+        info=self.client.get(path(first)).json
+        self.assertEqual(info["record"]["state"],"unknown")
+        self.assertIsNone(info["unverified_edit_url"])
+        self.assertEqual(info["dismissed_receipt"]["edit_url"],link)
+        self.assertEqual(self.client.post(path(first),json=inspect(first,link)).status_code,400)
+        self.assertEqual(self.client.post(path(other),json=inspect(other,link)).status_code,200)
+        self.assertEqual(self.client.post(path(first),json=inspect(first,link)|
+            {"dismissed_at":info["dismissed_receipt"]["dismissed_at"]}).status_code,400)
+        actual="https://zhuanlan.zhihu.com/p/85000/edit"
+        self.assertEqual(self.client.post(path(first),json=inspect(first,actual)).status_code,200)
+        self.assertEqual([self.client.get(path(t)).json["record"]["url"] for t in (first,other)],[actual,link])
+        self.assertIsNone(platform_draft.claim(self.path,uid))
+
     def test_platform_draft_inspection_tracks_cases_without_resending(self):
         from .store import transaction
         self.targets=[dict(platform="zhihu",account="模拟")]

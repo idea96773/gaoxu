@@ -13,18 +13,35 @@ from .draft_bridge import status as bridge_status
 from .store import compact, transaction
 
 
+class DraftUrlConflict(ValueError):
+    """An edit address already belongs to another task or its pending receipt."""
+
+
 def edit_url(value):
     if not isinstance(value,str) or not re.fullmatch(r"https://zhuanlan\.zhihu\.com/p/[1-9]\d{0,24}/edit",value):
         raise ValueError("请输入知乎草稿编辑页地址")
     return value
 
 
-def checked_url(db,record,value):
+def checked_url(db,record,value,dismissed_at=None):
     url=edit_url(value)
     if record["url"] and record["url"]!=url:
         raise ValueError("编辑地址与已有回执不一致")
-    if db.execute("SELECT 1 FROM platform_drafts WHERE url=? AND id!=?",(url,record["id"])).fetchone():
-        raise ValueError("该知乎编辑地址已关联其他任务，请核对账号与稿件")
+    other=db.execute("SELECT job FROM platform_drafts WHERE url=? AND id!=?",(url,record["id"])).fetchone()
+    if other:
+        raise DraftUrlConflict(f"该知乎编辑地址已关联任务 #{other['job']}，请核对账号与稿件")
+    if not record["url"]:
+        dismissed=db.execute("""SELECT d.dismissed_at FROM zhihu_dismissed_receipts d
+            JOIN zhihu_draft_receipts r ON r.outbox=d.outbox WHERE d.outbox=? AND r.edit_url=?""",
+            (record["id"],url)).fetchone()
+        if dismissed and (type(dismissed_at) is not int or dismissed_at!=dismissed["dismissed_at"]):
+            raise ValueError("这个地址已标记为与本稿不符，请重新打开核对表并核对实际草稿")
+        pending=db.execute("""SELECT p.job FROM zhihu_draft_receipts r JOIN platform_drafts p ON p.id=r.outbox
+            LEFT JOIN zhihu_dismissed_receipts d ON d.outbox=p.id
+            WHERE r.edit_url=? AND p.id!=? AND p.url='' AND d.outbox IS NULL ORDER BY p.id LIMIT 1""",
+            (url,record["id"])).fetchone()
+        if pending:
+            raise DraftUrlConflict(f"任务 #{pending['job']} 正在核对这个知乎编辑地址，请先核对该任务的回执")
     return url
 
 
@@ -36,6 +53,11 @@ def remember_receipt(path,task,value):
         if not record:
             raise ValueError("此任务已退出保存状态")
         url=checked_url(db,record,value)
+        previous=db.execute("SELECT edit_url FROM zhihu_draft_receipts WHERE outbox=?",(record["id"],)).fetchone()
+        if previous:
+            if previous["edit_url"]!=url:
+                raise ValueError("这次请求返回了不同的草稿地址，请在指定账号核对")
+            return url
         db.execute("INSERT INTO zhihu_draft_receipts(outbox,edit_url) VALUES(?,?)",(record["id"],url))
         return url
 
@@ -48,7 +70,7 @@ def record_inspection(db,job,record,data,now):
     if (row["sha"]!=record["sha"] or data.get("sha")!=row["sha"] or data.get("user_id")!=record["user_id"]
             or target["user_id"]!=record["user_id"]):
         raise ValueError("冻结稿或草稿接收账号已变化")
-    url=checked_url(db,record,data.get("url"))
+    url=checked_url(db,record,data.get("url"),data.get("dismissed_at"))
     checks=data.get("checks")
     if (not isinstance(checks,dict) or set(checks)!={"title","layout","images","footer"}
             or any(v not in ("pass","issue","pending") for v in checks.values())
@@ -160,17 +182,18 @@ def register(api,path,body):
             inspections=[] if not record else [dict(r)|{"checks":json.loads(r["checks"])} for r in db.execute(
                 "SELECT id,checks,checked_at,sha,user_id,url FROM draft_inspections WHERE outbox=? ORDER BY id DESC LIMIT 10",
                 (record["id"],))]
-            receipt=None
-            if record and record["state"]=="unknown" and not record["url"]:
-                receipt=db.execute("""SELECT r.edit_url FROM zhihu_draft_receipts r WHERE r.outbox=?
-                    AND NOT EXISTS (SELECT 1 FROM platform_drafts t WHERE t.url=r.edit_url AND t.id!=r.outbox)""",
-                    (record["id"],)).fetchone()
+            receipt=None if not record else db.execute("""SELECT r.edit_url,d.dismissed_at
+                FROM zhihu_draft_receipts r LEFT JOIN zhihu_dismissed_receipts d ON d.outbox=r.outbox
+                WHERE r.outbox=?""",(record["id"],)).fetchone()
+            pending_url=receipt["edit_url"] if (receipt and receipt["dismissed_at"] is None and
+                record["state"]=="unknown" and not record["url"]) else None
             return jsonify(**bridge_status(db),recipient=target,recipient_source=via,control=row["control"],job_state=row["state"],
                            rights=grant,permitted=bool(target and rights.permits(grant,row["sha"],target["user_id"])),
                            rights_history=[dict(event) for event in changes],
                            reusable_images=len(draft_images.confirmed(db,record["id"],grant["revision"])) if record else 0,
                            record=dict(record) if record else None,inspections=inspections,
-                           unverified_edit_url=receipt["edit_url"] if receipt else None)
+                           unverified_edit_url=pending_url,
+                           dismissed_receipt=dict(receipt) if receipt and receipt["dismissed_at"] is not None else None)
 
     @api.post("/jobs/<int:job>/platform-draft")
     def change_platform_draft(job):
@@ -250,6 +273,17 @@ def register(api,path,body):
                 db.execute("UPDATE platform_drafts SET state='cancelled',updated=? WHERE job=?",(now,job))
             elif action=="inspect":
                 record_inspection(db,job,existing,data,now)
+            elif action=="dismiss_receipt":
+                if (not existing or existing["state"]!="unknown" or existing["url"]
+                        or data.get("sha")!=existing["sha"] or data.get("user_id")!=existing["user_id"]
+                        or data.get("checked") is not True):
+                    raise ValueError("请在指定账号核对这份回执不确定的草稿")
+                receipt=db.execute("SELECT edit_url FROM zhihu_draft_receipts WHERE outbox=?",(existing["id"],)).fetchone()
+                if not receipt or edit_url(data.get("url"))!=receipt["edit_url"]:
+                    raise ValueError("待核对的回执地址已变化，请刷新")
+                changed=db.execute("INSERT OR IGNORE INTO zhihu_dismissed_receipts VALUES(?,?)",(existing["id"],now))
+                if changed.rowcount:
+                    db.execute("UPDATE platform_drafts SET updated=? WHERE id=?",(now,existing["id"]))
             elif action=="confirm" and existing and existing["state"] in ("saved","unknown","verified"):
                 if db.execute("SELECT 1 FROM draft_inspections WHERE outbox=?",(existing["id"],)).fetchone():
                     raise ValueError("此稿已有逐项核对记录，请使用当前核对表")

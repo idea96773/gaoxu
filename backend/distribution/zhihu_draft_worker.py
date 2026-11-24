@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from .markdown_media import replace_media_urls
 from .draft_bridge import heartbeat, listener
 from . import draft_images, frozen_reprint
-from .platform_draft import authorized_source, claim, remember_receipt, require_rights, transition
+from .platform_draft import DraftUrlConflict, authorized_source, claim, remember_receipt, require_rights, transition
 from .runtime import instance_lock
 from .store import DEFAULT_DB, initialize, transaction
 
@@ -155,6 +155,8 @@ def run_task(path,task,bridge):
         if bridge.identity()[0]!=task["user_id"]:
             raise ValueError("回执所属账号需要核对")
         transition(path,task,"sending","saved",url=url)
+    except DraftUrlConflict as exc:
+        transition(path,task,"sending","unknown",str(exc))
     except Exception:
         transition(path,task,"sending","unknown","草稿请求已发出，请到指定账号的知乎草稿箱核对")
         raise

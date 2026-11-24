@@ -13,6 +13,7 @@ const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
 const scheduleState = z.enum(['ready','running','done','failed','paused','cancelled','unconfirmed']).optional().describe('模拟排期状态，paused 表示所属批次暂停的排队任务，unconfirmed 表示冻结稿待核对回执')
 const selectionKey = z.string().regex(/^(url|file)-[a-f0-9]{64}$/)
 const selectionTitle = z.string().min(1).max(8192)
+const selectionSource = z.string().url().max(4096).describe('目录返回的规范化公众号原文链接，用于同批跨目录去重')
 const reprintRule = z.object({
   gap:z.number().int().min(1).max(86400), account_cap:z.number().int().min(1).max(1000),
   platform_cap:z.number().int().min(1).max(10000), start_hour:z.number().int().min(0).max(23),
@@ -46,10 +47,10 @@ tool('reprint_settings','读取管理台保存的常用转载账号、文末链�
 tool('library_match_links','按原文链接查找已下载文章。每行返回匹配、同源多目录、未匹配、无效或重复结果。确认目录后可将匹配项交给 reprint_prepare_saved 或 reprint_prepare。',{
   urls:z.array(z.string()).min(1).max(100),expected_root:z.string().optional()
 },args=>api('library/match-links',args))
-tool('reprint_prepare','按选定目录创建转载批次并返回批次编号。将 library_list 的 title 与 selection_key 按目录传入 selections，可核对后台实际读取的文章来源。batch_status 查询进度，request_id 用于去重',{
+tool('reprint_prepare','按选定目录创建转载批次并返回批次编号。从 library_list 复制 title、selection_key（填入 key）及已识别的 source。相同 source 使用先选目录。batch_status 查询进度，request_id 用于重试。',{
   request_id:admission.request_id,directories:z.array(z.string()).min(1).max(100),
   expected_root:z.string().optional().describe('上次 library_list 返回的 root，用于核对选稿目录'),
-  selections:z.record(z.string(),z.object({key:selectionKey,title:selectionTitle})).optional(),
+  selections:z.record(z.string(),z.object({key:selectionKey,title:selectionTitle,source:selectionSource.nullish()})).optional(),
   targets:z.array(z.object({platform:z.enum(['zhihu','toutiao']),account:target.shape.account})).min(1).max(28),
   destination:z.string().url(),rules:reprintRule,
   links:z.object(Object.fromEntries(['zhihu','toutiao'].map(p=>[p,z.discriminatedUnion('mode',[
@@ -60,15 +61,15 @@ tool('reprint_prepare','按选定目录创建转载批次并返回批次编号�
 tool('reprint_prepare_saved','按管理台已保存的常用设置生成本地待审转载批次。先从 reprint_settings 取得 revision，从 library_list 取得 root 并选择 items。请求超时后用相同 request_id 和相同参数重试可找回原批次。返回管理台审核入口。',{
   request_id:admission.request_id,saved_revision:jobId,
   root:z.string().min(1),items:z.array(z.object({
-    directory:z.string().min(1),title:selectionTitle,selection_key:selectionKey
+    directory:z.string().min(1),title:selectionTitle,selection_key:selectionKey,source:selectionSource.nullish()
   })).min(1).max(100)
 },async ({request_id,saved_revision,root,items})=>{
   const selected=new Map()
   for(const item of items){
     const earlier=selected.get(item.directory)
-    if(earlier && (earlier.key!==item.selection_key || earlier.title!==item.title))
+    if(earlier && (earlier.key!==item.selection_key || earlier.title!==item.title || earlier.source!==(item.source??undefined)))
       throw new Error('同一目录含有不同版本的选稿记录，请重新读取目录并选稿')
-    selected.set(item.directory,{title:item.title,key:item.selection_key})
+    selected.set(item.directory,{title:item.title,key:item.selection_key,...(item.source?{source:item.source}:{})})
   }
   const result=await api('reprints',{request_id,saved_revision,expected_root:root,
     directories:items.map(item=>item.directory),selections:Object.fromEntries(selected)})

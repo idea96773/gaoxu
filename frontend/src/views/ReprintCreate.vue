@@ -47,10 +47,12 @@
       <span>{{page}} / {{pageCount}} 页 · 共 {{filtered.length}} 篇</span>
       <el-button size="small" :disabled="page>=pageCount" @click="page++">下一页</el-button>
     </nav>
+    <p v-if="duplicateCount" role="status">已选 {{dirs.length}} 个目录，其中 {{duplicateCount}} 个是同一原文的其他下载。将按勾选顺序读取 {{dirs.length-duplicateCount}} 篇；可展开清单更换保留的目录。</p>
     <details v-if="dirs.length"><summary>查看已选清单（{{dirs.length}} / 100）</summary>
       <div v-for="entry in selection" :key="entry.directory" class="catalog-row">
         <span>{{entry.title || entry.directory}}</span>
-        <small>{{entry.source_name || entry.directory}}{{entry.problem?' · '+entry.problem:''}}</small>
+        <small>{{entry.directory}}{{entry.problem?' · '+entry.problem:''}}</small>
+        <small v-if="entry.duplicateOf">同一原文，将使用 {{entry.duplicateOf}}</small>
         <el-button link @click="dirs=dirs.filter(dir=>dir!==entry.directory)">移出</el-button>
       </div>
       <el-button link @click="dirs=[]">清空选稿</el-button>
@@ -129,11 +131,18 @@ watch(dirs,chosenDirs=>{
     if(!marked.has(dir) && item)marked.set(dir,{directory:dir,title:item.title,source_name:item.source_name,key:item.selection_key})
   }
 },{flush:'sync'})
-const selection=computed(()=>dirs.value.map(directory=>{
-  const entry=marked.get(directory),current=byDirectory.value.get(directory)
-  const problem=!current?'目录不可用':!entry?.key || current.selection_key!==entry.key?'文章标识已变化':''
-  return {...entry,directory,problem}
-}))
+const selection=computed(()=>{
+  const seen=new Map()
+  return dirs.value.map(directory=>{
+    const entry=marked.get(directory),current=byDirectory.value.get(directory)
+    const problem=!current?'目录不可用':!entry?.key || current.selection_key!==entry.key?'文章标识已变化':''
+    const source=problem?null:current.source
+    const duplicateOf=seen.get(source)
+    if(source && !duplicateOf)seen.set(source,directory)
+    return {...entry,directory,problem,source,duplicateOf}
+  })
+})
+const duplicateCount=computed(()=>selection.value.filter(entry=>entry.duplicateOf).length)
 const unavailable=computed(()=>selection.value.filter(item=>item.problem).length)
 const invalidRange=computed(()=>fromDay.value && toDay.value && fromDay.value>toDay.value)
 const states={ready:'已排期',running:'交付中',done:'已模拟交付',failed:'交付失败'}
@@ -357,7 +366,8 @@ async function submit(){
     if(pending.value && await findPending())return
     if(!pending.value){
       if(unavailable.value)throw Error('选稿与当前目录不一致，请重新核对')
-      const selections=Object.fromEntries(selection.value.map(item=>[item.directory,{key:item.key,title:item.title}]))
+      const selections=Object.fromEntries(selection.value.map(item=>[item.directory,
+        {key:item.key,title:item.title,...(item.source?{source:item.source}:{})}]))
       const data={directories:[...dirs.value],expected_root:root.value,selections,...options()}
       pending.value={id:crypto.randomUUID(),form:JSON.stringify(editState()),data:JSON.parse(JSON.stringify(data))}
       persist()

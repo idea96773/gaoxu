@@ -187,7 +187,7 @@ def match_links(path,root,data,*,include_catalog=False):
     by_source={}
     for entry in entries:
         if entry["source"]:
-            choice={k:entry[k] for k in ("directory","title","selection_key")}
+            choice={k:entry[k] for k in ("directory","title","selection_key","source")}
             by_source.setdefault(entry["source"],[]).append(choice)
     matches=[]
     first={}

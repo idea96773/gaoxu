@@ -789,6 +789,40 @@ class Reprint(unittest.TestCase):
         self.assertEqual(toutiao["account"],"乙")
         self.assertEqual(toutiao["edition_sha"],self.client.get(BASE+"jobs/"+str(toutiao["job"])).json["delivery"]["sha"])
 
+    def test_directory_copies_share_one_review_and_frozen_delivery_per_platform(self):
+        import shutil
+        first=self.source(41)
+        other=self.source(42)
+        copy="另存/优先采用这份"
+        shutil.copytree(self.root/first,self.root/copy)
+        md=self.root/copy/"正文.md"
+        md.write_text(md.read_text(encoding="utf-8").replace("本地正文","优先版本").replace("test-export-41)",
+                      "test-export-41?scene=2)"),encoding="utf-8")
+        catalog=self.client.get(BASE+"library").json
+        marks={r["directory"]:dict(source=r["source"],title=r["title"],key=r["selection_key"]) for r in catalog["items"]}
+        data=dict(request_id="copies",targets=self.targets,directories=[copy,other,first,copy],
+                  expected_root=catalog["root"],selections=marks)
+        # A mismatched identity must not suppress an unrelated original.
+        wrong=marks|{other:marks[other]|dict(source=marks[copy]["source"])}
+        self.assertEqual(self.client.post(BASE+"reprints",json=data|dict(selections=wrong)).status_code,400)
+        bid=self.client.post(BASE+"reprints",json=data).json["id"]
+        self.assertEqual(self.client.post(BASE+"reprints",json=data).json["id"],bid)
+        batch=self.batch(bid)
+        self.assertEqual(batch["counts"],dict(preparing=2,duplicate=2))
+        self.assertEqual([r["owner"] for r in batch["reviews"]],[None,None,batch["reviews"][0]["id"],batch["reviews"][0]["id"]])
+        self.assertEqual(sum(bool(r["prepare_job"]) for r in batch["reviews"]),2)
+        self.prepare()
+        primary,peer,*copies=self.batch(bid)["reviews"]
+        preview=self.client.get(BASE+f"reprints/{bid}/{primary['id']}?platform=zhihu").json
+        self.assertIn("优先版本",preview["snapshot"]["text"])
+        self.approve(bid,[primary,peer])
+        result=self.batch(bid)
+        self.assertEqual(len(result["deliveries"]),4)
+        ids=[a["id"] for a in result["reviews"][0]["assignments"]]
+        for row in result["reviews"][2:]:
+            self.assertEqual([a["id"] for a in row["assignments"]],ids)
+            self.assertTrue(all(a["reused"] for a in row["assignments"]))
+
     def test_duplicate_directories_count_input_rows_but_share_work(self):
         dirs=[self.source(i) for i in range(90)]
         bid=self.create(dirs+dirs[:10])

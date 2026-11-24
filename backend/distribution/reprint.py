@@ -161,8 +161,11 @@ def create(path,root,data):
         for mark in selections.values():
             if (not isinstance(mark,dict) or not isinstance(mark.get("title"),str) or not mark["title"].strip()
                     or len(mark["title"])>8192 or not isinstance(mark.get("key"),str)
-                    or not re.fullmatch(r"(url|file)-[0-9a-f]{64}",mark["key"]) or set(mark)!={"title","key"}):
+                    or not re.fullmatch(r"(url|file)-[0-9a-f]{64}",mark["key"]) or set(mark)-{"title","key","source"}):
                 raise ValueError("选稿记录无效，请重新读取目录")
+            if mark.get("source") is not None and (not isinstance(mark["source"],str) or not mark["source"] or
+                    len(mark["source"])>4096 or canonicalize(mark["source"])!=mark["source"]):
+                raise ValueError("选稿原文标识无效，请重新读取目录")
         identity.append({"selections":selections})
     fingerprint=digest(compact(identity))
     def previous(db):
@@ -192,22 +195,27 @@ def create(path,root,data):
             db.execute("INSERT INTO reprint_link_rules VALUES(?,?)",(bid,compact(settings["links"])))
         owners={}
         for line,directory in enumerate(dirs,1):
-            if directory in owners:
-                original,original_line=owners[directory]
+            mark=selections[directory] if selections is not None else {}
+            source=mark.get("source")
+            if source and mark["key"]!=selection_key(root,directory,"url",source):
+                raise ValueError("原文链接与目录选稿记录不一致，请重新读取目录")
+            identity=("url",source) if source else ("directory",directory)
+            title=mark.get("title") or PurePosixPath(directory).name or directory
+            if identity in owners:
+                original,original_line,original_directory=owners[identity]
+                reason="同一目录重复提交" if directory==original_directory else "该目录与先选目录的公众号原文相同"
                 rid=db.execute("""INSERT INTO rows(batch,line,url,kind,owner,note)
                     VALUES(?,?,?,'duplicate',?,?)""",
-                    (bid,line,directory,original,f"同一目录重复提交，处理进度见第 {original_line} 行。")).lastrowid
-                db.execute("INSERT INTO reprint_reviews VALUES(?,?,'duplicate','','null')",
-                           (rid,PurePosixPath(directory).name or directory))
+                    (bid,line,directory,original,f"{reason}，处理进度见第 {original_line} 行。")).lastrowid
+                db.execute("INSERT INTO reprint_reviews VALUES(?,?,'duplicate','','null')",(rid,title))
                 continue
             rid=db.execute("INSERT INTO rows(batch,line,url,kind) VALUES(?,?,?,'reprint')",
                            (bid,line,directory)).lastrowid
-            owners[directory]=(rid,line)
+            owners[identity]=(rid,line,directory)
             db.execute("INSERT INTO reprint_sources VALUES(?,?,?)",(rid,str(Path(root).absolute()),directory))
             if selections is not None:
                 db.execute("INSERT INTO reprint_selections VALUES(?,?)",(rid,selections[directory]["key"]))
-            db.execute("INSERT INTO reprint_reviews VALUES(?,?, 'preparing','','null')",
-                       (rid,selections[directory]["title"] if selections is not None else PurePosixPath(directory).name or directory))
+            db.execute("INSERT INTO reprint_reviews VALUES(?,?, 'preparing','','null')",(rid,title))
             enqueue(db,rid,"reprint_prepare",now)
         return bid
 

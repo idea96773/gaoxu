@@ -14,7 +14,10 @@
     <p v-else-if="bridge.check_only && account">账号已识别。准备保存草稿时，关闭核对模式，再以草稿交付模式启动。</p>
     <div v-if="jobId && (bridge.phase==='offline' || bridge.check_only || bridge.job_id!==jobId)">
       <p>仅处理本稿时，{{bridge.online?'先按 Ctrl+C 关闭当前草稿桥，再':''}}双击「启动知乎草稿助手.bat」，选择 2，输入交付任务编号 <strong>{{jobId}}</strong>。</p>
-      <details><summary>PowerShell 启动命令</summary><code>.\scripts\start-zhihu-drafts.ps1 -JobId {{jobId}}</code></details>
+      <details><summary>PowerShell 命令</summary>
+        <p>只查看本稿　<code>.\scripts\start-zhihu-drafts.ps1 -InspectJob {{jobId}}</code></p>
+        <p>启动单篇助手　<code>.\scripts\start-zhihu-drafts.ps1 -JobId {{jobId}}</code></p>
+      </details>
     </div>
   </div>
 </template>

@@ -160,7 +160,7 @@ def run_task(path,task,bridge):
         raise
 
 
-def serve_bridge(path,port,extension_id,token,check_only=False,job_id=None):
+def serve_bridge(path,port,extension_id,token,check_only=False,job_id=None,expected_sha=None):
     from websockets.sync.server import serve
     gate=threading.Lock()
     session=uuid.uuid4().hex
@@ -176,7 +176,7 @@ def serve_bridge(path,port,extension_id,token,check_only=False,job_id=None):
                 uid,name=bridge.identity()
                 confirmed=True
                 heartbeat(path,uid,name,session=session)
-                task=claim(path,uid,job_id) if uid and not check_only else None
+                task=claim(path,uid,job_id,expected_sha) if uid and not check_only else None
                 if task:
                     heartbeat(path,uid,name,session=session,phase="working")
                     run_task(path,task,bridge)
@@ -193,6 +193,8 @@ def serve_bridge(path,port,extension_id,token,check_only=False,job_id=None):
     if job_id is not None:
         with transaction(path,False) as db:
             row=frozen_reprint.source(db,job_id,platform="zhihu")
+            if expected_sha and row["sha"]!=expected_sha:
+                raise ValueError("任务冻结版本与管理台不一致，请重新核对稿件")
             if row["control"]=="cancelled" or row["state"]=="cancelled":
                 raise ValueError("所选任务已取消，请重新选择知乎转载任务")
     with instance_lock(str(path)+".draft-worker.lock"), serve(handle,"127.0.0.1",port,origins=["chrome-extension://"+extension_id]) as server:
@@ -216,8 +218,11 @@ if __name__=="__main__":
     parser.add_argument("--port",type=int,default=9537)
     parser.add_argument("--extension-id",required=True)
     parser.add_argument("--check-only",action="store_true")
+    parser.add_argument("--expected-sha",help="管理台返回的单篇冻结版本摘要")
     parser.add_argument("--job",type=int,help="只处理这个已冻结的知乎转载交付任务编号")
     args=parser.parse_args()
+    if args.expected_sha and (args.job is None or not re.fullmatch(r"[0-9a-f]{64}",args.expected_sha)):
+        parser.error("冻结版本摘要须与指定的任务编号一起使用")
     if not re.fullmatch(r"[a-p]{32}",args.extension_id):
         parser.error("请输入 Chrome 扩展管理页显示的扩展 ID")
     if args.job is not None and not 1<=args.job<=2**63-1:
@@ -226,6 +231,6 @@ if __name__=="__main__":
     if not secret:
         parser.error("需要扩展连接 Token")
     try:
-        serve_bridge(args.db,args.port,args.extension_id,secret,args.check_only,args.job)
+        serve_bridge(args.db,args.port,args.extension_id,secret,args.check_only,args.job,args.expected_sha)
     except ValueError as exc:
         parser.exit(1,f"{exc}\n")

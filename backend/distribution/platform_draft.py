@@ -2,6 +2,7 @@
 import json
 import re
 import time
+from pathlib import Path
 
 from urllib.parse import urlsplit
 
@@ -140,6 +141,13 @@ def register(api,path,body):
     def platform_draft_info(job):
         require_local()
         with transaction(path,False) as db:
+            if request.args.get("launch")=="1":
+                frozen=source(db,job)
+                if frozen["control"]=="cancelled" or frozen["state"]=="cancelled":
+                    raise ValueError("此任务已取消，请重新选择知乎转载任务")
+                return jsonify(application="gaoxu",database=str(Path(path).resolve()),job=job,
+                               title=json.loads(frozen["snapshot"])["title"],sha=frozen["sha"],
+                               account=frozen["account"],slot=frozen["slot"])
             record=db.execute("SELECT * FROM platform_drafts WHERE job=?",(job,)).fetchone()
             row=db.execute("""SELECT j.account,b.control,f.sha FROM jobs j JOIN frozen_deliveries f ON f.job=j.id JOIN rows r ON r.id=j.row_id
                 JOIN batches b ON b.id=r.batch WHERE j.id=? AND j.platform='zhihu'""",(job,)).fetchone()
@@ -254,11 +262,12 @@ def register(api,path,body):
         return jsonify(ok=True)
 
 
-def claim(path,user_id,job_id=None):
+def claim(path,user_id,job_id=None,expected_sha=None):
     with transaction(path) as db:
         row=db.execute("""SELECT t.* FROM platform_drafts t JOIN jobs j ON j.id=t.job JOIN rows r ON r.id=j.row_id
              JOIN batches b ON b.id=r.batch WHERE t.state='queued' AND t.user_id=? AND b.control='active'
-             AND j.state!='cancelled' AND (? IS NULL OR t.job=?) ORDER BY t.id LIMIT 1""",(user_id,job_id,job_id)).fetchone()
+             AND j.state!='cancelled' AND (? IS NULL OR t.job=?) AND (? IS NULL OR t.sha=?)
+             ORDER BY t.id LIMIT 1""",(user_id,job_id,job_id,expected_sha,expected_sha)).fetchone()
         if not row:
             return None
         if not rights.permits(rights.current(db,row["job"]),row["sha"],row["user_id"]):

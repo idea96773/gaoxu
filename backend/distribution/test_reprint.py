@@ -629,8 +629,12 @@ class Reprint(unittest.TestCase):
             self.assertEqual(self.client.get(accounts).json["bridge"]["job_id"],selected["id"])
             self.assertIn("仅处理任务",queue(older).json["error"])
             self.assertEqual(queue(selected).status_code,200)
+            launch=self.client.get(endpoint(selected)+"?launch=1").json
+            self.assertEqual((launch["database"],launch["sha"],launch["job"],launch["account"]),
+                             (str(self.path.resolve()),selected["sha"],selected["id"],"模拟A"))
             self.assertIsNone(claim_draft(self.path,"other",selected["id"]))
-            self.assertEqual(claim_draft(self.path,"fixture",selected["id"])["job"],selected["id"])
+            self.assertIsNone(claim_draft(self.path,"fixture",selected["id"],older["sha"]))
+            self.assertEqual(claim_draft(self.path,"fixture",selected["id"],launch["sha"])["job"],selected["id"])
             self.assertIsNone(claim_draft(self.path,"fixture",selected["id"]))
             self.assertEqual(self.client.get(endpoint(older)).json["record"]["state"],"queued")
         self.assertIsNone(self.client.get(accounts).json["bridge"]["job_id"])

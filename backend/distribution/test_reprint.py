@@ -96,7 +96,8 @@ class Reprint(unittest.TestCase):
         self.prepare()
         rows=self.batch(bid)["reviews"]
         items=[dict(id=r["id"],sha=r["sha"],revision=r["revision"],expected_prior={}) for r in rows]
-        items[1]["expected_accounts"]={"zhihu":"模拟B","toutiao":"已变更"}
+        items[1].update(expected_accounts={"zhihu":"模拟B","toutiao":"模拟B"},
+                        expected_slots={"zhihu":1,"toutiao":1})
         def submit(selected):
             return self.client.post(BASE+f"reprints/{bid}/approve",json=dict(approved=True,background=True,items=selected)).json["items"]
         received=submit(items)
@@ -121,13 +122,13 @@ class Reprint(unittest.TestCase):
             execute(self.path,ticket,stamp+31)
         batch=self.batch(bid)
         self.assertEqual([r["state"] for r in batch["reviews"]],["approved","pending","approved"])
-        self.assertEqual([j["account"] for j in batch["reviews"][2]["assignments"]],["模拟B","模拟B"])
+        self.assertEqual([j["account"] for j in batch["reviews"][2]["assignments"]],["模拟A","模拟A"])
         self.assertEqual(len(batch["deliveries"]),4)
         self.assertEqual(batch["reviews"][1]["assignments"],[])
-        self.assertIn("账号已变化",batch["reviews"][1]["schedule_failure"])
+        self.assertIn("未来一年",batch["reviews"][1]["schedule_failure"])
         replay=submit(items)
         self.assertIn("error",replay[1])
-        updated=items[1]|dict(previous_attempt=1,expected_accounts={"zhihu":"模拟A","toutiao":"模拟A"})
+        updated=items[1]|dict(previous_attempt=1,expected_slots=None)
         self.assertEqual(submit([updated])[0]["job"],received[1]["job"])
         self.client.post(BASE+f"batches/{bid}/cancel",json={})
         self.assertEqual(self.client.get(BASE+f"jobs/{received[1]['job']}").json["job"]["state"],"cancelled")
@@ -164,8 +165,8 @@ class Reprint(unittest.TestCase):
         bid=self.create(dirs)
         self.prepare()
         first,second,peer=self.batch(bid)["reviews"]
-        decision=dict(id=first["id"],sha=first["sha"],revision=first["revision"],
-                      expected_accounts={"zhihu":"已变更的账号","toutiao":"模拟A"})
+        decision=dict(id=first["id"],sha=first["sha"],revision=first["revision"],expected_prior={},
+                      expected_accounts={"zhihu":"模拟A","toutiao":"模拟A"},expected_slots={"zhihu":1,"toutiao":1})
         received=self.client.post(BASE+f"reprints/{bid}/approve",json=dict(approved=True,background=True,items=[decision]))
         schedule_job=received.json["items"][0]["job"]
         while_scheduling=self.client.post(BASE+f"reprints/{bid}/withdraw",json={"items":[decision]})
@@ -265,8 +266,58 @@ class Reprint(unittest.TestCase):
         unchanged=self.batch(bid)["reviews"][0]
         self.assertEqual((unchanged["state"],unchanged["assignments"]),("pending",[]))
 
+    def test_background_account_turns_are_shared_before_execution_and_replay_is_idempotent(self):
+        batches=[self.create([self.source(i)],str(i)) for i in (81,82,83)]
+        self.prepare()
+
+        def preview(bid):
+            row=self.batch(bid)["reviews"][0]
+            item={k:row[k] for k in ("id","sha","revision")} | {"expected_prior":{}}
+            plan=self.client.post(BASE+f"reprints/{bid}/plan",json={"items":[item]}).json["items"][0]
+            return item | {"expected_accounts":{a["platform"]:a["account"] for a in plan["assignments"]}}
+
+        def accept(bid,item):
+            return self.client.post(BASE+f"reprints/{bid}/approve",
+                                    json=dict(items=[item],approved=True,background=True)).json["items"][0]
+
+        first,second,third=batches
+        first_item=preview(first)
+        stale=preview(second)
+        accepted=accept(first,first_item)
+        self.assertEqual(accepted["state"],"scheduling")
+        self.client=create_app(self.path,self.root).test_client()
+        self.assertEqual(accept(first,first_item),accepted)
+        self.assertIn("账号已变化",accept(second,stale)["error"])
+        second_item=preview(second)
+        self.assertEqual(set(second_item["expected_accounts"].values()),{"模拟B"})
+        self.assertEqual(accept(second,second_item)["state"],"scheduling")
+        self.assertEqual(set(preview(third)["expected_accounts"].values()),{"模拟A"})
+        self.client.post(BASE+f"batches/{first}/cancel",json={})
+        drain(self.path,int(time.time()))
+        jobs=self.batch(second)["deliveries"]
+        self.assertEqual([(j["account"],j["state"]) for j in jobs],[("模拟B","done")]*2)
+        self.assertEqual(self.batch(first)["deliveries"],[])
+        self.assertEqual(set(preview(third)["expected_accounts"].values()),{"模拟A"})
+
+    def test_one_failed_intake_write_does_not_consume_a_turn_or_rollback_peers(self):
+        bid=self.create([self.source(i) for i in (84,85,86)])
+        self.prepare()
+        items=[{k:r[k] for k in ("id","revision","sha")} for r in self.batch(bid)["reviews"]]
+        with transaction(self.path) as db:
+            db.execute(f"""CREATE TRIGGER fixture_refuse_decision BEFORE INSERT ON reprint_schedule_inputs
+                WHEN (SELECT row_id FROM jobs WHERE id=NEW.job)={int(items[1]['id'])}
+                BEGIN SELECT RAISE(ABORT,'fixture'); END""")
+        results=self.client.post(BASE+f"reprints/{bid}/approve",json=dict(
+            approved=True,background=True,items=items)).json["items"]
+        self.assertIn("error",results[1])
+        self.assertEqual([results[i]["state"] for i in (0,2)],["scheduling"]*2)
+        drain(self.path,int(time.time()))
+        first,failed,last=self.batch(bid)["reviews"]
+        self.assertEqual((failed["state"],failed["schedule_job"]),("pending",None))
+        for row,account in ((first,"模拟A"),(last,"模拟B")):
+            self.assertEqual([(j["account"],j["state"]) for j in row["assignments"]],[(account,"done")]*2)
+
     def test_locked_schedule_survives_restart_and_isolates_a_lost_slot(self):
-        self.targets=[dict(platform=p,account="甲") for p in ("zhihu","toutiao")]
         bid=self.create([self.source(31),self.source(32)])
         self.targets=[dict(platform="toutiao",account="乙")]
         other=self.create([self.source(33)],"competing")
@@ -294,6 +345,13 @@ class Reprint(unittest.TestCase):
         self.assertEqual(approve(other,competitor,False)[0]["state"],"approved")
         queued=approve(bid,items,True)
         self.assertEqual(approve(bid,items,True),queued)
+        for job,item in zip(queued,items,strict=True):
+            decision=self.client.get(BASE+f"jobs/{job['job']}").json["review_decision"]
+            self.assertEqual({p:a["account"] for p,a in decision["allocation"].items()},item["expected_accounts"])
+        query=dict(work="scheduling_reprint",platform="zhihu",account="模拟B",start=datetime.fromtimestamp(start,BEIJING).date().isoformat())
+        assignments=self.client.get(BASE+"article-search",query_string=query).json["items"]
+        self.assertEqual([(r["row_id"],r["slot"],r["job_id"]) for r in assignments],[(items[1]["id"],start+30,None)])
+        self.assertIn(dict(platform="zhihu",account="模拟B"),self.client.get(BASE+"article-search/accounts").json["items"])
         self.client=create_app(self.path,self.root).test_client()
         for accepted in queued:
             ticket=claim(self.path,int(time.time()))
@@ -305,8 +363,9 @@ class Reprint(unittest.TestCase):
         self.assertIn("冲突",failed["schedule_failure"])
         jobs=batch["deliveries"]
         self.assertEqual(approved["state"],"approved")
-        self.assertCountEqual([(j["row_id"],j["platform"],j["slot"]) for j in jobs],
-                              [(approved["id"],p,start+30) for p in ("zhihu","toutiao")])
+        self.assertEqual(self.client.get(BASE+"article-search",query_string=query).json["total"],0)
+        self.assertCountEqual([(j["row_id"],j["platform"],j["account"],j["slot"]) for j in jobs],
+                              [(approved["id"],p,"模拟B",start+30) for p in ("zhihu","toutiao")])
 
     def test_restart_after_locked_slots_keeps_original_plan_and_uses_remaining_quota(self):
         bid=self.create([self.source(i) for i in (71,72,73)])
@@ -1738,12 +1797,25 @@ class Reprint(unittest.TestCase):
         bid = self.create([self.source(i) for i in range(100)])
         self.prepare()
         rows = self.batch(bid)["reviews"]
-        result = self.approve(bid,rows)
-        self.assertEqual(Counter(x.get("state") for x in result), {"approved":100})
+        route=BASE+f"reprints/{bid}/"
+        items=[{k:r[k] for k in ("id","revision","sha")} | {"expected_prior":{}} for r in rows]
+        forecast=self.client.post(route+"plan",json=dict(items=items,start_at=int(time.time())+86400)).json["items"]
+        for item,plan in zip(items,forecast,strict=True):
+            item["expected_accounts"]={a["platform"]:a["account"] for a in plan["assignments"]}
+            item["expected_slots"]={a["platform"]:a["slot"] for a in plan["assignments"]}
+        payload=dict(approved=True,background=True,items=items)
+        result=self.client.post(route+"approve",json=payload).json["items"]
+        self.assertEqual(Counter(x.get("state") for x in result),{"scheduling":100})
+        self.client=create_app(self.path,self.root).test_client()
+        self.assertEqual(self.client.post(route+"approve",json=payload).json["items"],result)
+        while tick(self.path,preparation=False):
+            pass
         data = self.batch(bid)
         self.assertEqual(data["counts"], {"processing":100})
         jobs = data["deliveries"]
         self.assertEqual(len(jobs), 200)
+        self.assertEqual({(j["row_id"],j["platform"],j["account"],j["slot"]) for j in jobs},
+                         {(r["id"],a["platform"],a["account"],a["slot"]) for r in forecast for a in r["assignments"]})
         start=max(j["slot"] for j in jobs)+2*86400
         route=BASE+f"batches/{bid}/postpone/"
         preview=self.client.post(route+"preview",json=dict(start=start,items=[dict(id=j["id"]) for j in jobs])).json["items"]

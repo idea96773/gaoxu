@@ -8,7 +8,7 @@
         <option v-for="a in accounts" :key="a">{{a}}</option></select></label>
       <div class="date-row">
         <label>工作进度<select v-model="form.work" @change="switchWork"><option value="">全部进度</option>
-          <option value="pending_reprint">待审转载</option><option value="returned_reprint">审核退回</option><option value="withdrawn_reprint">本批已撤回</option>
+          <option value="pending_reprint">待审转载</option><option value="scheduling_reprint">审核已受理待排期</option><option value="returned_reprint">审核退回</option><option value="withdrawn_reprint">本批已撤回</option>
           <option value="frozen_delivery">全部冻结稿交付任务</option><option value="queued_delivery">冻结稿待交付</option>
           <option value="confirmed_delivery">冻结稿已模拟交付</option></select></label>
         <label>模拟排期状态<select v-model="form.schedule_state"><option value="">全部状态</option>
@@ -34,6 +34,7 @@
       <el-table-column label="平台 / 账号" min-width="135"><template #default="{row}">{{names[row.platform] || '—'}}<div class="secondary">{{row.account || '待分配'}}</div>
         <div v-if="row.recipient_id" class="secondary">知乎接收账号　{{row.recipient_name}}<br>ID　{{row.recipient_id}}</div></template></el-table-column>
       <el-table-column label="计划交付" min-width="147"><template #default="{row}">{{date(row.slot)}}
+        <small v-if="row.state==='scheduling' && row.slot" class="secondary">审核时锁定</small>
         <small v-if="row.execution_slot>row.slot" class="secondary">顺延至 {{date(row.execution_slot)}}</small></template></el-table-column>
       <el-table-column label="实际模拟交付" min-width="137"><template #default="{row}">{{date(row.received)}}</template></el-table-column>
       <el-table-column label="交付状态" width="116"><template #default="{row}"><el-tag :type="colors[row.schedule_state || row.state] || 'info'">{{states[row.schedule_state || row.state] || label(row.schedule_state || row.state)}}</el-tag>
@@ -80,6 +81,7 @@ function syncAccount(){
   }
 }
 function switchWork(){
+  if(form.work==='scheduling_reprint'){form.date_field='imported';form.schedule_state='';form.draft_review='';form.draft_recipient=''}
   if(['pending_reprint','returned_reprint','withdrawn_reprint'].includes(form.work)){form.date_field='imported';form.platform='';form.account='';form.draft_review='';form.draft_recipient='';form.schedule_state=''}
   if(form.work==='queued_delivery')form.date_field='execution'
   if(form.work==='confirmed_delivery')form.date_field='delivered'

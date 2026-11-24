@@ -57,9 +57,13 @@ records AS (
     WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.row_id=t.row_id AND j.stage='publish'
                       AND j.platform=t.platform AND j.account=t.account)
     UNION ALL
-    SELECT q.row_id,NULL,NULL,'review',NULL,
-           CASE WHEN a.control='cancelled' AND q.state!='withdrawn' THEN 'cancelled' ELSE q.state END,NULL,NULL,NULL,NULL
-    FROM reprint_reviews q JOIN articles a ON a.row_id=q.row_id WHERE q.state IN ('preparing','pending','invalid','returned','scheduling','withdrawn')
+    SELECT q.row_id,allocation.key,json_extract(allocation.value,'$.account'),'review',NULL,
+           CASE WHEN a.control='cancelled' AND q.state!='withdrawn' THEN 'cancelled' ELSE q.state END,
+           json_extract(i.decision,'$.expected_slots.'||allocation.key),NULL,NULL,NULL
+    FROM reprint_reviews q JOIN articles a ON a.row_id=q.row_id
+    LEFT JOIN jobs s ON q.state='scheduling' AND s.row_id=q.row_id AND s.stage='reprint_schedule'
+    LEFT JOIN reprint_schedule_inputs i ON i.job=s.id LEFT JOIN json_each(i.decision,'$.allocation') allocation
+    WHERE q.state IN ('preparing','pending','invalid','returned','scheduling','withdrawn')
 )
 SELECT a.row_id,a.batch,a.created,a.control,a.title,x.edition,x.stage,x.platform,x.account,
        x.job_id,x.state,x.slot,x.execution_slot,x.received,p.state AS draft_state,p.updated AS draft_updated,
@@ -132,6 +136,7 @@ def search(db, args, *, include_recipients=False):
     work=args.get("work","")
     if work:
         scopes={"pending_reprint":"stage='review' AND state='pending' AND control='active'",
+                "scheduling_reprint":"stage='review' AND state='scheduling'",
                 "returned_reprint":"stage='review' AND state='returned'",
                 "withdrawn_reprint":"stage='review' AND state='withdrawn'",
                 "frozen_delivery":"stage='deliver'",
@@ -277,6 +282,10 @@ def register(api,path):
         with transaction(path,False) as db:
             choices=db.execute("WITH targets AS ("+TARGETS+") SELECT platform,account FROM targets "
                                "UNION SELECT platform,account FROM jobs WHERE stage IN ('deliver','publish') "
+                               "UNION SELECT a.key,json_extract(a.value,'$.account') FROM reprint_reviews q "
+                               "JOIN jobs j ON j.row_id=q.row_id AND j.stage='reprint_schedule' "
+                               "JOIN reprint_schedule_inputs i ON i.job=j.id JOIN json_each(i.decision,'$.allocation') a "
+                               "WHERE q.state='scheduling' "
                                "ORDER BY platform,account")
             return jsonify(items=[dict(r) for r in choices],platforms=PLATFORMS)
 

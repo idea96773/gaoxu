@@ -180,6 +180,11 @@
         <RescheduleJob v-if="jobOpen && ['publish','deliver'].includes(job.job.stage) && job.job.state==='ready'"
           :key="[job.job.id,job.job.slot,job.job.due].join(':')" :job="job.job" :date="date" :api="api" @saved="rescheduled" />
         <p v-if="job.review_decision">审核受理于 {{date(job.review_decision.confirmed)}} · 第 {{job.review_decision.revision}} 版</p>
+        <p v-for="(assigned,platform) in job.review_decision?.allocation" :key="platform">
+          {{names[platform] || platform}} · {{assigned.account}}
+          <span v-if="assigned.prior_job"> · 沿用任务 #{{assigned.prior_job}}</span>
+          <span v-if="job.review_decision.expected_slots"> · {{date(job.review_decision.expected_slots[platform])}}</span>
+        </p>
         <el-button v-if="job.job.stage==='reprint_schedule' && job.job.state==='failed'" @click="openFailedReview(job.job)">核对这篇转载稿</el-button>
         <el-button v-else-if="job.job.state==='failed'" @click="retry(job.job.id,job.job.attempts)">仅重试此项</el-button>
         <div v-for="h in job.history" :key="h.seq" class="record"><span>#{{h.seq}}　{{date(h.started)}}</span><span>{{label(h.outcome)}} {{h.reason}}</span></div>

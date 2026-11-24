@@ -341,6 +341,8 @@ def register(api, path, read_body):
                               source_url=view["source_url"],link=view["link"])
                 if view.get("kind")=="reprint":
                     bound=db.execute("SELECT job FROM frozen_deliveries WHERE draft=?",(did,)).fetchone()
+                    if "html_image_count" in view:
+                        metadata.update(html_image_count=view["html_image_count"],body_image_count=len(view["images"]))
                     grant=rights.current(db,bound["job"] if bound else None)
                     sha=digest(d["frozen"])
                     metadata["approval"]=origin(db,d["row_id"],d["platform"],sha,d["rev"])

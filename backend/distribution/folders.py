@@ -177,7 +177,7 @@ def parse_folders(parts):
                      markdown_content=body,images=list(dict.fromkeys(images)),cover=images[0] if images else None,
                      media_map={k:"/api/distribution/media/"+v[0] for k,v in assets.items()},
                      missing_images=missing,copyright_status="unknown",mode="local-dry-run")
-            items.append(dict(label=label,url=url or label,canonical=canonical,
+            items.append(dict(label=label,url=url or label,canonical=canonical,html_image_refs=tags.refs if html.strip() else None,
                               markdown_sha=hashlib.sha256(files[group[".md"][0]]).hexdigest(),
                               doc=doc,assets=assets,error=""))
         except (UnicodeError,ValueError) as exc:

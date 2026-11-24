@@ -403,6 +403,50 @@ class Reprint(unittest.TestCase):
         self.approve(bid,[third])
         self.assertEqual(self.batch(bid)["reviews"][2]["assignments"][0]["account"], "模拟A")
 
+    def test_html_image_order_and_repeats_survive_review_retry_and_export(self):
+        from .folders import Images
+        dirs=[self.source(i) for i in (78,79,80)]
+        for directory in dirs[:2]:
+            folder=self.root/directory
+            (folder/"img/b.gif").write_bytes(bytes.fromhex(
+                "47494638396101000100800000000000ffffff2c00000000010001000002024401003b"))
+            with (folder/"正文.md").open("a",encoding="utf-8") as stream:
+                stream.write("\n\n第二段\n\n![第二张](img/b.gif)")
+        # Both bad inputs have the same distinct images in HTML and Markdown.
+        def html_order(directory,names):
+            (self.root/directory/"正文.html").write_text("".join(f'<img src="img/{name}">' for name in names),encoding="utf-8")
+        html_order(dirs[0],["0.png","b.gif","0.png"])
+        html_order(dirs[1],["b.gif","0.png"])
+        bid=self.create(dirs)
+        self.prepare()
+        short,swapped,peer=self.batch(bid)["reviews"]
+        self.assertEqual([r["state"] for r in (short,swapped,peer)],["invalid","invalid","pending"])
+        self.assertIn("HTML 第 3 处配图",short["note"])
+        self.assertIn("顺序不同",swapped["note"])
+        with (self.root/dirs[0]/"正文.md").open("a",encoding="utf-8") as stream:
+            stream.write("\n\n结尾段落\n\n![再次引用](img/0.png)")
+        self.assertEqual(self.client.post(BASE+f"jobs/{short['prepare_job']}/retry",json={}).status_code,200)
+        self.prepare()
+        repaired,still_bad,still_pending=self.batch(bid)["reviews"]
+        self.assertEqual((repaired["state"],still_bad,still_pending),("pending",swapped,peer))
+        snapshot=self.client.get(BASE+f"reprints/{bid}/{repaired['id']}?platform=zhihu").json["snapshot"]
+        self.assertEqual((snapshot["html_image_count"],len(snapshot["images"])),(3,3))
+        self.assertEqual(snapshot["images"][0],snapshot["images"][2])
+        self.assertNotEqual(snapshot["images"][0],snapshot["images"][1])
+        self.approve(bid,[repaired])
+        for job in self.batch(bid)["reviews"][0]["assignments"]:
+            frozen=self.client.get(BASE+f"jobs/{job['id']}/reprint-check").json
+            self.assertEqual(frozen["images"],snapshot["images"])
+            with zipfile.ZipFile(io.BytesIO(self.client.get(BASE+f"editorial/{job['draft']}/export").data)) as archive:
+                markup=archive.read("article.html").decode()
+                metadata=json.loads(archive.read("metadata.json"))
+                self.assertEqual((metadata["html_image_count"],metadata["body_image_count"]),(3,3))
+                images=Images()
+                images.feed(markup)
+                self.assertEqual(images.refs,["img/0.png","img/b.gif","img/0.png"])
+                self.assertLess(markup.index("第二段"),markup.index("结尾段落"))
+                self.assertTrue(markup.rstrip().endswith(f'<a href="{DESTINATION}">延伸阅读</a></p>'))
+
     def test_frozen_reprint_checks_every_asset_before_platform_contact(self):
         from . import rights
         from .zhihu_draft_worker import prepare_content

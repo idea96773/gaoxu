@@ -67,6 +67,8 @@
         <ReprintApproval v-if="previewTask" :info="previewTask.approval" :date="date" />
         <p v-else>本批送审稿 · 第 {{ previewRevision }} 版</p>
         <p>{{view.images.length}} 处配图 · {{view.link.mode==='omit'?'不追加延伸阅读':'读者链接　'+(view.link.short || view.link.destination)}}</p>
+        <p v-if="view.html_image_count != null">已按原 HTML 顺序核对 {{view.html_image_count}} 处配图<span v-if="view.images.length>view.html_image_count">，请核对 Markdown 多出的 {{view.images.length-view.html_image_count}} 处配图</span>。</p>
+        <p v-else-if="view.html_image_count===null">本次按 Markdown 原稿读取配图，下载目录中没有可供比对的 HTML。</p>
         <p v-if="view.link.mode==='short'">目标公众号文章　{{view.link.destination}}</p>
         <ReprintFrame v-if="view.html" title="审核版转载正文" :html="view.html" />
         <article v-else class="plain-preview"><h3>{{view.title}}</h3><p>{{view.text}}</p><img v-for="src in localImages" :key="src" :src="src" alt="冻结稿配图"></article></template>

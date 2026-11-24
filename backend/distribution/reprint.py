@@ -35,7 +35,7 @@ def pools_for(targets):
     return {p:sorted(accounts) for p,accounts in pools.items()}
 
 
-def review_snapshot(doc, destination, platforms, links):
+def review_snapshot(doc, destination, platforms, links, html_image_refs):
     if doc["missing_images"]:
         # Keep local references actionable and avoid echoing remote image URLs into logs.
         missing=doc["missing_images"]
@@ -65,8 +65,18 @@ def review_snapshot(doc, destination, platforms, links):
             asset=files.get(local_path(token.attrGet("href") or ""))
             if asset:
                 token.attrSet("href",asset)
-    if set(images)!=set(doc["images"]):
-        raise ValueError("HTML 与 Markdown 配图不一致，请检查下载文件")
+    if html_image_refs is not None:
+        # Markdown can include additional illustrations. Every HTML occurrence
+        # must still appear in order, including repeated uses of one asset.
+        cursor=0
+        for position,ref in enumerate(html_image_refs,1):
+            asset=media[ref]
+            while cursor<len(images) and images[cursor]!=asset:
+                cursor+=1
+            if cursor==len(images):
+                raise ValueError(f"原 HTML 第 {position} 处配图在 Markdown 中缺失或顺序不同。"
+                                 f"请核对两份文件后重新读取（HTML {len(html_image_refs)} 处，Markdown {len(images)} 处）")
+            cursor+=1
     title=doc["title"]
     source=" · ".join(x for x in (doc["author"],doc["source_name"],doc["publish_time"]) if x)
     credit="转载"+(" · "+source if source else "")
@@ -86,6 +96,7 @@ def review_snapshot(doc, destination, platforms, links):
         return dict(kind="reprint",title=title,text=body+("\n\n延伸阅读："+url if append else ""),
                     source_url=source_url,images=images,html=header+raw+(anchor if append else ""),
                     markdown=markdown,files=files,format="原文转载",
+                    html_image_count=len(html_image_refs) if html_image_refs is not None else None,
                     link=dict(mode=mode,destination=destination if mode!="omit" else "",short=short,label="延伸阅读"))
 
     if not links:
@@ -275,7 +286,7 @@ def prepare_one(path,ticket,now):
             if header["source"] and header["source"]!=parsed_ref:
                 raise ValueError("读取期间原文链接已变化，请等下载完成后重新核对文章")
             check_selected_source(source,parsed_ref,item.get("markdown_sha"),full=True)
-            view=review_snapshot(item["doc"],source["destination"],platforms,json.loads(source["links"] or "{}"))
+            view=review_snapshot(item["doc"],source["destination"],platforms,json.loads(source["links"] or "{}"),item["html_image_refs"])
             payload=compact(view)
             sha=digest(payload)
         except OSError as exc:

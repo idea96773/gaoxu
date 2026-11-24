@@ -58,8 +58,8 @@ records AS (
                       AND j.platform=t.platform AND j.account=t.account)
     UNION ALL
     SELECT q.row_id,NULL,NULL,'review',NULL,
-           CASE WHEN a.control='cancelled' THEN 'cancelled' ELSE q.state END,NULL,NULL,NULL,NULL
-    FROM reprint_reviews q JOIN articles a ON a.row_id=q.row_id WHERE q.state IN ('preparing','pending','invalid','returned','scheduling')
+           CASE WHEN a.control='cancelled' AND q.state!='withdrawn' THEN 'cancelled' ELSE q.state END,NULL,NULL,NULL,NULL
+    FROM reprint_reviews q JOIN articles a ON a.row_id=q.row_id WHERE q.state IN ('preparing','pending','invalid','returned','scheduling','withdrawn')
 )
 SELECT a.row_id,a.batch,a.created,a.control,a.title,x.edition,x.stage,x.platform,x.account,
        x.job_id,x.state,x.slot,x.execution_slot,x.received,p.state AS draft_state,p.updated AS draft_updated,
@@ -133,6 +133,7 @@ def search(db, args, *, include_recipients=False):
     if work:
         scopes={"pending_reprint":"stage='review' AND state='pending' AND control='active'",
                 "returned_reprint":"stage='review' AND state='returned'",
+                "withdrawn_reprint":"stage='review' AND state='withdrawn'",
                 "frozen_delivery":"stage='deliver'",
                 "queued_delivery":"stage='deliver' AND state='ready' AND control='active'",
                 "confirmed_delivery":"stage='deliver' AND state='done' AND received IS NOT NULL"}

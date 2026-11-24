@@ -159,6 +159,61 @@ class Reprint(unittest.TestCase):
             self.assertEqual(sorted((j["row_id"],j["platform"],j["account"],j["slot"]) for j in jobs),
                              sorted((r["id"],a["platform"],a["account"],a["slot"]) for r in plans for a in r.get("assignments",[])))
 
+    def test_withdraw_batch_and_restore_one_review_without_changing_scheduled_peer(self):
+        dirs=[self.source(i) for i in (40,41,42)]
+        bid=self.create(dirs)
+        self.prepare()
+        first,second,peer=self.batch(bid)["reviews"]
+        decision=dict(id=first["id"],sha=first["sha"],revision=first["revision"],
+                      expected_accounts={"zhihu":"已变更的账号","toutiao":"模拟A"})
+        received=self.client.post(BASE+f"reprints/{bid}/approve",json=dict(approved=True,background=True,items=[decision]))
+        schedule_job=received.json["items"][0]["job"]
+        while_scheduling=self.client.post(BASE+f"reprints/{bid}/withdraw",json={"items":[decision]})
+        self.assertIn("error",while_scheduling.json["items"][0])
+        self.assertTrue(tick(self.path,preparation=False))
+        self.assertEqual(self.client.get(BASE+f"jobs/{schedule_job}").json["job"]["state"],"failed")
+        self.approve(bid,[peer])
+        jobs=self.batch(bid)["deliveries"]
+        original=(self.root/dirs[0]/"正文.md").read_bytes()
+        base=BASE+f"reprints/{bid}/"
+        def items(*rows):
+            return {"items":[{k:r[k] for k in ("id","sha","revision")} for r in rows]}
+        def change(action,*rows):
+            return self.client.post(base+action,json=items(*rows)).json["items"]
+        self.client.post(BASE+f"batches/{bid}/pause",json={})
+        stale=first|{"revision":first["revision"]+1}
+        withdrawn=change("withdraw",stale,second,first,peer)
+        self.assertIn("error",withdrawn[0])
+        self.assertIn("error",withdrawn[3])
+        self.assertEqual([r["state"] for r in withdrawn[1:3]],["withdrawn","withdrawn"])
+        self.assertEqual(change("withdraw",first),withdrawn[2:3])
+        self.client=create_app(self.path,self.root).test_client()
+        batch=self.batch(bid)
+        self.assertEqual(batch["counts"]["withdrawn"],2)
+        self.assertEqual(batch["deliveries"],jobs)
+        self.assertEqual(len(batch["reviews"][0]["withdrawals"]),1)
+        self.assertEqual(self.client.get(BASE+f"jobs/{schedule_job}").json["job"]["state"],"cancelled")
+        found=self.client.get(BASE+"article-search",query_string={"work":"withdrawn_reprint","date_field":"imported"}).json
+        self.assertEqual({r["row_id"] for r in found["items"]},{first["id"],second["id"]})
+        self.assertEqual(self.client.get(base+str(first["id"])+"?platform=zhihu").json["sha"],first["sha"])
+        self.client.post(BASE+f"batches/{bid}/resume",json={})
+        self.assertIn("error",self.approve(bid,[first])[0])
+        restored=change("restore-selection",first)
+        self.assertEqual(change("restore-selection",first),restored)
+        self.assertIn("error",change("withdraw",first)[0])
+        self.assertIn("error",self.approve(bid,[first])[0])
+        fresh=self.batch(bid)["reviews"][0]
+        self.assertEqual((fresh["revision"],fresh["state"],fresh["sha"]),(first["revision"]+1,"pending",first["sha"]))
+        self.assertIsNotNone(fresh["withdrawals"][0]["restored_at"])
+        self.approve(bid,[fresh])
+        self.assertEqual(self.client.get(BASE+f"jobs/{schedule_job}").json["job"]["state"],"done")
+        end=self.batch(bid)
+        self.assertEqual(len(end["deliveries"]),4)
+        self.assertEqual(end["reviews"][1]["assignments"],[])
+        self.assertEqual((self.root/dirs[0]/"正文.md").read_bytes(),original)
+        self.client.post(BASE+f"batches/{bid}/cancel",json={})
+        self.assertIn("error",change("restore-selection",second)[0])
+
     def test_postpone_owned_jobs_with_conflicts_and_replay(self):
         from datetime import timedelta
         self.targets=[dict(platform="zhihu",account="甲"),dict(platform="zhihu",account="乙")]

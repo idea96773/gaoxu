@@ -14,7 +14,8 @@
     <label v-if="active && pending.length">新任务最早排期（北京时间，可选）
       <input v-model="startAt" type="datetime-local" :disabled="busy">
     </label>
-    <div class="bar"><label><input type="checkbox" :checked="pending.length>0 && checked.length===pending.length" :disabled="!active || !pending.length" @change="selectAll"> 全选待审核</label>
+    <div class="bar"><label><input type="checkbox" :checked="pending.length>0 && checked.length===pending.length" :disabled="!canSelect || !pending.length || busy" @change="selectAll"> 全选待审核</label>
+      <el-button :disabled="busy || planning || !canSelect || !checked.length" @click="changeSelection(checked,false)">撤回所选</el-button>
       <el-button :loading="planning" :disabled="busy || !active || !checked.length" @click="plan">预览分稿与排期</el-button>
       <el-button type="primary" :loading="busy" :disabled="planning || !active || !approvable.length" @click="approve">{{startAt?'审核并锁定预览排期':'审核通过并自动排期'}}（{{approvable.length}}）</el-button></div>
     <section v-if="forecast" aria-label="分稿与排期预览">
@@ -29,7 +30,7 @@
     </section>
     <el-alert v-if="error" :title="error" type="error" :closable="false"/>
     <el-table :data="batch.reviews" row-key="id">
-      <el-table-column width="50"><template #default="{row}"><input type="checkbox" :aria-label="'选择审核 '+row.title" :disabled="row.state!=='pending'||!active" v-model="ids" :value="reviewKey(row)"></template></el-table-column>
+      <el-table-column width="50"><template #default="{row}"><input type="checkbox" :aria-label="'选择审核 '+row.title" :disabled="row.state!=='pending'||!canSelect||busy" v-model="ids" :value="reviewKey(row)"></template></el-table-column>
       <el-table-column label="转载文章" min-width="190"><template #default="{row}"><b>{{row.line}} · {{row.title}}</b><p v-if="row.note">{{row.note}}</p>
         <p v-if="row.state==='pending' && (row.text_changed || row.structure_changed)">请在预览中核对{{row.text_changed?'正文文字':''}}{{row.text_changed && row.structure_changed?'和':''}}{{row.structure_changed?'排版结构':''}}差异。</p>
         <p v-if="row.state==='returned' && row.returns?.length">退回原因　{{row.returns[0].reason}}</p>
@@ -37,8 +38,13 @@
           <p v-for="entry in row.returns" :key="entry.revision">第 {{entry.revision}} 版 · {{date(entry.returned_at)}}　{{entry.reason}}
             <small v-if="entry.resumed_at"> · {{date(entry.resumed_at)}} {{entry.resumed_as==='directory'?'从目录重读':'原稿重新送审'}}</small></p>
         </details>
-        <template v-if="['pending','scheduling','returned','approved','duplicate'].includes(row.state)">
-          <el-button v-for="p in rowPlatforms(row)" :key="p" type="primary" link @click="preview(row,p)">预览{{names[p]}}{{boundJob(row,p)?'冻结稿':row.state==='returned'?'退回稿':'待审稿'}}</el-button>
+        <details v-if="row.withdrawals?.length"><summary>撤回记录（{{row.withdrawals.length}}）</summary>
+          <p v-for="entry in row.withdrawals" :key="entry.revision">第 {{entry.revision}} 版 · {{date(entry.withdrawn_at)}} 撤回
+            <small v-if="entry.restored_at"> · {{date(entry.restored_at)}} 恢复待审</small></p>
+        </details>
+        <el-button v-if="canSelect && row.state==='withdrawn'" link type="primary" :disabled="busy" @click="changeSelection([row],true)">恢复待审</el-button>
+        <template v-if="['pending','scheduling','returned','withdrawn','approved','duplicate'].includes(row.state)">
+          <el-button v-for="p in rowPlatforms(row)" :key="p" type="primary" link @click="preview(row,p)">预览{{names[p]}}{{boundJob(row,p)?'冻结稿':row.state==='returned'?'退回稿':row.state==='withdrawn'?'撤回稿':'待审稿'}}</el-button>
         </template>
         <el-button v-if="active && row.state==='pending'" link :disabled="busy" @click="changeDecision(row,'return')">退回此稿</el-button>
         <el-button v-if="active && row.state==='returned'" link :disabled="busy" @click="changeDecision(row,'reopen')">原稿重新送审</el-button>
@@ -51,7 +57,7 @@
           <el-button link type="primary" @click="$emit('retry',row.prepare_job,row.prepare_attempts)">重新读取这篇</el-button>
           <el-button v-if="row.can_identify_source" link @click="chooseDirectory(row)">从新目录重试</el-button>
         </template></template></el-table-column>
-      <el-table-column label="进度" width="116"><template #default="{row}">{{row.progress==='pending'?'待审核':row.progress==='returned'?'审核退回':label(row.progress)}}
+      <el-table-column label="进度" width="116"><template #default="{row}">{{row.progress==='pending'?'待审核':row.progress==='returned'?'审核退回':row.progress==='withdrawn'?'本批已撤回':label(row.progress)}}
         <small v-if="row.prepare_retry_at">{{active?'下次可重读 '+date(row.prepare_retry_at):'批次继续后重读'}}</small>
         <small v-if="row.state==='duplicate' && row.delivery_progress"> · 关联任务{{label(row.delivery_progress)}}</small></template></el-table-column>
       <el-table-column label="模拟账号、排期和回执" min-width="230"><template #default="{row}">
@@ -104,6 +110,7 @@ const priorIds=r=>Object.fromEntries((r.prior_jobs || []).map(job=>[job.platform
 const reviewKey=r=>[r.id,r.revision,r.sha,r.previous_attempt??r.schedule_attempts??0,JSON.stringify(r.expected_prior || priorIds(r))].join(':')
 const checked=computed(()=>pending.value.filter(r=>ids.value.includes(reviewKey(r))))
 const active=computed(()=>props.batch.control==='active')
+const canSelect=computed(()=>active.value || props.batch.control==='paused')
 const moving=ref(false),moveTarget=ref(null),moveDir=ref(''),moveRoot=ref(''),moveOptions=ref([]),moveError=ref(''),loadingDirs=ref(false)
 watch(()=>props.batch.id,()=>{moving.value=false;moveTarget.value=null})
 async function chooseDirectory(row){
@@ -152,9 +159,26 @@ const pool=computed(()=>Object.entries(props.names).flatMap(([p,label])=>{
   return accounts.length?[label+' · '+accounts.join('、')]:[]
 }).join('　/　'))
 function selectAll(e){ids.value=e.target.checked?pending.value.map(reviewKey):[]}
+async function changeSelection(rows,restore){
+  const bid=props.batch.id,items=rows.map(({id,sha,revision})=>({id,sha,revision}))
+  if(!restore){
+    try{await ElMessageBox.confirm('将所选 '+items.length+' 篇移出本批待审清单？如需继续处理，可在原行恢复待审。','撤回待审稿',
+      {confirmButtonText:'确认撤回',cancelButtonText:'返回'})}catch{return}
+  }
+  busy.value=true;error.value=''
+  try{
+    const result=await props.api('reprints/'+bid+'/'+(restore?'restore-selection':'withdraw'),{items})
+    const failed=result.items.filter(r=>r.error)
+    error.value=failed.map(r=>'#'+r.id+' '+r.error).join('；')
+    const applied=new Set(result.items.filter(r=>!r.error).map(r=>r.id))
+    ids.value=ids.value.filter(key=>!applied.has(Number(key.split(':')[0])))
+    if(applied.size)ElMessage.success(restore?'已恢复待审，核对后可重新审核':'本批已撤回 '+applied.size+' 篇')
+    emit('refresh')
+  }catch(e){error.value=e.message}finally{busy.value=false}
+}
 const previewKey=ref(''),previewPlatform=ref(''),previewTask=ref(null),previewRevision=ref(0)
 const previewPlatforms=computed(()=>[...new Set(props.batch.targets.map(t=>t.platform))])
-const rowPlatforms=row=>['pending','scheduling','returned'].includes(row.state)?previewPlatforms.value:row.assignments.map(a=>a.platform)
+const rowPlatforms=row=>['pending','scheduling','returned','withdrawn'].includes(row.state)?previewPlatforms.value:row.assignments.map(a=>a.platform)
 const boundJob=(row,p)=>(['pending','scheduling'].includes(row.state)?row.prior_jobs:row.assignments)?.find(job=>job.platform===p)?.id ?? null
 const previewIdentity=(row,p)=>JSON.stringify([props.batch.id,reviewKey(row),row.state,p,boundJob(row,p)])
 const localImages=computed(()=>(view.value?.images || []).filter(src=>typeof src==='string' && /^\/api\/distribution\/media\/[a-f0-9]{64}$/.test(src)))

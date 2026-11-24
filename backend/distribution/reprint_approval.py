@@ -7,7 +7,8 @@ from .store import compact, digest
 # A reread advances the preparation job. Reopening the same bytes advances
 # the review round independently, including for older rows without that job.
 REVIEW_REVISION = """(coalesce(j.revision,1)+(SELECT count(*) FROM reprint_returns h
-    WHERE h.row_id=q.row_id AND h.resumed_as='snapshot'))"""
+    WHERE h.row_id=q.row_id AND h.resumed_as='snapshot')+(SELECT count(*) FROM reprint_withdrawals w
+    WHERE w.row_id=q.row_id AND w.restored_at IS NOT NULL))"""
 
 
 def reviewed_snapshot(row):

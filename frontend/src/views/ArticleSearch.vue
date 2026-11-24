@@ -8,7 +8,7 @@
         <option v-for="a in accounts" :key="a">{{a}}</option></select></label>
       <div class="date-row">
         <label>工作进度<select v-model="form.work" @change="switchWork"><option value="">全部进度</option>
-          <option value="pending_reprint">待审转载</option><option value="returned_reprint">审核退回</option>
+          <option value="pending_reprint">待审转载</option><option value="returned_reprint">审核退回</option><option value="withdrawn_reprint">本批已撤回</option>
           <option value="frozen_delivery">全部冻结稿交付任务</option><option value="queued_delivery">冻结稿待交付</option>
           <option value="confirmed_delivery">冻结稿已模拟交付</option></select></label>
         <label>模拟排期状态<select v-model="form.schedule_state"><option value="">全部状态</option>
@@ -44,7 +44,8 @@
         <router-link v-if="row.stage==='review' && row.state==='pending' && row.control==='active'"
           :to="{query:{batch:row.batch,review_row:String(row.row_id)}}">审核这篇</router-link>
         <router-link v-if="row.state==='scheduling'" :to="{query:{batch:row.batch,review_row:String(row.row_id)}}">查看排期进度</router-link>
-        <router-link v-if="row.state==='returned'" :to="{query:{batch:row.batch,review_row:String(row.row_id)}}">查看退回原因</router-link></template></el-table-column>
+        <router-link v-if="row.state==='returned'" :to="{query:{batch:row.batch,review_row:String(row.row_id)}}">查看退回原因</router-link>
+        <router-link v-if="row.state==='withdrawn'" :to="{query:{batch:row.batch,review_row:String(row.row_id)}}">查看已撤回稿件</router-link></template></el-table-column>
     </el-table>
     <nav v-if="result.total>result.page_size" class="pages" aria-label="查询结果翻页">
       <el-button :disabled="loading || result.page===1" @click="move(-1)">上一页</el-button>
@@ -67,7 +68,7 @@ const empty=()=>({items:[],total:0,page:1,page_size:25})
 const result=ref(empty())
 const kinds={deliver:'冻结稿模拟交付',publish:'模拟流程发布',pipeline:'模拟流程',review:'转载审核'}
 const colors={done:'success',failed:'danger',blocked:'danger',invalid:'danger',ready:'primary',pending:'warning',running:'warning'}
-const states={preparing:'准备转载资料',done:'已模拟交付',pending:'待审核',returned:'审核退回',invalid:'资料异常',blocked:'排期前失败',unscheduled:'待排期'}
+const states={preparing:'准备转载资料',done:'已模拟交付',pending:'待审核',returned:'审核退回',withdrawn:'本批已撤回',invalid:'资料异常',blocked:'排期前失败',unscheduled:'待排期'}
 const platforms=computed(()=>[...new Set([...Object.keys(props.names),...choices.value.map(x=>x.platform)])])
 const accounts=computed(()=>[...new Set(choices.value.filter(x=>!form.platform || x.platform===form.platform).map(x=>x.account))].sort())
 const showZhihu=computed(()=>!form.platform || form.platform==='zhihu')
@@ -79,7 +80,7 @@ function syncAccount(){
   }
 }
 function switchWork(){
-  if(['pending_reprint','returned_reprint'].includes(form.work)){form.date_field='imported';form.platform='';form.account='';form.draft_review='';form.draft_recipient='';form.schedule_state=''}
+  if(['pending_reprint','returned_reprint','withdrawn_reprint'].includes(form.work)){form.date_field='imported';form.platform='';form.account='';form.draft_review='';form.draft_recipient='';form.schedule_state=''}
   if(form.work==='queued_delivery')form.date_field='execution'
   if(form.work==='confirmed_delivery')form.date_field='delivered'
 }

@@ -412,7 +412,9 @@ def approve_one(path,bid,rid,sha,now,revision=1,expected_prior=None,expected_acc
         # Older clients confirm synchronously. A successful new decision also
         # resolves this article's previously failed background scheduling job.
         prior=db.execute("""UPDATE jobs SET state='done',attempts=attempts+1,failure='',finished=?
-            WHERE row_id=? AND stage='reprint_schedule' AND state='failed' RETURNING id,attempts""",(now,rid)).fetchone()
+            WHERE row_id=? AND stage='reprint_schedule' AND (state='failed' OR
+            (state='cancelled' AND EXISTS(SELECT 1 FROM reprint_withdrawals w
+                WHERE w.row_id=jobs.row_id AND w.restored_at IS NOT NULL))) RETURNING id,attempts""",(now,rid)).fetchone()
         if prior:
             decision=dict(sha=sha,revision=revision,expected_prior=expected_prior,expected_accounts=expected_accounts)
             if expected_slots is not None:
@@ -536,7 +538,7 @@ def overview(db,bid,platforms=()):
     items=db.execute(f"""SELECT r.id,r.line,r.note,r.canonical,r.owner,q.title,q.state,q.sha,j.id AS prepare_job,
         {REVIEW_REVISION} revision,j.state AS prepare_state,j.attempts AS prepare_attempts,
         CASE WHEN q.state='preparing' AND j.state='ready' AND j.failure<>'' THEN j.due END AS prepare_retry_at,
-        s.id AS schedule_job,s.attempts AS schedule_attempts,s.failure AS schedule_failure,
+        s.id AS schedule_job,s.attempts AS schedule_attempts,CASE WHEN s.state='failed' THEN s.failure END AS schedule_failure,
         diff.text_changed,diff.structure_changed,(r.canonical IS NOT NULL OR sel.row_id IS NOT NULL) AS can_identify_source,
         (SELECT m.new_directory FROM reprint_source_moves m WHERE m.job=j.id ORDER BY attempt DESC LIMIT 1) AS relocated_directory
         FROM rows r
@@ -562,16 +564,21 @@ def overview(db,bid,platforms=()):
             status="paused"
         by_row.setdefault(a["row_id"],[]).append(dict(a,display_state=status))
     returns={}
+    withdrawals={}
     if platforms:
         for event in db.execute("""SELECT h.* FROM rows r JOIN reprint_returns h ON h.row_id=r.id
                 WHERE r.batch=? ORDER BY h.row_id,h.revision DESC""",(bid,)):
             returns.setdefault(event["row_id"],[]).append(dict(event))
+        for event in db.execute("""SELECT w.row_id,w.revision,w.withdrawn_at,w.restored_at FROM rows r
+                JOIN reprint_withdrawals w ON w.row_id=r.id WHERE r.batch=? ORDER BY w.row_id,w.revision DESC""",(bid,)):
+            withdrawals.setdefault(event["row_id"],[]).append(dict(event))
     prior=existing_deliveries(db,[r["canonical"] for r in items if r["state"] in ("pending","scheduling")]) if platforms else {}
     result=[]
     for r in items:
         row=dict(r)
         if platforms:
             row["returns"]=returns.get(r["id"],[])
+            row["withdrawals"]=withdrawals.get(r["id"],[])
         history=prior.get(row.pop("canonical"),{})
         row["assignments"]=([dict(job,reused=1) for job in by_row.get(row["owner"],[])]
                             if row["owner"] else by_row.get(r["id"],[]))
@@ -677,6 +684,47 @@ def register(api,path,current_root,body):
                 db.execute("UPDATE reprint_reviews SET state='preparing' WHERE row_id=?",(rid,))
         return jsonify(job=row["id"])
 
+    @api.post("/reprints/<bid>/withdraw",defaults={"restore":False})
+    @api.post("/reprints/<bid>/restore-selection",defaults={"restore":True})
+    def withdraw_selection(bid,restore):
+        items=body().get("items")
+        if not isinstance(items,list) or not 1<=len(items)<=100:
+            raise ValueError("每次可操作 1 至 100 篇本批稿件")
+        results=[]
+        now=int(time.time())
+        with transaction(path) as db:
+            for item in items:
+                rid=item.get("id") if isinstance(item,dict) else None
+                if type(rid) is not int or not 0<rid<=2**63-1 or type(item.get("revision")) is not int:
+                    results.append(dict(error="文章编号或审核版次无效"))
+                    continue
+                row=db.execute(f"""SELECT q.sha,q.state,b.control,{REVIEW_REVISION} revision
+                    FROM reprint_reviews q JOIN rows r ON r.id=q.row_id JOIN batches b ON b.id=r.batch
+                    LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare' WHERE b.id=? AND r.id=?""",
+                    (bid,rid)).fetchone()
+                revision=item["revision"]
+                valid=row and row["control"]!="cancelled" and row["sha"] and row["sha"]==item.get("sha")
+                if valid and row["revision"]==revision and not restore and row["state"] in ("pending","withdrawn"):
+                    if row["state"]=="pending":
+                        db.execute("INSERT INTO reprint_withdrawals(row_id,revision,sha,withdrawn_at) VALUES(?,?,?,?)",
+                                   (rid,revision,row["sha"],now))
+                        db.execute("UPDATE reprint_reviews SET state='withdrawn' WHERE row_id=?",(rid,))
+                        db.execute("""UPDATE jobs SET state='cancelled',failure='本批已撤回待审稿'
+                            WHERE row_id=? AND stage='reprint_schedule' AND state='failed'""",(rid,))
+                    results.append(dict(id=rid,state="withdrawn",revision=revision))
+                elif valid and restore and row["revision"]==revision and row["state"]=="withdrawn":
+                    db.execute("UPDATE reprint_withdrawals SET restored_at=? WHERE row_id=? AND revision=? AND restored_at IS NULL",
+                               (now,rid,revision))
+                    db.execute("UPDATE reprint_reviews SET state='pending' WHERE row_id=?",(rid,))
+                    results.append(dict(id=rid,state="pending",revision=revision+1))
+                elif (valid and restore and row["revision"]==revision+1 and row["state"]=="pending" and
+                      db.execute("SELECT 1 FROM reprint_withdrawals WHERE row_id=? AND revision=? AND restored_at IS NOT NULL",
+                                 (rid,revision)).fetchone()):
+                    results.append(dict(id=rid,state="pending",revision=revision+1))
+                else:
+                    results.append(dict(id=rid,error="本批稿件状态或审核版次已变化，请刷新核对"))
+        return jsonify(items=results)
+
     @api.post("/reprints/<bid>/<int:rid>/reread",defaults={"action":"reread"})
     @api.post("/reprints/<bid>/<int:rid>/return",defaults={"action":"return"})
     @api.post("/reprints/<bid>/<int:rid>/reopen",defaults={"action":"reopen"})
@@ -741,7 +789,7 @@ def register(api,path,current_root,body):
                 WHERE r.batch=? AND r.id=?""",(bid,rid)).fetchone()
             if not r:
                 raise KeyError("找不到转载稿")
-            if r["state"] not in ("pending","scheduling","returned","approved","duplicate"):
+            if r["state"] not in ("pending","scheduling","returned","withdrawn","approved","duplicate"):
                 return jsonify(error="这篇文章尚无可审核的稿件"),409
             platform=request.args.get("platform")
             platforms=pools_for(json.loads(r["targets"]))

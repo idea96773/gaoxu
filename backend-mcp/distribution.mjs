@@ -89,7 +89,7 @@ tool('article_search','按标题、平台、账号以及北京时间日期跨批
   title:z.string().optional(),platform:target.shape.platform.optional(),account:z.string().optional(),
   draft_recipient:z.string().optional().describe('已锁定的知乎接收账号昵称或完整 ID'),
   draft_review:z.enum(['unsubmitted_reprint','waiting','saving','failed','awaiting','uncertain','issue','verified','cancelled']).optional(),
-  work:z.enum(['pending_reprint','returned_reprint','frozen_delivery','queued_delivery','confirmed_delivery']).optional(),
+  work:z.enum(['pending_reprint','returned_reprint','withdrawn_reprint','frozen_delivery','queued_delivery','confirmed_delivery']).optional(),
   date_field:z.enum(['scheduled','execution','delivered','imported','draft_updated']).optional(),start:day.optional(),end:day.optional(),page:jobId.optional()
 },a=>api('article-search?'+new URLSearchParams(a)))
 tool('scheduler_status','读取服务心跳、活动批次积压、过期租约与待核对的草稿回执',{},()=>api('runtime-status'))

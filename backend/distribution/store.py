@@ -93,6 +93,9 @@ CREATE TABLE IF NOT EXISTS reprint_returns (
 CREATE TABLE IF NOT EXISTS reprint_approvals (
  row_id INTEGER PRIMARY KEY REFERENCES reprint_reviews(row_id), revision INTEGER NOT NULL,
  review_sha TEXT NOT NULL, approved_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS reprint_withdrawals (
+ row_id INTEGER NOT NULL REFERENCES reprint_reviews(row_id), revision INTEGER NOT NULL, sha TEXT NOT NULL,
+ withdrawn_at INTEGER NOT NULL, restored_at INTEGER, PRIMARY KEY(row_id,revision));
 CREATE TABLE IF NOT EXISTS reprint_schedule_inputs (
  seq INTEGER PRIMARY KEY, job INTEGER UNIQUE NOT NULL REFERENCES jobs(id), decision TEXT NOT NULL, confirmed INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS reprint_schedule_running ON jobs(state) WHERE stage='reprint_schedule' AND state='running';

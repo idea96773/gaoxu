@@ -2084,6 +2084,39 @@ class Reprint(unittest.TestCase):
         self.assertEqual(self.batch(b)["reviews"][0]["prepare_state"],"ready")
         self.assertEqual(self.batch(a)["deliveries"],scheduled)
 
+    def test_failure_selection_spans_pages_and_uses_current_filter_and_attempt(self):
+        a=self.create([self.source(0)]+[f"测试号/文章-{n}" for n in range(1,100)])
+        b=self.create(["其他甲","其他乙","其他丙"],"other-batch")
+        with patch("distribution.engine.time.time",return_value=int(time.time())):
+            self.prepare()
+        self.approve(a,[self.batch(a)["reviews"][0]])
+        frozen=self.batch(a)["deliveries"]
+        endpoint=BASE+"failed-jobs"
+        def select(params):
+            return self.client.get(endpoint+"/selection",query_string=params).json
+        all_failed=select({"stage":"reprint_prepare"})
+        self.assertEqual((all_failed["total"],len(all_failed["items"])),(102,100))
+        page=self.client.get(endpoint,query_string={"stage":"reprint_prepare"}).json
+        self.assertEqual([item["id"] for item in all_failed["items"][:25]],[item["id"] for item in page["items"]])
+        day=datetime.fromtimestamp(page["items"][0]["failed_at"],BEIJING).date().isoformat()
+        chosen=select({"batch":a,"stage":"reprint_prepare","day":day})["items"]
+        self.assertEqual(len(chosen),99)
+        self.assertTrue(all(item["batch"]==a and item["expected_attempt"]==1 for item in chosen))
+        self.assertEqual(select({"stage":"reprint_schedule"})["items"],[])
+        self.assertEqual(select({"day":"2000-01-01"})["items"],[])
+        self.client.post(BASE+f"batches/{b}/pause",json={})
+        self.assertEqual(select({"batch":b})["total"],3)
+        retry=endpoint+"/retry"
+        self.assertTrue(self.client.post(retry,json={"items":chosen[:1]}).json["items"][0]["queued"])
+        result=self.client.post(retry,json={"items":chosen}).json["items"]
+        self.assertEqual([item["queued"] for item in result],[False]+[True]*98)
+        self.assertEqual(select({"batch":a})["total"],0)
+        self.assertEqual(self.batch(a)["deliveries"],frozen)
+        with transaction(self.path,False) as db:
+            count=db.execute("""SELECT count(*) FROM jobs j JOIN rows r ON r.id=j.row_id
+                WHERE r.batch=? AND j.stage='reprint_prepare' AND j.state='ready' AND j.finished IS NULL""",(a,)).fetchone()[0]
+            self.assertEqual(count,99)
+
     def test_100_articles_200_independent_receipts(self):
         bid = self.create([self.source(i) for i in range(100)])
         self.prepare()

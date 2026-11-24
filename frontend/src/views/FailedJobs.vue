@@ -10,15 +10,18 @@
     </div>
     <div class="commands">
       <span>当前失败 {{ result.total }} 项</span>
-      <el-button type="primary" :loading="saving" :disabled="!selected.length || loading" @click="retry">重试所选（{{ selected.length }}）</el-button>
+      <el-button v-if="result.total>result.page_size" :disabled="loading || saving" @click="selectMatching">勾选最近 100 项可重试任务</el-button>
+      <el-button v-if="selected.size" link :disabled="loading || saving" @click="clearSelection">清空勾选</el-button>
+      <el-button type="primary" :loading="saving" :disabled="!selected.size || loading" @click="retry">重试所选（{{ selected.size }}）</el-button>
     </div>
     <el-alert v-if="error" :title="error" type="error" :closable="false"/>
     <el-alert v-if="message" :title="message" :type="skipped.length ? 'warning' : 'success'" @close="message=''"/>
     <ul v-if="message && skipped.length"><li v-for="item in skipped" :key="item.id">任务 #{{item.id}}　{{item.reason}}</li></ul>
     <el-table :data="result.items" v-loading="loading" row-key="id" empty-text="当前条件下没有失败任务">
       <el-table-column width="56">
-        <template #header><input type="checkbox" aria-label="选择本页可重试任务" :checked="allSelected" :disabled="!retryable.length || saving || loading" @change="selectPage"></template>
-        <template #default="{row}"><input v-model="selected" type="checkbox" :aria-label="'选择任务 '+row.id" :disabled="row.stage==='reprint_schedule' || saving || loading" :value="keyOf(row)"></template>
+        <template #header><input type="checkbox" aria-label="选择本页可重试任务" :checked="allSelected" :indeterminate="pageSelected>0 && !allSelected" :disabled="!retryable.length || saving || loading" @change="selectPage"></template>
+        <template #default="{row}"><input type="checkbox" :aria-label="'选择任务 '+row.id" :checked="isSelected(row)"
+          :disabled="!mayRetry(row) || saving || loading || (!isSelected(row) && selected.size>=100)" @change="toggleRow(row,$event.target.checked)"></template>
       </el-table-column>
       <el-table-column label="文章 / 任务" min-width="180"><template #default="{row}">
         <strong>{{row.title}}</strong><small>批次 {{row.batch.slice(0,8)}} · {{label(row.control)}}</small>
@@ -47,34 +50,64 @@ const props=defineProps({api:Function,label:Function,date:Function,batch:String,
 const emit=defineEmits(['job','retried'])
 const stages=['reprint_prepare','reprint_schedule','ingest','normalize','analyze','adapt','check','plan','deliver','publish']
 const empty=()=>({items:[],platforms:{},page:1,page_size:25,total:0})
-const result=ref(empty()),selected=ref([]),day=ref(''),stage=ref('')
+const result=ref(empty()),selected=ref(new Map()),day=ref(''),stage=ref('')
 const loading=ref(false),saving=ref(false),message=ref(''),error=ref(''),skipped=ref([])
-const keyOf=r=>r.id+'-'+r.attempts
-const retryable=computed(()=>result.value.items.filter(r=>r.stage!=='reprint_schedule'))
-const allSelected=computed(()=>retryable.value.length>0 && selected.value.length===retryable.value.length)
+const mayRetry=r=>r.stage!=='reprint_schedule' && r.control!=='cancelled'
+const isSelected=r=>selected.value.get(r.id)?.expected_attempt===r.attempts
+const retryable=computed(()=>result.value.items.filter(mayRetry))
+const pageSelected=computed(()=>retryable.value.filter(isSelected).length)
+const allSelected=computed(()=>retryable.value.length>0 && pageSelected.value===retryable.value.length)
 let sequence=0,disposed=false
-function selectPage(e){selected.value=e.target.checked?retryable.value.map(keyOf):[]}
-async function load(page=1){
-  const seq=++sequence
-  const query=new URLSearchParams({page:String(page)})
+function toggleRow(row,checked){
+  message.value=''
+  if(!checked)selected.value.delete(row.id)
+  else if(selected.value.size<100)selected.value.set(row.id,{id:row.id,batch:row.batch,expected_attempt:row.attempts})
+}
+function clearSelection(){selected.value.clear();message.value=''}
+function selectPage(e){
+  for(const row of retryable.value)toggleRow(row,e.target.checked)
+  if(e.target.checked && !allSelected.value){message.value='本次已勾选 100 项，重试后可继续处理其余任务。';skipped.value=[]}
+  e.target.checked=allSelected.value
+}
+function filters(){
+  const query=new URLSearchParams()
   if(day.value)query.set('day',day.value)
   if(stage.value)query.set('stage',stage.value)
   if(props.batch)query.set('batch',props.batch)
+  return query
+}
+async function selectMatching(){
+  if(loading.value || saving.value)return
+  const seq=++sequence
+  loading.value=true;error.value=''
+  try{
+    const data=await props.api('failed-jobs/selection?'+filters())
+    if(seq!==sequence)return
+    selected.value=new Map(data.items.map(item=>[item.id,item]))
+    skipped.value=[]
+    message.value='当前筛选有 '+data.total+' 项可重试，已勾选 '+data.items.length+' 项。'
+  }catch(e){if(seq===sequence){clearSelection();error.value=e.message}}
+  finally{if(seq===sequence)loading.value=false}
+}
+async function load(page=1){
+  const seq=++sequence
+  const query=filters()
+  query.set('page',page)
   loading.value=true;error.value=''
   try{
     const data=await props.api('failed-jobs?'+query)
     if(seq!==sequence)return
     result.value=data
-    const available=new Set(data.items.map(keyOf))
-    selected.value=selected.value.filter(key=>available.has(key))
+    for(const row of data.items){
+      if(selected.value.has(row.id) && (!mayRetry(row) || !isSelected(row)))selected.value.delete(row.id)
+    }
   }catch(e){
-    if(seq===sequence){error.value=e.message;result.value=empty();selected.value=[]}
+    if(seq===sequence){error.value=e.message;result.value=empty();selected.value.clear()}
   }finally{if(seq===sequence)loading.value=false}
 }
 async function retry(){
   if(saving.value || loading.value)return
-  const items=result.value.items.filter(r=>selected.value.includes(keyOf(r)))
-    .map(r=>({id:r.id,batch:r.batch,expected_attempt:r.attempts}))
+  const items=[...selected.value.values()]
   if(!items.length)return
   saving.value=true;error.value='';message.value=''
   try{
@@ -82,13 +115,13 @@ async function retry(){
     if(disposed)return
     skipped.value=data.items.filter(item=>!item.queued)
     message.value='已重新排队 '+(data.items.length-skipped.value.length)+' 项'+(skipped.value.length?'，跳过 '+skipped.value.length+' 项':'')
-    selected.value=[]
+    selected.value.clear()
     emit('retried')
     await load(result.value.page)
   }catch(e){error.value=e.message}finally{saving.value=false}
 }
-watch([day,stage,()=>props.batch],()=>{selected.value=[];message.value='';load()},{immediate:true})
-watch(()=>props.version,()=>{if(!saving.value)load(result.value.page)})
+watch([day,stage,()=>props.batch],()=>{selected.value.clear();message.value='';load()},{immediate:true})
+watch(()=>props.version,()=>{if(!saving.value && !loading.value)load(result.value.page)})
 onBeforeUnmount(()=>{disposed=true;sequence++})
 </script>
 <style scoped>

@@ -258,7 +258,7 @@ def job_action(path,jid,action,data,now):
                 raise ValueError("只能重试失败的步骤")
             if j["stage"]=="reprint_schedule":
                 raise ValueError("请在「转载审核与分稿」核对当前版本与账号，再确认这一篇的排期")
-            db.execute("UPDATE jobs SET state='ready',due=?,failure='' WHERE id=?",(now,jid))
+            db.execute("UPDATE jobs SET state='ready',due=?,finished=NULL,failure='' WHERE id=?",(now,jid))
             if j["stage"]=="reprint_prepare":
                 db.execute("UPDATE rows SET note='' WHERE id=?",(j["row_id"],))
                 db.execute("UPDATE reprint_reviews SET state='preparing' WHERE row_id=? AND state='invalid'",(j["row_id"],))

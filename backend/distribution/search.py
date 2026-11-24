@@ -198,7 +198,7 @@ def search(db, args, *, include_recipients=False):
     return dict(items=[dict(r) for r in rows],total=total,page=page,page_size=PAGE_SIZE)
 
 
-def failed_jobs(db,args):
+def failed_jobs(db,args,*,selection=False):
     filters=["j.state='failed'"]
     values=[]
     for key,column in (("batch","r.batch"),("stage","j.stage")):
@@ -216,8 +216,14 @@ def failed_jobs(db,args):
         raise ValueError("页码应为正整数") from None
     source=""" FROM jobs j JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch
         LEFT JOIN attempts a ON a.job=j.id AND a.seq=j.attempts """
+    if selection:
+        filters.extend(("j.stage!='reprint_schedule'","b.control!='cancelled'"))
     where=" WHERE "+" AND ".join(filters)
     total=db.execute("SELECT count(*)"+source+where,values).fetchone()[0]
+    if selection:
+        rows=db.execute("SELECT j.id,r.batch,j.attempts AS expected_attempt"+source+where+
+                        " ORDER BY a.ended DESC,j.id DESC LIMIT 100",values)
+        return dict(items=[dict(row) for row in rows],total=total)
     page=min(page,max(1,(total+PAGE_SIZE-1)//PAGE_SIZE))
     rows=db.execute("""SELECT j.id,j.row_id,j.stage,j.account,j.platform,j.attempts,j.failure,
         a.ended AS failed_at,r.batch,b.control,s.directory,
@@ -235,6 +241,11 @@ def register(api,path):
     def list_failed_jobs():
         with transaction(path,False) as db:
             return jsonify(failed_jobs(db,request.args))
+
+    @api.get("/failed-jobs/selection")
+    def select_failed_jobs():
+        with transaction(path,False) as db:
+            return jsonify(failed_jobs(db,request.args,selection=True)),200,{"Cache-Control":"no-store"}
 
     @api.get("/schedule-calendar")
     def schedule_calendar():

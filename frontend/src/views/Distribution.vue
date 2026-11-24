@@ -18,6 +18,22 @@
       <el-button @click="openWork('confirmed_delivery')">今日模拟交付 {{overview.delivered_today}} 份</el-button>
       <el-button @click="failuresOpen=true">跨批次失败待办 {{overview.failed_steps}} 项</el-button>
     </nav>
+    <details v-if="overview" class="platform-summary">
+      <summary>各平台模拟交付统计</summary>
+      <p v-if="!Object.keys(overview.delivery_platforms || {}).length">尚无冻结稿交付任务。</p>
+      <template v-else>
+        <table><caption>全部批次的冻结稿，每个交付任务计一次。成功率按有回执的成功数除以成功与失败数之和计算。</caption>
+          <thead><tr><th scope="col">平台</th><th v-for="title in deliveryColumns" :key="title" scope="col">{{title}}</th><th scope="col">成功率</th></tr></thead>
+          <tbody><tr v-for="(counts,platform) in overview.delivery_platforms" :key="platform">
+            <th scope="row">{{names[platform] || platform}}</th>
+            <td v-for="(title,state) in deliveryColumns" :key="state">
+              <router-link v-if="counts[state]" :to="{query:{view:'search',work:'frozen_delivery',platform,schedule_state:state==='total'?undefined:state,date_field:'execution'}}"
+                :aria-label="(names[platform] || platform)+' '+title+' '+counts[state]+' 份'">{{counts[state]}}</router-link><span v-else>0</span>
+            </td><td>{{counts.success_percent==null?'—':counts.success_percent+'%'}}</td>
+          </tr></tbody>
+        </table>
+      </template>
+    </details>
     <div class="batchbar">
       <label>当前批次</label>
       <el-select v-model="bid" placeholder="请选择批次" @change="selectBatch" style="width:320px">
@@ -202,6 +218,7 @@ const searching=computed(()=>route.query.view==='search')
 const calendarView=computed(()=>route.query.view==='calendar')
 function openCalendar(){
   const query={view:'calendar'}
+  if(route.query.work==='frozen_delivery')query.work='frozen_delivery'
   for(const k of ['batch','platform','account','schedule_state'])if(route.query[k])query[k]=route.query[k]
   if(searching.value && route.query.start)query.month=String(route.query.start).slice(0,7)
   if(searching.value && ['scheduled','execution'].includes(route.query.date_field))query.date_field=route.query.date_field
@@ -210,6 +227,7 @@ function openCalendar(){
 async function leaveSearch(){await router.push({query:bid.value?{batch:bid.value}:{}})}
 const batches=ref([]),names=ref({}),bid=ref(String(route.query.batch||'')),batch=ref(null),error=ref(''),online=ref(false)
 const overview=ref(null)
+const deliveryColumns={total:'任务数',ready:'排队中',running:'交付中',done:'已模拟交付',failed:'失败',paused:'暂停',cancelled:'取消',unconfirmed:'待核对回执'}
 const focusedRow=computed(()=>route.query.batch===batch.value?.id ? String(route.query.review_row || '') : '')
 const reviewBatch=computed(()=>focusedRow.value && batch.value?.reprint
   ? {...batch.value,reviews:batch.value.reviews.filter(row=>String(row.id)===focusedRow.value)} : batch.value)
@@ -397,4 +415,5 @@ p,small{color:var(--text-secondary);line-height:1.65}.heading p{margin:6px 0 0}.
 .record,details{padding:12px 0;border-bottom:1px solid var(--border)}summary{cursor:pointer}pre{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7}
 .pictures{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.pictures img{max-width:100px;max-height:100px}.el-drawer p{overflow-wrap:anywhere}
 @media(max-width:800px){.metrics{grid-template-columns:repeat(3,1fr)}.heading{align-items:flex-start;flex-wrap:wrap}.settings{grid-template-columns:1fr}}
+.platform-summary{margin:10px 0;overflow-x:auto}.platform-summary summary{cursor:pointer;font-weight:600}.platform-summary table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}.platform-summary caption{text-align:left;padding:8px 0;color:var(--el-text-color-secondary)}.platform-summary th,.platform-summary td{padding:6px 9px;text-align:right;border-bottom:1px solid var(--el-border-color-lighter);white-space:nowrap}.platform-summary th:first-child{text-align:left}.platform-summary a{color:var(--el-color-primary)}
 </style>

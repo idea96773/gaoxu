@@ -242,6 +242,54 @@ class Reprint(unittest.TestCase):
             self.assertEqual(overview()["delivered_today"], 1)
             self.assertEqual(results("confirmed_delivery", date_field="delivered", start=today, end=today)["total"], 1)
 
+    def test_global_platform_rates_match_unique_delivery_search_results(self):
+        from .test_workflow import options
+        flow=self.client.post(BASE+"batches",json=options(1,targets=[dict(platform="zhihu",account="模拟")])).json
+        drain(self.path,int(time.time()))
+        pipeline,=self.batch(flow["id"])["publishes"]
+        pipeline_month=datetime.fromtimestamp(pipeline["slot"],BEIJING).strftime("%Y-%m")
+        dirs=[self.source(i) for i in range(10)]
+        bid=self.create(dirs)
+        self.prepare()
+        self.approve(bid,self.batch(bid)["reviews"])
+        repeated=self.create(dirs[:2],"same-sources")
+        self.prepare()
+        self.assertEqual(self.batch(repeated)["counts"],{"duplicate":2})
+        self.client.post(BASE+f"batches/{bid}/pause",json={})
+        with transaction(self.path) as db:
+            jobs=db.execute("""SELECT j.id,j.slot FROM jobs j JOIN rows r ON r.id=j.row_id
+                WHERE j.stage='deliver' AND j.platform='zhihu' AND r.batch=? ORDER BY j.id""",(bid,)).fetchall()
+            for job,receipt in zip(jobs[:4],("simulated-receipt-1","simulated-receipt-2","",None)):
+                db.execute("UPDATE jobs SET state='done',finished=slot,receipt=? WHERE id=?",(receipt,job["id"]))
+            db.execute("UPDATE jobs SET state='done',receipt='missing-time' WHERE id=?",(jobs[4]["id"],))
+            for job,state in zip(jobs[5:8],("failed","running","cancelled")):
+                db.execute("UPDATE jobs SET state=? WHERE id=?",(state,job["id"]))
+        platforms=self.client.get(BASE+"batches?summary=1").json["overview"]["delivery_platforms"]
+        self.assertEqual(platforms["zhihu"],dict(total=10,done=2,unconfirmed=3,failed=1,running=1,
+                                                cancelled=1,paused=2,success_percent=66.7))
+        self.assertEqual(platforms["toutiao"],dict(total=10,paused=10,success_percent=None))
+        for platform,counts in platforms.items():
+            for state,n in counts.items():
+                if state=="success_percent":
+                    continue
+                args=dict(work="frozen_delivery",platform=platform)
+                if state!="total":
+                    args["schedule_state"]=state
+                result=self.client.get(BASE+"article-search",query_string=args).json
+                self.assertEqual(result["total"],n)
+                self.assertEqual(len({row["job_id"] for row in result["items"]}),n)
+                self.assertTrue(all(row["stage"]=="deliver" for row in result["items"]))
+        month=datetime.fromtimestamp(jobs[2]["slot"],BEIJING).strftime("%Y-%m")
+        days=self.client.get(BASE+"schedule-calendar",query_string=dict(month=month,platform="zhihu",
+            schedule_state="unconfirmed")).json["days"]
+        self.assertEqual(sum(day["unconfirmed"] for day in days.values()),sum(
+            datetime.fromtimestamp(j["slot"],BEIJING).strftime("%Y-%m")==month for j in jobs[2:5]))
+        args=dict(month=pipeline_month,platform="zhihu",schedule_state="done")
+        def count_calendar(filters):
+            days=self.client.get(BASE+"schedule-calendar",query_string=filters).json["days"]
+            return sum(sum(day.values()) for day in days.values())
+        self.assertEqual(count_calendar(args),1+count_calendar(args|dict(work="frozen_delivery")))
+
     def test_overview_keeps_an_older_selected_batch_accessible(self):
         bid = self.create([self.source(1)])
         with transaction(self.path) as db:

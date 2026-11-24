@@ -10,7 +10,7 @@ const admission = {account_routing:z.enum(["rotate","all"]).optional(),request_i
 const batchId = z.string().regex(/^[a-f0-9]{32}$/)
 const jobId = z.number().int().positive()
 const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
-const scheduleState = z.enum(['ready','running','done','failed','paused','cancelled']).optional().describe('模拟排期状态，paused 表示所属批次暂停的排队任务')
+const scheduleState = z.enum(['ready','running','done','failed','paused','cancelled','unconfirmed']).optional().describe('模拟排期状态，paused 表示所属批次暂停的排队任务，unconfirmed 表示冻结稿待核对回执')
 const selectionKey = z.string().regex(/^(url|file)-[a-f0-9]{64}$/)
 const selectionTitle = z.string().min(1).max(8192)
 const reprintRule = z.object({
@@ -85,13 +85,14 @@ tool('article_search','按标题、平台、账号以及北京时间日期跨批
   title:z.string().optional(),platform:target.shape.platform.optional(),account:z.string().optional(),
   draft_recipient:z.string().optional().describe('已锁定的知乎接收账号昵称或完整 ID'),
   draft_review:z.enum(['unsubmitted_reprint','waiting','saving','failed','awaiting','uncertain','issue','verified','cancelled']).optional(),
-  work:z.enum(['pending_reprint','returned_reprint','queued_delivery','confirmed_delivery']).optional(),
+  work:z.enum(['pending_reprint','returned_reprint','frozen_delivery','queued_delivery','confirmed_delivery']).optional(),
   date_field:z.enum(['scheduled','execution','delivered','imported','draft_updated']).optional(),start:day.optional(),end:day.optional(),page:jobId.optional()
 },a=>api('article-search?'+new URLSearchParams(a)))
 tool('scheduler_status','读取服务心跳、活动批次积压、过期租约与待核对的草稿回执',{},()=>api('runtime-status'))
 tool('account_list','按平台列出已有分稿目标的账号别名',{},()=>api('article-search/accounts'))
 tool('schedule_calendar','按北京时间月份查看每天的任务状态及数量，可选原排期或预计执行日',{
   schedule_state:scheduleState,
+  work:z.literal('frozen_delivery').optional().describe('仅统计冻结稿交付'),
   month:z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),date_field:z.enum(['scheduled','execution']).optional(),
   platform:target.shape.platform.optional(),account:target.shape.account.optional()
 },args=>api('schedule-calendar?'+new URLSearchParams(args)))
@@ -103,7 +104,7 @@ tool('library_import','导入最多 100 个已列出的本地文章目录并开�
   expected_root:z.string().optional().describe('上次 library_list 返回的 root')
 },a=>api('library',a))
 tool('article_batch_import','以模拟正文处理手工提交的微信链接',{...admission,urls:z.array(z.string()).min(1).max(1000)},a=>api('batches',a))
-tool('dashboard_summary','模拟批次、全局待审转载数、待交付数、今日冻结稿回执数、失败步骤及调度器心跳。compact 可只取汇总和批次索引',{compact:z.boolean().optional()},a=>api(a.compact?'batches?summary=1':'batches'))
+tool('dashboard_summary','模拟批次、全局待审转载数、各平台冻结稿交付状态和成功率、今日冻结稿回执数、失败步骤及调度器心跳。compact 可只取汇总和批次索引',{compact:z.boolean().optional()},a=>api(a.compact?'batches?summary=1':'batches'))
 tool('batch_status','查询三级任务进度及独立失败项',{id:batchId},a=>api('batches/'+a.id))
 tool('batch_control','暂停、继续或取消模拟批次',{id:batchId,action:z.enum(['pause','resume','cancel'])},a=>api('batches/'+a.id+'/'+a.action,{}))
 tool('article_detail','读取指定文章来源、已保存正文、版本及阶段',{id:jobId},a=>api('articles/'+a.id))

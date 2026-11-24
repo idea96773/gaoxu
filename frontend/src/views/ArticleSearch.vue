@@ -9,10 +9,10 @@
       <div class="date-row">
         <label>工作进度<select v-model="form.work" @change="switchWork"><option value="">全部进度</option>
           <option value="pending_reprint">待审转载</option><option value="returned_reprint">审核退回</option>
-          <option value="queued_delivery">冻结稿待交付</option>
+          <option value="frozen_delivery">全部冻结稿交付任务</option><option value="queued_delivery">冻结稿待交付</option>
           <option value="confirmed_delivery">冻结稿已模拟交付</option></select></label>
         <label>模拟排期状态<select v-model="form.schedule_state"><option value="">全部状态</option>
-          <option v-for="s in ['ready','running','done','failed','paused','cancelled']" :key="s" :value="s">{{label(s)}}</option></select></label>
+          <option v-for="s in ['ready','running','done','failed','paused','cancelled','unconfirmed']" :key="s" :value="s">{{label(s)}}</option></select></label>
         <label v-if="showZhihu">知乎接收账号<input v-model.trim="form.draft_recipient" type="search" placeholder="锁定的昵称或完整账号 ID"></label>
         <label v-if="showZhihu">知乎草稿状态<select v-model="form.draft_review"><option value="">全部</option>
           <option value="unsubmitted_reprint">运行中批次 · 尚未建草稿任务的冻结转载稿</option>

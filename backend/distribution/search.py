@@ -8,12 +8,15 @@ from .platform_draft import local_console_request
 from .store import BEIJING, EXECUTION_SLOT, PLATFORMS, transaction
 
 
-SCHEDULE_STATE = "CASE WHEN {control}='paused' AND {state}='ready' THEN 'paused' ELSE {state} END"
+SCHEDULE_STATE = """CASE WHEN {stage}='deliver' AND {state}='done' AND ({received}) IS NULL THEN 'unconfirmed'
+    WHEN {control}='paused' AND {state}='ready' THEN 'paused' ELSE {state} END"""
+RECEIVED = "CASE WHEN j.state='done' AND nullif(j.receipt,'') IS NOT NULL THEN j.finished END"
+JOB_SCHEDULE_STATE = SCHEDULE_STATE.format(stage="j.stage",state="j.state",received=RECEIVED,control="b.control")
 
 
 def selected_schedule_state(args):
     state=args.get("schedule_state","")
-    if state not in ("","ready","running","done","failed","paused","cancelled"):
+    if state not in ("","ready","running","done","failed","paused","cancelled","unconfirmed"):
         raise ValueError("未知的模拟排期状态")
     return state
 
@@ -38,7 +41,7 @@ articles AS MATERIALIZED (
 records AS (
     SELECT j.row_id, j.platform, j.account, j.stage, j.id AS job_id, j.state, j.slot,
            """+EXECUTION_SLOT+""" AS execution_slot,
-           CASE WHEN j.state='done' AND j.receipt IS NOT NULL THEN j.finished END AS received,
+           """+RECEIVED+""" AS received,
            coalesce(d.title,json_extract(v.payload,'$.title')) AS edition
     FROM jobs j LEFT JOIN frozen_deliveries f ON f.job=j.id LEFT JOIN drafts d ON d.id=f.draft
     LEFT JOIN variants v ON j.stage='publish' AND v.row_id=j.row_id AND v.platform=j.platform AND v.revision=j.revision
@@ -61,7 +64,7 @@ records AS (
 SELECT a.row_id,a.batch,a.created,a.control,a.title,x.edition,x.stage,x.platform,x.account,
        x.job_id,x.state,x.slot,x.execution_slot,x.received,p.state AS draft_state,p.updated AS draft_updated,
        coalesce(pin.user_id,p.user_id) AS recipient_id,coalesce(pin.name,p.name) AS recipient_name,
-       CASE WHEN x.job_id IS NOT NULL THEN """+SCHEDULE_STATE.format(control="a.control",state="x.state")+""" END AS schedule_state
+       CASE WHEN x.job_id IS NOT NULL THEN """+SCHEDULE_STATE.format(control="a.control",state="x.state",stage="x.stage",received="x.received")+""" END AS schedule_state
        FROM records x JOIN articles a ON a.row_id=x.row_id LEFT JOIN platform_drafts p ON p.job=x.job_id
        LEFT JOIN zhihu_draft_recipients pin ON pin.job=x.job_id
 """
@@ -79,11 +82,22 @@ def overview(db,now):
          JOIN batches b ON b.id=r.batch WHERE q.state='returned' AND b.control!='cancelled') returned_reprint,
         (SELECT count(*) FROM jobs j JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch
          WHERE j.stage='deliver' AND j.state='ready' AND b.control='active') queued_delivery,
-        (SELECT count(*) FROM jobs WHERE stage='deliver' AND state='done' AND receipt IS NOT NULL
+        (SELECT count(*) FROM jobs WHERE stage='deliver' AND state='done' AND nullif(receipt,'') IS NOT NULL
          AND finished>=? AND finished<?) delivered_today,
         (SELECT count(*) FROM jobs WHERE state='failed') failed_steps""",
         (day_start(today),day_start(today,following=True))).fetchone()
-    return dict(counts)|{"today":today}
+    by_platform={}
+    results=db.execute(f"""SELECT j.platform,{JOB_SCHEDULE_STATE} AS outcome,count(*) AS n
+        FROM jobs j JOIN rows r ON r.id=j.row_id JOIN batches b ON b.id=r.batch
+        WHERE j.stage='deliver' GROUP BY j.platform,outcome ORDER BY j.platform""")
+    for entry in results:
+        by_platform.setdefault(entry["platform"],{})[entry["outcome"]]=entry["n"]
+    for states in by_platform.values():
+        states["total"]=sum(states.values())
+        done=states.get("done",0)
+        terminal=done+states.get("failed",0)
+        states["success_percent"]=round(done*100/terminal,1) if terminal else None
+    return dict(counts)|{"today":today,"delivery_platforms":by_platform}
 
 
 def day_start(value, following=False):
@@ -119,6 +133,7 @@ def search(db, args, *, include_recipients=False):
     if work:
         scopes={"pending_reprint":"stage='review' AND state='pending' AND control='active'",
                 "returned_reprint":"stage='review' AND state='returned'",
+                "frozen_delivery":"stage='deliver'",
                 "queued_delivery":"stage='deliver' AND state='ready' AND control='active'",
                 "confirmed_delivery":"stage='deliver' AND state='done' AND received IS NOT NULL"}
         if work not in scopes:
@@ -224,8 +239,13 @@ def register(api,path):
         mark=EXECUTION_SLOT if calendar_field=="execution" else "j.slot"
         filters=["stage IN ('deliver','publish')",mark+">=?",mark+"<?"]
         values=[start,start+size*86400]
+        work=request.args.get("work","")
+        if work not in ("","frozen_delivery"):
+            raise ValueError("未知的日历任务范围")
+        if work:
+            filters.append("j.stage='deliver'")
         state=selected_schedule_state(request.args)
-        status=SCHEDULE_STATE.format(control="b.control",state="j.state")
+        status=JOB_SCHEDULE_STATE
         if state:
             filters.append(status+"=?")
             values.append(state)

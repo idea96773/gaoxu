@@ -12,6 +12,8 @@
         <option v-for="(name,key) in names" :key="key" :value="key">{{name}}</option></select></label>
       <label>账号 <select :value="account" @change="update({account:$event.target.value})"><option value="">全部账号</option>
         <option v-for="a in accounts" :key="a">{{a}}</option></select></label>
+      <label>任务范围 <select :value="work" @change="update({work:$event.target.value})"><option value="">全部模拟排期</option>
+        <option value="frozen_delivery">冻结稿交付</option></select></label>
       <label>排期状态 <select :value="scheduleState" @change="update({schedule_state:$event.target.value})"><option value="">全部状态</option>
         <option v-for="state in states" :key="state" :value="state">{{label(state)}}</option></select></label>
       <el-button @click="load" :loading="busy">刷新</el-button>
@@ -38,11 +40,12 @@ const emit=defineEmits(['platforms'])
 const router=useRouter(),route=useRoute()
 const calendar=ref(null),error=ref(''),busy=ref(false),choices=ref([])
 const weekdays=['周一','周二','周三','周四','周五','周六','周日']
-const states=['ready','running','done','failed','paused','cancelled']
+const states=['ready','running','done','failed','paused','cancelled','unconfirmed']
 const platform=computed(()=>String(route.query.platform||'')),account=computed(()=>String(route.query.account||''))
 const month=computed(()=>String(route.query.month||calendar.value?.month||''))
 const dateField=computed(()=>route.query.date_field==='scheduled'?'scheduled':'execution')
 const scheduleState=computed(()=>String(route.query.schedule_state||''))
+const work=computed(()=>String(route.query.work||''))
 const accounts=computed(()=>[...new Set(choices.value.filter(x=>!platform.value || x.platform===platform.value).map(x=>x.account))].sort())
 const cells=computed(()=>calendar.value ? Array.from({length:calendar.value.size},(_,i)=>{
   const date=calendar.value.month+'-'+String(i+1).padStart(2,'0')
@@ -54,7 +57,7 @@ let seq=0
 async function load(){
   const n=++seq
   busy.value=true;error.value=''
-  const params=new URLSearchParams({month:String(route.query.month||''),platform:platform.value,account:account.value,date_field:dateField.value,schedule_state:scheduleState.value})
+  const params=new URLSearchParams({month:String(route.query.month||''),platform:platform.value,account:account.value,date_field:dateField.value,schedule_state:scheduleState.value,work:work.value})
   try{const result=await props.api('schedule-calendar?'+params)
     if(seq===n)calendar.value=result
   }catch(e){if(seq===n){error.value=e.message;calendar.value=null}}
@@ -73,7 +76,7 @@ function step(n){
 }
 function openDay(date){
   const query={view:'search',date_field:calendar.value.date_field,start:date,end:date}
-  for(const key of ['platform','account','batch','schedule_state'])if(route.query[key])query[key]=route.query[key]
+  for(const key of ['platform','account','batch','schedule_state','work'])if(route.query[key])query[key]=route.query[key]
   router.push({query})
 }
 watch(()=>route.fullPath,()=>{if(route.query.view==='calendar')load()},{immediate:true})

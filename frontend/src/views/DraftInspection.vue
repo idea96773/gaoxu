@@ -10,6 +10,7 @@
         <summary>对照本次冻结稿的正文、配图和文末链接</summary>
         <ReprintFrame v-if="showPreview" :html="snapshot.html" title="草稿核对用的冻结稿原样"/>
       </details>
+      <DraftClipboardCheck v-if="snapshot.html" :snapshot="snapshot"/>
       <label v-if="!record.url">找到的编辑页地址 <el-input v-model.trim="url" placeholder="https://zhuanlan.zhihu.com/p/…/edit"/></label>
       <p v-if="dismissedReceipt && !record.url && url===dismissedReceipt.edit_url" role="alert">这个地址曾被标记为与本稿不符，请在指定账号中再次核对。</p>
       <div v-for="field in fields" :key="field.key">
@@ -33,6 +34,7 @@
 <script setup>
 import {computed,ref} from 'vue'
 import ReprintFrame from './ReprintFrame.vue'
+import DraftClipboardCheck from './DraftClipboardCheck.vue'
 const props=defineProps({api:Function,path:String,record:Object,receiptUrl:String,dismissedReceipt:Object,entries:Array,snapshot:Object,date:Function})
 const emit=defineEmits(['refresh','recorded'])
 const editing=ref(false),busy=ref(false),error=ref(''),checks=ref({}),url=ref(''),revision=ref(0),state=ref('')

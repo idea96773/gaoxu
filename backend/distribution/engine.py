@@ -285,9 +285,10 @@ def worker(path, concurrency=1, preparation_concurrency=1):
                 logging.exception("成稿队列异常")
                 stopped.wait(2)
     def backup_loop():
-        from .daily_backup import tick as backup_tick
+        from .daily_backup import tick as backup_tick, tick_manual
         while not stopped.is_set():
             try:
+                tick_manual(path)
                 backup_tick(path)
             except Exception:
                 logging.exception("读取或记录自动备份状态失败")

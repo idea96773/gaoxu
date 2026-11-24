@@ -135,7 +135,16 @@ def staging(parent):
     return tempfile.TemporaryDirectory(prefix=".gaoxu-",dir=parent)
 
 
-def create(source,output,*,daily=None):
+def manual_folder(token):
+    if not isinstance(token,str) or not re.fullmatch(r"[0-9]{8}-[0-9]{6}-[0-9a-f]{32}",token):
+        raise ValueError("手动备份编号无效")
+    return "gaoxu-manual-"+token
+
+
+def create(source,output,*,daily=None,manual=None):
+    manual_name=manual_folder(manual) if manual is not None else None
+    if daily and manual_name:
+        raise ValueError("同一次备份只能选择一种保存方式")
     source=source.resolve()
     paths=(source,Path(ledger_path(source)))
     with staging(output) as temp:
@@ -163,8 +172,10 @@ def create(source,output,*,daily=None):
         manifest={"format":1,"created":now.isoformat(),"sha256":{n:checksum(bundle/n) for n in DATABASES}}
         if daily:
             manifest["daily"]=daily
+        if manual:
+            manifest["manual"]=manual
         (bundle/"manifest.json").write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
-        final=output/(daily["day"] if daily else now.strftime("gaoxu-%Y%m%d-%H%M%S-%f"))
+        final=output/(daily["day"] if daily else manual_name or now.strftime("gaoxu-%Y%m%d-%H%M%S-%f"))
         if final.exists():
             raise ValueError("备份目标已存在，请核对目录")
         bundle.rename(final)
@@ -202,6 +213,8 @@ def restore(bundle,destination):
                     AND r.id=(SELECT max(x.id) FROM reprint_rights x WHERE x.job=r.job)""",(restored_at,))
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='backup_policy'").fetchone():
                 db.execute("DELETE FROM backup_policy")
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='manual_backups'").fetchone():
+                db.execute("DELETE FROM manual_backups")
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='zhihu_bridge_runtime'").fetchone():
                 db.execute("DELETE FROM zhihu_bridge_runtime")
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='zhihu_bridge_scope'").fetchone():

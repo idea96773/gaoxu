@@ -11,7 +11,7 @@ from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .backup import DATABASES, checksum, create, database, verify_contents
+from .backup import DATABASES, checksum, create, database, manual_folder, read_manifest, verify, verify_contents
 from .store import BEIJING, ledger_path, transaction
 
 KEEP = 7
@@ -23,12 +23,66 @@ def destination(path):
 
 def status(db,path):
     row=db.execute("SELECT * FROM backup_policy WHERE singleton=1").fetchone()
+    latest=db.execute("SELECT id,state,requested,finished,message FROM manual_backups ORDER BY id DESC LIMIT 1").fetchone()
+    success=db.execute("SELECT finished,bundle FROM manual_backups WHERE state='success' ORDER BY id DESC LIMIT 1").fetchone()
+    manual=dict(latest) if latest else dict(id=0,state="idle")
+    if success:
+        manual.update(last_success=success["finished"],last_bundle=success["bundle"])
     if not row:
         return dict(enabled=False,minute=180,revision=0,state="waiting",destination=str(destination(path)),
-                    configured_destination=str(destination(path)),keep=KEEP)
+                    configured_destination=str(destination(path)),keep=KEEP,manual=manual)
     return {k:row[k] for k in ("enabled","minute","revision","state","destination","day","attempts",
                                "retry_at","last_success","last_bundle","message")}|{
-                                   "keep":KEEP,"configured_destination":str(destination(path))}
+                                   "keep":KEEP,"configured_destination":str(destination(path)),"manual":manual}
+
+
+def request_manual(path,expected):
+    if type(expected) is not int or expected<0:
+        raise ValueError("请刷新最近的手动备份记录")
+    with transaction(path) as db:
+        current=status(db,path)
+        last=current["manual"]
+        if last["id"]!=expected or last["state"] in ("queued","running"):
+            return last
+        output=Path(current["destination"])
+        if not output.is_absolute():
+            raise ValueError("备份目录须为绝对路径")
+        now=int(time.time())
+        token=datetime.fromtimestamp(now,BEIJING).strftime("%Y%m%d-%H%M%S-")+uuid.uuid4().hex
+        db.execute("INSERT INTO manual_backups(token,requested,destination,state) VALUES(?,?,?,'queued')",
+                   (token,now,str(output)))
+        return status(db,path)["manual"]
+
+
+def tick_manual(path):
+    # The scheduler holds the database worker lock and runs one backup thread.
+    with transaction(path,False) as db:
+        job=db.execute("SELECT * FROM manual_backups WHERE state IN ('queued','running') ORDER BY id LIMIT 1").fetchone()
+    if not job:
+        return
+    with transaction(path) as db:
+        db.execute("UPDATE manual_backups SET state='running',attempts=attempts+1 WHERE id=?",(job["id"],))
+    try:
+        output=Path(job["destination"])
+        bundle=output/manual_folder(job["token"])
+        if bundle.exists():
+            if not plain(bundle) or read_manifest(bundle).get("manual")!=job["token"]:
+                raise ValueError("目标目录不属于本次手动备份")
+            verify(bundle)
+        else:
+            if job["attempts"]>=3:
+                raise ValueError("手动备份多次中断，请核对磁盘后重试")
+            output.mkdir(parents=True,exist_ok=True)
+            check_space(Path(path),output)
+            bundle=create(Path(path),output,manual=job["token"])
+    except (OSError,ValueError,sqlite3.DatabaseError) as exc:
+        with transaction(path) as db:
+            db.execute("UPDATE manual_backups SET state='failed',finished=?,message=? WHERE id=?",
+                       (int(time.time()),str(exc)[:400],job["id"]))
+        return
+    with transaction(path) as db:
+        db.execute("UPDATE manual_backups SET state='success',finished=?,bundle=?,message='' WHERE id=?",
+                   (int(time.time()),str(bundle),job["id"]))
 
 
 def configure(path,data):
@@ -75,6 +129,15 @@ def verify_bundle(folder,owner):
     verify_contents(folder)
 
 
+def check_space(path,root):
+    size=0
+    for file in (path,Path(ledger_path(path))):
+        with closing(database(file,"ro")) as db:
+            size+=db.execute("PRAGMA page_count").fetchone()[0]*db.execute("PRAGMA page_size").fetchone()[0]
+    if shutil.disk_usage(root).free<size+64*1024*1024:
+        raise ValueError("备份磁盘可用空间不足")
+
+
 def snapshot(path,policy,day,allow_create):
     owner=policy["owner"]
     if not re.fullmatch(r"[0-9a-f]{32}",owner):
@@ -89,12 +152,7 @@ def snapshot(path,policy,day,allow_create):
     else:
         if not allow_create:
             raise ValueError("本轮备份多次中断，未找到完整副本")
-        size=0
-        for file in (path,Path(ledger_path(path))):
-            with closing(database(file,"ro")) as db:
-                size+=db.execute("PRAGMA page_count").fetchone()[0]*db.execute("PRAGMA page_size").fetchone()[0]
-        if shutil.disk_usage(root).free<size+64*1024*1024:
-            raise ValueError("备份磁盘可用空间不足")
+        check_space(path,root)
         create(path,root,daily={"owner":owner,"day":day})
     older=sorted((p for p in root.iterdir() if re.fullmatch(r"\d{4}-\d\d-\d\d",p.name) and p.name<=day),
                  key=lambda p:p.name,reverse=True)

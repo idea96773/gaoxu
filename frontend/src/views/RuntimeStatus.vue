@@ -38,10 +38,19 @@
       <el-alert v-if="startupError" :title="startupError" type="warning" :closable="false"/>
     </section>
     <section v-if="status?.backup" class="backup">
-      <h3>每日备份</h3>
+      <h3>任务库备份</h3>
+      <p>备份目录　{{status.backup.destination}}</p>
+      <template v-if="status.backup.manual">
+        <el-button :loading="requestingBackup" :disabled="manualPending" @click="backupNow">立即备份</el-button>
+        <p v-if="manualPending" role="status">{{status.backup.manual.state==='running'?'正在备份并校验任务库和回执':'已提交，等待后台调度器执行'}}。可关闭页面，稍后在此查看结果。</p>
+        <p v-if="status.backup.manual.state==='failed'" role="alert">手动备份失败　{{status.backup.manual.message}}</p>
+        <p v-if="status.backup.manual.last_bundle">最近手动备份　{{date(status.backup.manual.last_success)}}<br>
+          已校验的副本　{{status.backup.manual.last_bundle}}</p>
+        <p v-if="manualError" role="alert">{{manualError}}</p>
+      </template>
+      <h4>每日备份</h4>
       <p>{{status.backup.enabled?'每天 '+clock(status.backup.minute)+'（北京时间）':'未启用'}}
         <el-button link @click="editBackup">设置</el-button></p>
-      <p>备份目录　{{status.backup.destination}}</p>
       <p v-if="status.backup.enabled">本次状态　{{backupStates[status.backup.state]}}
         <span v-if="status.backup.retry_at"> · 下次重试 {{date(status.backup.retry_at)}}</span></p>
       <p>最近成功　{{status.backup.last_success?date(status.backup.last_success):'尚无自动备份记录'}}</p>
@@ -60,9 +69,20 @@
   </div>
 </template>
 <script setup>
-import {ref,onMounted,onBeforeUnmount} from 'vue'
+import {ref,computed,onMounted,onBeforeUnmount} from 'vue'
 const props=defineProps({api:Function,date:Function})
 const status=ref(null),problem=ref('')
+const requestingBackup=ref(false),manualError=ref('')
+const manualPending=computed(()=>['queued','running'].includes(status.value?.backup?.manual?.state))
+async function backupNow(){
+  if(requestingBackup.value || manualPending.value)return
+  requestingBackup.value=true;manualError.value=''
+  try{
+    const result=await props.api('manual-backups',{expected_id:status.value.backup.manual.id})
+    if(!stopped)status.value.backup.manual=result
+  }catch(e){manualError.value=e.message}
+  finally{requestingBackup.value=false}
+}
 const startup=ref(null),checkingStartup=ref(false),startupError=ref('')
 async function checkStartup(){
   checkingStartup.value=true;startupError.value=''

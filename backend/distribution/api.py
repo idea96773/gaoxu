@@ -323,6 +323,13 @@ def make_blueprint(path,fixed_root):
         from .runtime import windows_startup_status
         return jsonify(windows_startup_status(path))
 
+    @api.post("/manual-backups")
+    def manual_backup():
+        if not platform_draft.local_console_request():
+            raise ValueError("请从本机稿序管理台申请备份")
+        from .daily_backup import request_manual
+        return jsonify(request_manual(path,body().get("expected_id"))),202
+
     @api.post("/backup-settings")
     def backup_settings():
         from .daily_backup import configure

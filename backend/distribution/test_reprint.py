@@ -987,6 +987,28 @@ class Reprint(unittest.TestCase):
         self.assertTrue(all(job["reused"] for job in shared))
         self.assertEqual(batch["expected"],2)
 
+    def test_bridge_diagnostics_match_extension_envelopes_without_exposing_messages(self):
+        from .zhihu_draft_worker import Bridge, BridgeProblem
+        socket=Mock()
+        bridge=Bridge(socket,"fixture")
+        def reply(payload):
+            socket.recv.side_effect=lambda **_:json.dumps(dict(id=json.loads(socket.send.call_args.args[0])["id"],**payload))
+        for payload,phase in [
+            ({"error":{"code":401,"message":"private fixture detail"}},"token_missing"),
+            ({"error":{"code":403,"message":"private fixture detail"}},"token_mismatch"),
+            ({"result":{"isAuthenticated":False,"error":"private fixture detail"}},"identity_unavailable"),
+            ({"result":{"isAuthenticated":"false"}},"identity_invalid"),
+            ({"result":{"isAuthenticated":True,"userId":"id","username":[]}},"identity_invalid")]:
+            reply(payload)
+            with self.assertRaises(BridgeProblem) as caught:
+                bridge.identity()
+            self.assertEqual(caught.exception.phase,phase)
+            self.assertNotIn("private fixture detail",str(caught.exception))
+        reply({"result":{"isAuthenticated":False}})
+        self.assertEqual(bridge.identity(),("",""))
+        reply({"result":{"isAuthenticated":True,"userId":"fixture-id","username":"测试号"}})
+        self.assertEqual(bridge.identity(),("fixture-id","测试号"))
+
     def test_probe_mode_distinguishes_login_and_blocks_draft_queue(self):
         from .draft_bridge import heartbeat, listener, status
         from .store import transaction

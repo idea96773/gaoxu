@@ -28,6 +28,12 @@ class PreparationStopped(ValueError):
 class DraftDeferred(PreparationStopped):
     """Keep the confirmed task queued until its batch and account are ready."""
 
+class BridgeProblem(ValueError):
+    """A recoverable extension diagnostic. Never persist raw extension errors."""
+    def __init__(self,phase,message):
+        super().__init__(message)
+        self.phase=phase
+
 
 def check_account(bridge,task):
     if bridge.identity()[0]!=task["user_id"]:
@@ -43,18 +49,31 @@ class Bridge:
         key=uuid.uuid4().hex
         self.socket.send(json.dumps(dict(id=key,token=self.token,method=method,params=params),ensure_ascii=False))
         message=json.loads(self.socket.recv(timeout=timeout))
-        if message.get("id")!=key or message.get("error") or "result" not in message:
+        if not isinstance(message,dict) or message.get("id")!=key:
+            raise ValueError("扩展未确认操作")
+        error=message.get("error")
+        if isinstance(error,dict):
+            if error.get("code")==401:
+                raise BridgeProblem("token_missing","文章同步助手尚未设置连接令牌")
+            if error.get("code")==403:
+                raise BridgeProblem("token_mismatch","文章同步助手与稿序草稿桥的连接令牌不一致")
+        if error or "result" not in message:
             raise ValueError("扩展未确认操作")
         return message["result"]
 
     def identity(self):
         data=self.request("checkAuth",{"platform":"zhihu"})
-        if not data.get("isAuthenticated"):
+        if not isinstance(data,dict) or type(data.get("isAuthenticated")) is not bool:
+            raise BridgeProblem("identity_invalid","扩展未返回可识别的知乎身份结果")
+        if not data["isAuthenticated"]:
+            if data.get("error"):
+                raise BridgeProblem("identity_unavailable","扩展暂时无法查询知乎账号")
             return "",""
         uid=data.get("userId")
-        if not isinstance(uid,str) or not uid or not data.get("username"):
-            raise ValueError("扩展未返回可核对的知乎账号")
-        return uid,str(data["username"])
+        name=data.get("username")
+        if not isinstance(uid,str) or not uid.strip() or not isinstance(name,str) or not name.strip():
+            raise BridgeProblem("identity_invalid","扩展未返回可核对的知乎账号 ID 和昵称")
+        return uid,name
 
     def upload(self,blob,mime,check_task,check_transfer):
         encoded=base64.b64encode(blob).decode("ascii")
@@ -138,6 +157,9 @@ def run_task(path,task,bridge):
             raise PreparationStopped("冻结稿、批次或使用授权已变化，请核对任务详情") from exc
         if not sending:
             return
+    except BridgeProblem as exc:
+        transition(path,task,"preparing","queued",str(exc))
+        raise
     except (PreparationStopped,frozen_reprint.ContentError) as exc:
         state="queued" if isinstance(exc,DraftDeferred) else "failed"
         transition(path,task,"preparing",state,str(exc))
@@ -175,15 +197,18 @@ def serve_bridge(path,port,extension_id,token,check_only=False,job_id=None,expec
             heartbeat(path,session=session,phase="checking")
             bridge=Bridge(socket,token)
             while True:
-                uid,name=bridge.identity()
-                confirmed=True
-                heartbeat(path,uid,name,session=session)
-                task=claim(path,uid,job_id,expected_sha) if uid and not check_only else None
-                if task:
-                    heartbeat(path,uid,name,session=session,phase="working")
-                    run_task(path,task,bridge)
-                else:
-                    time.sleep(5)
+                try:
+                    uid,name=bridge.identity()
+                    confirmed=True
+                    heartbeat(path,uid,name,session=session)
+                    task=claim(path,uid,job_id,expected_sha) if uid and not check_only else None
+                    if task:
+                        heartbeat(path,uid,name,session=session,phase="working")
+                        run_task(path,task,bridge)
+                        continue
+                except BridgeProblem as problem:
+                    heartbeat(path,session=session,phase=problem.phase)
+                time.sleep(5)
         except Exception:
             print("草稿扩展连接已结束；已领取任务的结果记在管理台。",flush=True)
         finally:

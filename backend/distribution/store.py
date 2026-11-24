@@ -177,6 +177,8 @@ CREATE TABLE IF NOT EXISTS draft_inspections (
  sha TEXT NOT NULL, user_id TEXT NOT NULL, url TEXT NOT NULL,
  checks TEXT NOT NULL, checked_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS draft_inspection_history ON draft_inspections(outbox,id);
+CREATE TABLE IF NOT EXISTS draft_inspection_notes (
+ inspection INTEGER PRIMARY KEY REFERENCES draft_inspections(id), notes TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS health (name TEXT PRIMARY KEY, seen INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS worker_build (singleton INTEGER PRIMARY KEY CHECK(singleton=1),build TEXT,pid INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS backup_policy (

@@ -1577,12 +1577,38 @@ class Reprint(unittest.TestCase):
         self.assertEqual(info["record"]["state"],"needs_review")
         self.assertEqual(len(info["inspections"]),1)
         self.assertEqual(info["inspections"][0]["checks"],checks)
+        self.assertEqual(info["inspections"][0]["notes"],{})
         self.assertEqual(self.client.get(BASE+"article-search?draft_review=issue").json["items"][0]["job_id"],one["id"])
+        def matching(field):
+            return [r["job_id"] for r in self.client.get(BASE+"article-search?draft_review=issue_"+field).json["items"]]
+        self.assertEqual(matching("images"),[one["id"]])
+        self.assertEqual(matching("footer"),[])
+        updated=initial|dict(expected_state="needs_review",revision=info["inspections"][0]["id"],
+                             checks=checks|{"footer":"issue"},notes={"images":"第二张图片空白","footer":"文末地址显示为纯文本"})
+        for notes in ({"other":"无此项"},{"title":"与结果不符"},{"images":"字"*301}):
+            self.assertEqual(self.client.post(url,json=updated|dict(notes=notes)).status_code,400)
+        for _ in range(2):
+            self.assertEqual(self.client.post(url,json=updated).status_code,200)
+        self.client=create_app(self.path,self.root).test_client()
+        info=self.client.get(url).json
+        self.assertEqual(len(info["inspections"]),2)
+        self.assertEqual(info["inspections"][0]["notes"],updated["notes"])
+        self.assertEqual(matching("footer"),[one["id"]])
+        self.assertEqual(self.client.post(url,json=updated|{"notes":{"footer":"过期修改"}}).status_code,400)
+        # The earlier console used only checks; keep the unresolved footer description.
+        partial=initial|dict(expected_state="needs_review",revision=info["inspections"][0]["id"],
+                             checks=updated["checks"]|{"images":"pass"})
+        self.assertEqual(self.client.post(url,json=partial).status_code,200)
+        info=self.client.get(url).json
+        self.assertEqual(info["inspections"][0]["notes"],{"footer":updated["notes"]["footer"]})
+        self.assertEqual(info["inspections"][1]["notes"]["images"],"第二张图片空白")
+        self.assertEqual(matching("images"),[])
         passed=initial|{"checks":dict.fromkeys(checks,"pass")}
         self.assertEqual(self.client.post(url,json=passed).status_code,400)
         guarded=passed|dict(revision=info["inspections"][0]["id"],expected_state="needs_review")
         self.assertEqual(self.client.post(url,json=guarded).status_code,200)
         self.assertEqual(self.client.get(url).json["record"]["state"],"verified")
+        self.assertEqual(matching("footer"),[])
         self.assertEqual(self.client.post(BASE+f"jobs/{two['id']}/platform-draft",
                                           json=initial|{"sha":two["sha"]}).status_code,400)
         self.assertEqual(self.client.get(BASE+"article-search?draft_review=issue").json["total"],0)

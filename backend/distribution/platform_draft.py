@@ -77,16 +77,27 @@ def record_inspection(db,job,record,data,now):
             or all(v=="pending" for v in checks.values())):
         raise ValueError("请填写至少一个核对结果，并保留其余待核对项")
     payload=compact(checks)
-    last=db.execute("SELECT id,checks FROM draft_inspections WHERE outbox=? ORDER BY id DESC LIMIT 1",
+    last=db.execute("""SELECT i.id,i.checks,n.notes FROM draft_inspections i
+        LEFT JOIN draft_inspection_notes n ON n.inspection=i.id WHERE i.outbox=? ORDER BY i.id DESC LIMIT 1""",
                     (record["id"],)).fetchone()
-    if last and last["checks"]==payload and record["url"]==url:
+    previous=json.loads(last["notes"]) if last and last["notes"] else {}
+    # A client that only sends check statuses can resolve issues without
+    # erasing the descriptions of issues it leaves open.
+    notes=data.get("notes",{field:text for field,text in previous.items() if checks[field]=="issue"})
+    if (not isinstance(notes,dict) or any(checks.get(field)!="issue" or not isinstance(text,str)
+            or len(text)>300 for field,text in notes.items())):
+        raise ValueError("问题说明须对应发现问题的核对项，每项最多 300 字")
+    notes={field:text.strip() for field,text in notes.items() if text.strip()}
+    if last and last["checks"]==payload and notes==previous and record["url"]==url:
         return
     if (type(data.get("revision")) is not int or data["revision"]!=(last["id"] if last else 0)
             or data.get("expected_state")!=record["state"]):
         raise ValueError("已有新的草稿回执或核对记录，请重新打开核对表")
     state="needs_review" if "issue" in checks.values() else ("saved" if "pending" in checks.values() else "verified")
-    db.execute("""INSERT INTO draft_inspections(outbox,sha,user_id,url,checks,checked_at)
-               VALUES(?,?,?,?,?,?)""",(record["id"],row["sha"],record["user_id"],url,payload,now))
+    inspection=db.execute("""INSERT INTO draft_inspections(outbox,sha,user_id,url,checks,checked_at)
+               VALUES(?,?,?,?,?,?)""",(record["id"],row["sha"],record["user_id"],url,payload,now)).lastrowid
+    if notes:
+        db.execute("INSERT INTO draft_inspection_notes VALUES(?,?)",(inspection,compact(notes)))
     db.execute("UPDATE platform_drafts SET state=?,url=?,reason='',updated=? WHERE id=?",(state,url,now,record["id"]))
 
 
@@ -199,8 +210,9 @@ def register(api,path,body):
                 FROM platform_draft_events WHERE outbox=? ORDER BY id DESC LIMIT 20""",(record["id"],))]
             changes=db.execute("""SELECT scope,user_id,confirmed FROM reprint_rights WHERE job=?
                 ORDER BY id DESC LIMIT 10""",(job,))
-            inspections=[] if not record else [dict(r)|{"checks":json.loads(r["checks"])} for r in db.execute(
-                "SELECT id,checks,checked_at,sha,user_id,url FROM draft_inspections WHERE outbox=? ORDER BY id DESC LIMIT 10",
+            inspections=[] if not record else [dict(r)|{"checks":json.loads(r["checks"]),"notes":json.loads(r["notes"] or "{}")} for r in db.execute(
+                """SELECT i.id,i.checks,i.checked_at,i.sha,i.user_id,i.url,n.notes FROM draft_inspections i
+                LEFT JOIN draft_inspection_notes n ON n.inspection=i.id WHERE i.outbox=? ORDER BY i.id DESC LIMIT 10""",
                 (record["id"],))]
             receipt=None if not record else db.execute("""SELECT r.edit_url,d.dismissed_at
                 FROM zhihu_draft_receipts r LEFT JOIN zhihu_dismissed_receipts d ON d.outbox=r.outbox

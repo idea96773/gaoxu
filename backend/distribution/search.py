@@ -151,6 +151,10 @@ def search(db, args, *, include_recipients=False):
                     "verified":"draft_state='verified'","waiting":"draft_state='queued'",
                     "saving":"draft_state IN ('preparing','sending')","failed":"draft_state='failed'",
                     "uncertain":"draft_state='unknown'","cancelled":"draft_state='cancelled'"}
+        for field_name in ("title","layout","images","footer"):
+            conditions["issue_"+field_name]=f"""draft_state='needs_review' AND
+                (SELECT json_extract(i.checks,'$.{field_name}') FROM platform_drafts d
+                 JOIN draft_inspections i ON i.outbox=d.id WHERE d.job=job_id ORDER BY i.id DESC LIMIT 1)='issue'"""
         conditions["unsubmitted_reprint"]="""platform='zhihu' AND stage='deliver' AND state!='cancelled'
             AND control='active' AND draft_state IS NULL AND EXISTS (
                 SELECT 1 FROM frozen_deliveries f JOIN drafts d ON d.id=f.draft

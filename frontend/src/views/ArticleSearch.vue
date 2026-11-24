@@ -18,7 +18,10 @@
           <option value="unsubmitted_reprint">运行中批次 · 尚未建草稿任务的冻结转载稿</option>
           <option value="waiting">等待保存</option><option value="saving">正在准备或保存</option><option value="failed">准备失败</option>
           <option value="awaiting">待人工核对</option><option value="uncertain">回执不确定</option>
-          <option value="issue">核对发现问题</option><option value="verified">已核对通过</option><option value="cancelled">已取消</option></select></label>
+          <option value="issue">核对发现问题（全部）</option>
+          <option value="issue_title">标题有问题</option><option value="issue_layout">正文或排版有问题</option>
+          <option value="issue_images">配图有问题</option><option value="issue_footer">文末链接有问题</option>
+          <option value="verified">已核对通过</option><option value="cancelled">已取消</option></select></label>
         <label>日期类型<select v-model="form.date_field"><option value="scheduled">计划排期日</option><option value="execution">预计执行日</option><option value="delivered">模拟交付日</option><option value="imported">导入日期</option><option v-if="showZhihu" value="draft_updated">知乎草稿最近更新日</option></select></label>
         <label>开始日期<input type="date" v-model="form.start"></label>
         <label>结束日期<input type="date" v-model="form.end"></label>

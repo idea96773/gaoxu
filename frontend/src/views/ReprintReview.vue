@@ -33,6 +33,7 @@
       <el-table-column width="50"><template #default="{row}"><input type="checkbox" :aria-label="'选择审核 '+row.title" :disabled="row.state!=='pending'||!canSelect||busy" v-model="ids" :value="reviewKey(row)"></template></el-table-column>
       <el-table-column label="转载文章" min-width="190"><template #default="{row}"><b>{{row.line}} · {{row.title}}</b><p v-if="row.note">{{row.note}}</p>
         <p v-if="row.state==='pending' && (row.text_changed || row.structure_changed)">请在预览中核对{{row.text_changed?'正文文字':''}}{{row.text_changed && row.structure_changed?'和':''}}{{row.structure_changed?'排版结构':''}}差异。</p>
+        <p v-if="row.state==='pending' && row.links_changed">正文网页链接有差异，请预览并核对目标地址。</p>
         <p v-if="row.state==='returned' && row.returns?.length">退回原因　{{row.returns[0].reason}}</p>
         <details v-if="row.returns?.length"><summary>退回记录（{{row.returns.length}}）</summary>
           <p v-for="entry in row.returns" :key="entry.revision">第 {{entry.revision}} 版 · {{date(entry.returned_at)}}　{{entry.reason}}
@@ -246,7 +247,9 @@ async function approve(){
     if(startAt.value && assignments)item.expected_slots=Object.fromEntries(assignments.map(a=>[a.platform,a.slot]))
     return item
   })
-  try{await ElMessageBox.confirm('确认已审核这 '+items.length+' 篇原文、配图和文末链接，可在本地试稿并按规则模拟交付？新冻结稿的授权范围为「仅本地试稿」。','确认转载审核',{confirmButtonText:'确认模拟排期',cancelButtonText:'返回'})}catch{return}
+  const changed=approvable.value.filter(row=>row.links_changed).length
+  const notice=changed?'本次选稿中有 '+changed+' 篇的正文网页链接存在差异。':''
+  try{await ElMessageBox.confirm(notice+'确认已审核这 '+items.length+' 篇原文、配图和文末链接，可在本地试稿并按规则模拟交付？新冻结稿的授权范围为「仅本地试稿」。','确认转载审核',{confirmButtonText:'确认模拟排期',cancelButtonText:'返回'})}catch{return}
   if(selection.value!==key || !active.value){error.value='当前选稿或批次已变化，请重新核对';return}
   busy.value=true;error.value=''
   try{const result=await props.api('reprints/'+bid+'/approve',{approved:true,background:true,items})

@@ -986,6 +986,59 @@ class Reprint(unittest.TestCase):
         self.assertEqual(checked_render("",[])[1]["status"],"no_html")
         self.assertEqual(checked_render('<div id="js_content"></div>'*2,[])[1]["status"],"no_body")
 
+    def test_body_link_change_with_identical_text_is_visible_until_reread(self):
+        directory=self.source(49)
+        folder=self.root/directory
+        md=folder/"正文.md"
+        original="https://example.invalid/p?id=8&v=1#references"
+        changed=original.replace("id=8","id=9")
+        md.write_text(md.read_text(encoding="utf-8").replace("第49篇的本地正文。",f"请[看文献]({changed})。"),encoding="utf-8")
+        (folder/"正文.html").write_text('<a href="https://outside.invalid">顶部</a><div id="js_content">'
+            '<p>请<a href="'+original.replace("&","&amp;")+'"><b>看</b>文献</a>。</p>'
+            '<a hidden href="https://hidden.invalid">装饰</a><img src="img/0.png"></div>',encoding="utf-8")
+        bid=self.create([directory])
+        self.prepare()
+        row,=self.batch(bid)["reviews"]
+        self.assertFalse(row["text_changed"] or row["structure_changed"])
+        self.assertTrue(row["links_changed"])
+        route=BASE+f"reprints/{bid}/{row['id']}"
+        report=self.client.get(route+"?platform=zhihu").json["snapshot"]["body_comparison"]["web_links"]
+        self.assertTrue(report["positions_compared"])
+        self.assertEqual((report["source_count"],report["draft_count"]),(1,1))
+        self.assertEqual(report["source_only"]["examples"],[dict(position=2,label="看文献",url=original)])
+        self.assertEqual(report["draft_only"]["examples"][0]["url"],changed)
+        md.write_text(md.read_text(encoding="utf-8").replace(changed,original),encoding="utf-8")
+        self.assertEqual(self.client.post(route+"/reread",json=dict(sha=row["sha"],revision=row["revision"])).status_code,200)
+        self.prepare()
+        fresh,=self.batch(bid)["reviews"]
+        self.assertFalse(fresh["links_changed"])
+        self.approve(bid,[fresh])
+        for job in self.batch(bid)["deliveries"]:
+            frozen=self.client.get(BASE+f"jobs/{job['id']}/reprint-check").json
+            self.assertEqual(frozen["body_comparison"]["web_links"],dict(source_count=1,draft_count=1,positions_compared=True))
+            self.assertIn(original.replace("&","&amp;"),frozen["html"])
+            self.assertEqual(frozen["reader_url"],DESTINATION)
+
+    def test_body_link_comparison_tracks_occurrences_and_order(self):
+        from .body_compare import checked_render
+        from .markdown_media import MARKDOWN
+        def compare(source,md):
+            return checked_render('<div id="js_content">'+source+'</div>',MARKDOWN.parse(md))[1]["web_links"]
+        a='<a href="https://a.invalid">甲</a>'
+        b='<a href="https://b.invalid">乙</a>'
+        diff=compare(a+a,'[甲](https://a.invalid)甲')
+        self.assertEqual(diff["source_only"]["count"],1)
+        self.assertEqual(diff["draft_only"]["count"],0)
+        diff=compare(a+"甲",'甲[甲](https://a.invalid)')
+        self.assertEqual(diff["draft_only"]["examples"][0]["position"],2)
+        diff=compare(a+b,'新增[乙](https://b.invalid)[甲](https://a.invalid)')
+        self.assertFalse(diff["positions_compared"])
+        self.assertEqual(diff["order"]["position"],1)
+        diff=compare('原段'+a,'修改后的段落[甲](https://a.invalid)')
+        self.assertNotIn('source_only',diff)
+        diff=compare('<a href="//example.invalid/文">相同</a>','[相同](https://example.invalid/%E6%96%87)')
+        self.assertNotIn('source_only',diff)
+
     def test_source_breaks_survive_review_freeze_and_export(self):
         directory=self.source(48)
         folder=self.root/directory

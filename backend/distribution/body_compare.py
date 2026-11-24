@@ -30,6 +30,7 @@ class Body(ArticleHTML):
         self.breaks={}
         self.paragraphs=[]
         self.image_offsets=[]
+        self.links=[]
 
     def start_visible(self,tag,attrs,inside):
         if self.require_source and not inside:
@@ -45,9 +46,21 @@ class Body(ArticleHTML):
             self.breaks.setdefault(self.length,"line")
         elif tag=="img":
             self.image_offsets.append(self.length)
+        elif tag=="a":
+            href=(attrs.get("href") or "").strip()
+            if href.startswith("//"):
+                href="https:"+href
+            if href.lower().startswith(("http://","https://")):
+                # Keep opening-tag order and visible offsets, including image-only anchors.
+                link=[self.length,self.length,len(self.image_offsets),MARKDOWN.normalizeLink(href)]
+                self.links.append(link)
+                return link
         return self.length,"data-source-bold" in attrs,block
 
     def end_visible(self,tag,context):
+        if tag=="a" and isinstance(context,list):
+            context[1]=self.length
+            return
         start,repair,block=context
         if block:
             self.breaks[self.length]="paragraph"
@@ -124,6 +137,42 @@ def restore_plain_breaks(rendered,draft,original,missing):
     return "".join(pieces)+rendered[previous:],fixed
 
 
+def compare_links(original,draft,left,right):
+    aligned=left==right
+    def signature(link):
+        start,end,image,url=link
+        if aligned:
+            return (url,start,end,image if start==end else None)
+        return (url,)
+    before=[signature(link) for link in original.links]
+    after=[signature(link) for link in draft.links]
+    result=dict(source_count=len(before),draft_count=len(after),positions_compared=aligned)
+    if before==after:
+        return result
+
+    def sample(link,text):
+        start,end,_,url=link
+        return dict(label=text[start:min(end,start+60)],position=start+1,url=url)
+    def unmatched(keys,links,text,other):
+        remaining=Counter(other)
+        examples=[]
+        count=0
+        for key,link in zip(keys,links):
+            if remaining[key]:
+                remaining[key]-=1
+            else:
+                count+=1
+                if len(examples)<5:
+                    examples.append(sample(link,text))
+        return dict(count=count,examples=examples)
+    result["source_only"]=unmatched(before,original.links,left,after)
+    result["draft_only"]=unmatched(after,draft.links,right,before)
+    if not (result["source_only"]["count"] or result["draft_only"]["count"]):
+        first=next(i for i,(a,b) in enumerate(zip(before,after)) if a!=b)
+        result["order"]=dict(position=first+1,source=sample(original.links[first],left),draft=sample(draft.links[first],right))
+    return result
+
+
 def checked_render(source,tokens):
     rendered=MARKDOWN.renderer.render(tokens,MARKDOWN.options,{})
     if not source.strip():
@@ -153,6 +202,7 @@ def checked_render(source,tokens):
                 draft,right=candidate,left
     result=dict(status="compared",source_chars=len(left),draft_chars=len(right),
                 structure_matches=original.structure==draft.structure,restored_bold=restored)
+    result["web_links"]=compare_links(original,draft,left,right)
     if left!=right:
         offset=next((i for i,(a,b) in enumerate(zip(left,right)) if a!=b),min(len(left),len(right)))
         result["difference"]=dict(position=offset+1,context=left[max(0,offset-18):offset],

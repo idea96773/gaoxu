@@ -337,6 +337,9 @@ def prepare_one(path,ticket,now):
                    (item["doc"]["title"],sha,payload,rid))
         report=(next(iter(view["editions"].values())) if "editions" in view else view)["body_comparison"]
         db.execute("DELETE FROM reprint_body_differences WHERE row_id=?",(rid,))
+        db.execute("DELETE FROM reprint_link_differences WHERE row_id=?",(rid,))
+        if "source_only" in report.get("web_links",{}):
+            db.execute("INSERT INTO reprint_link_differences VALUES(?,?)",(rid,sha))
         if report["status"]=="compared" and ("difference" in report or not report["structure_matches"]):
             db.execute("INSERT INTO reprint_body_differences VALUES(?,?,?,?)",
                        (rid,sha,"difference" in report,not report["structure_matches"]))
@@ -572,11 +575,13 @@ def overview(db,bid,platforms=()):
         {REVIEW_REVISION} revision,j.state AS prepare_state,j.attempts AS prepare_attempts,
         CASE WHEN q.state='preparing' AND j.state='ready' AND j.failure<>'' THEN j.due END AS prepare_retry_at,
         s.id AS schedule_job,s.attempts AS schedule_attempts,CASE WHEN s.state='failed' THEN s.failure END AS schedule_failure,
-        diff.text_changed,diff.structure_changed,(r.canonical IS NOT NULL OR sel.row_id IS NOT NULL) AS can_identify_source,
+        diff.text_changed,diff.structure_changed,(links.row_id IS NOT NULL) AS links_changed,
+        (r.canonical IS NOT NULL OR sel.row_id IS NOT NULL) AS can_identify_source,
         (SELECT m.new_directory FROM reprint_source_moves m WHERE m.job=j.id ORDER BY attempt DESC LIMIT 1) AS relocated_directory
         FROM rows r
         JOIN reprint_reviews q ON r.id=q.row_id
         LEFT JOIN reprint_body_differences diff ON diff.row_id=q.row_id AND diff.review_sha=q.sha
+        LEFT JOIN reprint_link_differences links ON links.row_id=q.row_id AND links.review_sha=q.sha
         LEFT JOIN reprint_selections sel ON sel.row_id=r.id
         LEFT JOIN jobs j ON j.row_id=r.id AND j.stage='reprint_prepare'
         LEFT JOIN jobs s ON s.row_id=r.id AND s.stage='reprint_schedule' WHERE r.batch=? ORDER BY r.line""",(bid,)).fetchall()

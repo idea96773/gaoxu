@@ -11,6 +11,18 @@
         <p>原 HTML　{{report.difference.source || '（此处已结束）'}}</p>
         <p>转载稿　{{report.difference.draft || '（此处已结束）'}}</p>
       </details>
+      <details v-if="links?.source_only" open>
+        <summary>正文网页链接有差异 · 原 HTML {{links.source_count}} 处，转载稿 {{links.draft_count}} 处</summary>
+        <p v-if="links.positions_compared">已按正文位置和目标地址逐处对照。</p>
+        <p v-else>两份正文文字不同，已对照链接地址、出现次数和顺序。</p>
+        <template v-for="[label,side] in [['原 HTML',links.source_only],['转载稿',links.draft_only]]" :key="label">
+          <p v-if="side.count">{{label}} 有 {{side.count}} 处未匹配{{side.count>5?'，显示前 5 处':''}}</p>
+          <ul v-if="side.count"><li v-for="(example,i) in side.examples" :key="i">正文位置 {{example.position}} · {{example.label || '无文字链接'}} · {{example.url}}</li></ul>
+        </template>
+        <p v-if="links.order">顺序不同，第 {{links.order.position}} 处原为 {{links.order.source.url}}，转载稿为 {{links.order.draft.url}}。</p>
+      </details>
+      <p v-else-if="links?.source_count">正文 {{links.source_count}} 处网页链接的地址与顺序一致。</p>
+      <p v-else-if="!links">此版本未记录正文网页链接对照。</p>
       <p v-if="report.structure_counts">排版结构有变化。{{structure || '标题、列表等元素的排列顺序有变化。'}}</p>
       <details v-if="report.image_placement" open>
         <summary>{{report.image_placement.count}} 处配图的位置有变化，首处是正文第 {{report.image_placement.position}} 张图</summary>
@@ -27,11 +39,12 @@
 <script setup>
 import {computed} from 'vue'
 const props=defineProps({report:Object})
+const links=computed(()=>props.report?.web_links)
 const names={h1:'一级标题',h2:'二级标题',h3:'三级标题',h4:'四级标题',h5:'五级标题',h6:'六级标题',ul:'无序列表',ol:'有序列表',li:'列表项',
   blockquote:'引用块',table:'表格',tr:'表格行',th:'表头单元格',td:'数据单元格',sub:'下标',sup:'上标',pre:'预排文本块'}
 const structure=computed(()=>Object.entries(props.report?.structure_counts || {}).map(([key,[before,after]])=>
   (names[key] || key)+' '+before+' → '+after).join('，'))
 </script>
 <style scoped>
-section{overflow-wrap:anywhere}details p{margin:.35em 0}summary{cursor:pointer}
+section{overflow-wrap:anywhere}details p{margin:.35em 0}summary{cursor:pointer}ul{padding-inline-start:1.4em}
 </style>

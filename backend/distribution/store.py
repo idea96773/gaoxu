@@ -141,6 +141,20 @@ CREATE TABLE IF NOT EXISTS platform_drafts (
  UNIQUE(canonical,user_id));
 CREATE UNIQUE INDEX IF NOT EXISTS platform_drafts_job ON platform_drafts(job);
 CREATE INDEX IF NOT EXISTS platform_drafts_queue ON platform_drafts(state,user_id,id);
+CREATE TABLE IF NOT EXISTS platform_draft_events (
+ id INTEGER PRIMARY KEY, outbox INTEGER NOT NULL REFERENCES platform_drafts(id),
+ state TEXT NOT NULL, reason TEXT NOT NULL, changed INTEGER NOT NULL, baseline INTEGER NOT NULL DEFAULT 0);
+CREATE INDEX IF NOT EXISTS platform_draft_event_history ON platform_draft_events(outbox,id);
+CREATE TRIGGER IF NOT EXISTS platform_draft_created AFTER INSERT ON platform_drafts BEGIN
+ INSERT INTO platform_draft_events(outbox,state,reason,changed) VALUES(NEW.id,NEW.state,NEW.reason,NEW.updated);
+END;
+CREATE TRIGGER IF NOT EXISTS platform_draft_state_changed AFTER UPDATE OF state ON platform_drafts
+ WHEN OLD.state<>NEW.state BEGIN
+ INSERT INTO platform_draft_events(outbox,state,reason,changed) VALUES(NEW.id,NEW.state,NEW.reason,NEW.updated);
+END;
+INSERT INTO platform_draft_events(outbox,state,reason,changed,baseline)
+ SELECT d.id,d.state,d.reason,d.updated,1 FROM platform_drafts d
+ WHERE NOT EXISTS (SELECT 1 FROM platform_draft_events e WHERE e.outbox=d.id);
 CREATE TABLE IF NOT EXISTS zhihu_restore_reviews (
  outbox INTEGER PRIMARY KEY REFERENCES platform_drafts(id), generation TEXT NOT NULL,
  result TEXT NOT NULL CHECK(result IN ('found','absent')), checked_at INTEGER NOT NULL);

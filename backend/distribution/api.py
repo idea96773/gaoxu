@@ -190,7 +190,7 @@ def control_batch(path,bid,action,now):
             raise ValueError("已取消的批次无法继续")
         db.execute("UPDATE batches SET control=? WHERE id=?",({"pause":"paused","resume":"active","cancel":"cancelled"}[action],bid))
         if action=="cancel":
-            db.execute("""UPDATE platform_drafts SET state='cancelled',updated=? WHERE state IN ('queued','preparing')
+            db.execute("""UPDATE platform_drafts SET state='cancelled',reason='所属批次已取消',updated=? WHERE state IN ('queued','preparing')
                 AND job IN (SELECT j.id FROM jobs j JOIN rows r ON r.id=j.row_id WHERE r.batch=?)""",(now,bid))
             affected=db.execute("""SELECT j.*,r.canonical FROM jobs j JOIN rows r ON r.id=j.row_id
                   WHERE r.batch=? AND j.state IN ('ready','running','failed')""",(bid,)).fetchall()

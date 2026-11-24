@@ -996,13 +996,23 @@ class Reprint(unittest.TestCase):
         self.assertIsNone(info["record"])
         granted=info["rights"]["revision"]
         queued=dict(action="queue",consent=True,user_id=uid,scope_revision=granted,sha=row["sha"])
-        self.assertEqual(self.client.post(url,json=queued).status_code,200)
+        self.assertEqual(self.client.post(url,json=queued|dict(expected_event=0)).status_code,200)
+        first_event=self.client.get(url).json["state_history"][0]["id"]
         task=platform_draft.claim(self.path,uid)
         self.assertEqual(task["job"],a["id"])
         self.client.post(BASE+f"batches/{bid}/pause",json={})
         self.assertFalse(platform_draft.transition(self.path,task,"preparing","sending"))
         self.assertIsNone(platform_draft.claim(self.path,uid))
         self.client.post(BASE+f"batches/{bid}/resume",json={})
+        current=self.client.get(url).json["state_history"]
+        self.assertEqual([e["state"] for e in current],["queued","preparing","queued"])
+        self.assertIn("暂停",current[0]["reason"])
+        self.assertEqual(self.client.post(url,json=dict(action="cancel",expected_event=first_event)).status_code,409)
+        self.assertEqual(self.client.post(url,json=dict(action="cancel",expected_event=current[0]["id"])).status_code,200)
+        self.assertEqual(self.client.post(url,json=queued|dict(expected_event=0)).status_code,409)
+        cancelled=self.client.get(url).json["state_history"][0]
+        self.assertEqual((cancelled["state"],cancelled["baseline"]),("cancelled",0))
+        self.assertEqual(self.client.post(url,json=queued|dict(expected_event=cancelled["id"])).status_code,200)
         self.assertEqual(platform_draft.claim(self.path,uid)["id"],task["id"])
         with transaction(self.path) as db:
             db.execute("UPDATE reprint_reviews SET sha='damaged' WHERE row_id=?",(row["id"],))
@@ -1011,8 +1021,21 @@ class Reprint(unittest.TestCase):
             db.execute("UPDATE reprint_reviews SET sha=? WHERE row_id=?",(row["sha"],row["id"]))
         info=self.client.get(url).json
         self.assertEqual((info["record"]["state"],info["rights"]["scope"]),("cancelled","local"))
+        self.assertEqual([e["state"] for e in reversed(info["state_history"])],
+                         ["queued","preparing","queued","cancelled","queued","preparing","cancelled"])
+        self.assertIn("授权",info["state_history"][0]["reason"])
         self.assertEqual(self.client.post(url,json=decision).status_code,409)
         self.assertEqual(self.client.post(url,json=queued).status_code,400)
+
+        # Simulate a pre-history installation, then restart twice to verify the
+        # single retained state is labelled without inventing past attempts.
+        with transaction(self.path) as db:
+            db.execute("DROP TRIGGER platform_draft_created")
+            db.execute("DROP TRIGGER platform_draft_state_changed")
+            db.execute("DROP TABLE platform_draft_events")
+        for _ in range(2):
+            old=create_app(self.path,self.root).test_client().get(url).json["state_history"]
+            self.assertEqual([(e["state"],e["baseline"]) for e in old],[("cancelled",1)])
         with self.assertRaises(ValueError):
             platform_draft.payload(self.path,task)
         with self.assertRaises(ValueError):

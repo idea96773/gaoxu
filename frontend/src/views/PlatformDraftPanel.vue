@@ -20,6 +20,12 @@
       <a v-if="record.url" :href="record.url" target="_blank" rel="noopener noreferrer">打开知乎草稿</a>
     </p>
     <p v-if="record?.reason">{{record.reason}}</p>
+    <p v-if="bridge?.phase==='offline' && record?.state==='sending'">助手已离线，草稿可能已保存。请先在「{{record.name}}」的草稿箱查找本文，再以单篇交付模式启动任务 #{{job.job.id}}，记录核对结果。</p>
+    <p v-else-if="bridge?.phase==='offline' && record?.state==='preparing'">助手在准备配图期间离线。请以单篇交付模式启动任务 #{{job.job.id}}，刷新后可查看中断记录并重新确认保存。</p>
+    <details v-if="stateHistory.length"><summary>草稿处理记录（最近 {{stateHistory.length}} 条）</summary>
+      <ol><li v-for="event in stateHistory" :key="event.id">{{date(event.changed)}} · {{labels[event.state] || event.state}}
+        <small v-if="event.baseline">升级时保留的最后状态</small><small v-if="event.reason">{{event.reason}}</small></li></ol>
+    </details>
     <p v-if="recoveryReview">恢复后核对 · {{date(recoveryReview.checked_at)}} · {{recoveryReview.result==='found'?'在指定账号找到并关联草稿':'确认指定账号未找到此稿后加入队列'}}</p>
     <p v-if="record?.state==='unknown' && receiptUrl">扩展曾返回编辑地址，接收账号仍待核对。请在「{{record.name}}」的浏览器中
       <a :href="receiptUrl" target="_blank" rel="noopener noreferrer">打开待核对草稿</a>，核对账号和内容后填写下方核对表。
@@ -35,7 +41,7 @@
       <el-button v-if="recipient" :disabled="busy" @click="recoverExisting">关联已找到的知乎草稿</el-button>
     </div>
     <el-button v-if="canSend" type="primary" :loading="busy" @click="enqueue">保存到 {{account.name}} 的草稿箱</el-button>
-    <el-button v-if="record && ['queued','preparing'].includes(record.state)" :disabled="busy" @click="change({action:'cancel'})">取消草稿任务</el-button>
+    <el-button v-if="record && ['queued','preparing'].includes(record.state)" :disabled="busy" @click="change({action:'cancel',expected_event:eventId})">取消草稿任务</el-button>
     <DraftInspection v-if="record && ['saved','unknown','needs_review','verified'].includes(record.state)"
       :key="record.id+':'+receiptUrl" :api="api" :path="path" :record="record" :receipt-url="receiptUrl" :entries="inspections" :snapshot="job.delivery.snapshot"
       :date="date" :dismissed-receipt="dismissedReceipt" @refresh="load" @recorded="$emit('inspected')" />
@@ -58,6 +64,8 @@ const receiptUrl=ref(''),dismissedReceipt=ref(null)
 const reusableImages=ref(0)
 const uniqueImages=computed(()=>new Set(props.job.delivery.snapshot.images).size)
 const bridge=ref(null),account=ref(null),record=ref(null),inspections=ref([]),busy=ref(false),error=ref('')
+const stateHistory=ref([])
+const eventId=computed(()=>stateHistory.value[0]?.id ?? 0)
 const labels={queued:'等待保存',preparing:'准备配图',sending:'正在请求保存',saved:'已找到草稿，待核对',verified:'已人工核对',needs_review:'核对发现问题',unknown:'回执不确定，需核对草稿箱',failed:'准备失败',cancelled:'已取消'}
 const path='jobs/'+props.job.job.id+'/platform-draft'
 const canSend=computed(()=>!bridge.value?.check_only && (!bridge.value?.job_id || bridge.value.job_id===props.job.job.id) &&
@@ -68,7 +76,8 @@ async function load(){
   const n=++sequence
   try{const info=await props.api(path);if(!stopped && n===sequence){bridge.value=info.bridge;account.value=info.account;record.value=info.record;recipient.value=info.recipient;recipientSource.value=info.recipient_source;control.value=info.control
     grant.value=info.rights;permitted.value=info.permitted;recovery.value=info.recovery;recoveryReview.value=info.recovery_review;history.value=info.rights_history;inspections.value=info.inspections || [];reusableImages.value=info.reusable_images || 0
-    jobState.value=info.job_state;receiptUrl.value=info.unverified_edit_url || '';dismissedReceipt.value=info.dismissed_receipt}}
+    jobState.value=info.job_state;receiptUrl.value=info.unverified_edit_url || '';dismissedReceipt.value=info.dismissed_receipt
+    stateHistory.value=info.state_history || []}}
   catch(e){if(!stopped && n===sequence){bridge.value=null;account.value=null;grant.value=null;permitted.value=false;reusableImages.value=0;error.value=e.message}}
 }
 async function poll(){await load();if(!stopped)timer=setTimeout(poll,4000)}
@@ -78,10 +87,10 @@ async function change(data){
   finally{await load();busy.value=false}
 }
 async function enqueue(){
-  const target=account.value,revision=grant.value.revision,generation=recovery.value?.generation
+  const target=account.value,revision=grant.value.revision,generation=recovery.value?.generation,expected=eventId.value
   const message='将已冻结的《'+props.job.delivery.snapshot.title+'》及其配图发送至知乎账号「'+target.name+'」（'+target.user_id+'）的草稿箱。'
   try{await ElMessageBox.confirm(message+(generation?' 请确认已在该账号查找，草稿箱中没有这篇稿件。':''),'确认保存平台草稿',{confirmButtonText:generation?'已核对无此稿，保存草稿':'仅保存草稿',cancelButtonText:'返回'})}catch{return}
-  await change({action:'queue',consent:true,user_id:target.user_id,sha:props.job.delivery.sha,scope_revision:revision,generation,checked_absent:!!generation})
+  await change({action:'queue',consent:true,user_id:target.user_id,sha:props.job.delivery.sha,scope_revision:revision,generation,checked_absent:!!generation,expected_event:expected})
 }
 async function recoverExisting(){
   const target=recipient.value,generation=recovery.value.generation

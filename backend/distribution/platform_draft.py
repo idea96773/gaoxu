@@ -195,6 +195,8 @@ def register(api,path,body):
             review=db.execute("SELECT result,checked_at FROM zhihu_restore_reviews WHERE outbox=?",
                               (record["id"],)).fetchone() if record else None
             grant=rights.current(db,job)
+            events=[] if not record else [dict(event) for event in db.execute("""SELECT id,state,reason,changed,baseline
+                FROM platform_draft_events WHERE outbox=? ORDER BY id DESC LIMIT 20""",(record["id"],))]
             changes=db.execute("""SELECT scope,user_id,confirmed FROM reprint_rights WHERE job=?
                 ORDER BY id DESC LIMIT 10""",(job,))
             inspections=[] if not record else [dict(r)|{"checks":json.loads(r["checks"])} for r in db.execute(
@@ -210,7 +212,7 @@ def register(api,path,body):
                            rights_history=[dict(event) for event in changes],recovery=dict(recovery) if recovery else None,
                            recovery_review=dict(review) if review else None,
                            reusable_images=len(draft_images.confirmed(db,record["id"],grant["revision"])) if record else 0,
-                           record=dict(record) if record else None,inspections=inspections,
+                           record=dict(record) if record else None,inspections=inspections,state_history=events,
                            unverified_edit_url=pending_url,
                            dismissed_receipt=dict(receipt) if receipt and receipt["dismissed_at"] is not None else None)
 
@@ -222,6 +224,10 @@ def register(api,path,body):
         with transaction(path) as db:
             now=int(time.time())
             existing=db.execute("SELECT * FROM platform_drafts WHERE job=?",(job,)).fetchone()
+            if action in ("queue","cancel") and "expected_event" in data:
+                latest=db.execute("SELECT max(id) FROM platform_draft_events WHERE outbox=?",(existing["id"],)).fetchone()[0] if existing else 0
+                if type(data["expected_event"]) is not int or data["expected_event"]!=latest:
+                    return jsonify(error="草稿任务状态已变化，请核对最新处理记录后操作"),409
             if action=="scope":
                 scope=data.get("scope")
                 if scope=="local":
@@ -305,7 +311,7 @@ def register(api,path,body):
                     if recovery:
                         db.execute("INSERT INTO zhihu_restore_reviews VALUES(?,?,'absent',?)",(outbox,recovery["generation"],now))
             elif action=="cancel" and existing and existing["state"] in ("queued","preparing"):
-                db.execute("UPDATE platform_drafts SET state='cancelled',updated=? WHERE job=?",(now,job))
+                db.execute("UPDATE platform_drafts SET state='cancelled',reason='已在管理台取消草稿任务',updated=? WHERE job=?",(now,job))
             elif action=="inspect":
                 record_inspection(db,job,existing,data,now)
             elif action=="dismiss_receipt":

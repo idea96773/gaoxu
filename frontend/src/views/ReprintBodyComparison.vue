@@ -3,6 +3,7 @@
     <p v-if="!report">此版本未保存原 HTML 正文对照记录。</p>
     <p v-else-if="report.status!=='compared'">{{report.status==='no_html'?'下载目录中没有 HTML，正文按 Markdown 送审。':'下载的 HTML 无法唯一定位公众号正文，本篇需人工比对。'}}</p>
     <template v-else>
+      <p v-if="report.outside_images">原 HTML 正文区域外另有 {{report.outside_images}} 处页面图片，配图核对仅统计正文区域。</p>
       <p v-if="!report.difference">原 HTML 与转载稿正文文字一致（忽略空白，共 {{report.source_chars}} 字符）。</p>
       <details v-else open>
         <summary>正文有差异 · 首处在第 {{report.difference.position}} 个非空白字符</summary>
@@ -11,6 +12,11 @@
         <p>转载稿　{{report.difference.draft || '（此处已结束）'}}</p>
       </details>
       <p v-if="report.structure_counts">排版结构有变化。{{structure || '标题、列表等元素的排列顺序有变化。'}}</p>
+      <details v-if="report.image_placement" open>
+        <summary>{{report.image_placement.count}} 处配图的位置有变化，首处是正文第 {{report.image_placement.position}} 张图</summary>
+        <p>原 HTML　{{report.image_placement.source.before}}【图】{{report.image_placement.source.after}}</p>
+        <p>转载稿　{{report.image_placement.draft.before}}【图】{{report.image_placement.draft.after}}</p>
+      </details>
       <p v-if="report.break_example">段落或换行位置有差异。转载稿缺少 {{report.missing_breaks}} 处，多出 {{report.extra_breaks}} 处。
         首处在「{{report.break_example.before}}」与「{{report.break_example.after}}」之间，{{report.break_example.missing?'原 HTML 在此断开。':'转载稿在此断开。'}}</p>
       <p v-if="report.restored_breaks">已按原 HTML 恢复 {{report.restored_breaks}} 处段落或换行。</p>

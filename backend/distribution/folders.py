@@ -5,8 +5,8 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
-from html.parser import HTMLParser
 from pathlib import PurePosixPath
+from .article_html import ArticleHTML
 from .markdown_media import MARKDOWN, inline_tokens, local_path
 from .store import canonicalize, compact, digest
 
@@ -91,18 +91,32 @@ def image_type(data):
     if data.startswith(b"RIFF") and data[8:12]==b"WEBP":
         return "image/webp"
     return None
-class Images(HTMLParser):
+
+
+class Images(ArticleHTML):
     def __init__(self):
         super().__init__()
-        self.refs=[]
-    def handle_starttag(self, tag, attrs):
+        self.visible_images=[]
+
+    def start_visible(self,tag,attrs,inside):
         if tag=="img":
-            a=dict(attrs)
-            src=a.get("src")
-            lazy=a.get("data-src")
-            ref=lazy if lazy and local_path(lazy) and not local_path(src or "") else src or lazy
-            if ref:
-                self.refs.append(ref)
+            self.visible_images.append((inside,(attrs.get("src") or "").strip(),(attrs.get("data-src") or "").strip()))
+
+    @property
+    def refs(self):
+        return self.references()
+
+    def references(self,available=None):
+        refs=[]
+        for inside,src,lazy in self.visible_images:
+            if self.roots==1 and not inside:
+                continue
+            # The downloader can leave a placeholder in either attribute. Prefer a
+            # locally readable src, then data-src; retain unresolved refs for review.
+            choices=[ref for ref in (src,lazy) if local_path(ref)]
+            ref=next((ref for ref in choices if available is None or available(ref)),None)
+            refs.append(ref or (choices[0] if choices else src or lazy))
+        return refs
 
 def markdown_fields(md,label,header=None):
     if not md.strip():
@@ -154,18 +168,20 @@ def parse_folders(parts):
             html=files[group[".html"][0]].decode("utf-8-sig") if group.get(".html") else ""
             header=export_header(md,label)
             title,url,canonical,body=markdown_fields(md,label,header)
-            tags=Images(); tags.feed(html)
+            def asset_bytes(ref):
+                relative=local_path(ref)
+                return files.get(posixpath.join(folder,relative),b"") if relative else b""
+
+            tags=Images()
+            tags.feed(html)
+            tags.close()
+            html_refs=tags.references(lambda ref:image_type(asset_bytes(ref)))
             md_refs=[token.attrGet("src") or "" for token in inline_tokens(MARKDOWN.parse(body)) if token.type=="image"]
-            refs=list(dict.fromkeys(md_refs+tags.refs))
+            refs=list(dict.fromkeys(md_refs+html_refs))
             assets={}
             missing=[]
             for ref in refs:
-                relative=local_path(ref)
-                if relative is None:
-                    missing.append(ref)
-                    continue
-                target=posixpath.normpath(posixpath.join(folder,relative))
-                data=files.get(target,b"")
+                data=asset_bytes(ref)
                 mime=image_type(data)
                 if mime:
                     assets[ref]=(hashlib.sha256(data).hexdigest(),mime,data)
@@ -177,7 +193,9 @@ def parse_folders(parts):
                      markdown_content=body,images=list(dict.fromkeys(images)),cover=images[0] if images else None,
                      media_map={k:"/api/distribution/media/"+v[0] for k,v in assets.items()},
                      missing_images=missing,copyright_status="unknown",mode="local-dry-run")
-            items.append(dict(label=label,url=url or label,canonical=canonical,html_image_refs=tags.refs if html.strip() else None,
+            if len(tags.visible_images)>len(html_refs):
+                doc["html_outside_images"]=len(tags.visible_images)-len(html_refs)
+            items.append(dict(label=label,url=url or label,canonical=canonical,html_image_refs=html_refs if html.strip() else None,
                               markdown_sha=hashlib.sha256(files[group[".md"][0]]).hexdigest(),
                               doc=doc,assets=assets,error=""))
         except (UnicodeError,ValueError) as exc:

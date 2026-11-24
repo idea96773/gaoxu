@@ -40,6 +40,9 @@ def review_snapshot(doc, destination, platforms, links, html_image_refs):
     if doc["missing_images"]:
         # Keep local references actionable and avoid echoing remote image URLs into logs.
         missing=doc["missing_images"]
+        if "" in missing and html_image_refs and "" in html_image_refs:
+            position=html_image_refs.index("")+1
+            raise ValueError(f"原 HTML 第 {position} 处配图缺少图片地址，请在下载器重新保存图片后重读此篇")
         local=[ref for ref in missing if ref.startswith("img/") and "?" not in ref and "#" not in ref]
         names="、".join(ref[:120] for ref in local[:3])
         raise ValueError(f"有 {len(missing)} 处配图无法本地读取，请核对 Markdown、HTML 与 img 文件夹"+(f"（{names}）" if names else ""))
@@ -84,6 +87,8 @@ def review_snapshot(doc, destination, platforms, links, html_image_refs):
     source_url=doc["source_url"]
     header=f'<h1>{html.escape(title)}</h1><p>{html.escape(credit)}　<a href="{html.escape(source_url,quote=True)}">原文地址</a></p>'
     raw,comparison=checked_render(doc.get("original_html") or "",tokens)
+    if doc.get("html_outside_images"):
+        comparison["outside_images"]=doc["html_outside_images"]
     heading=f"# {title}\n\n{credit}　[原文地址]({source_url})\n\n"
 
     def edition(rule):

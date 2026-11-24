@@ -757,6 +757,66 @@ class Reprint(unittest.TestCase):
                 self.assertLess(markup.index("第二段"),markup.index("结尾段落"))
                 self.assertTrue(markup.rstrip().endswith(f'<a href="{DESTINATION}">延伸阅读</a></p>'))
 
+    def test_reprint_images_use_visible_article_and_keep_markdown_checks(self):
+        dirs=[self.source(i) for i in (81,82,83)]
+        def source_html(index,body):
+            (self.root/dirs[index]/"正文.html").write_text(
+                '<header><img src="https://example.invalid/avatar"></header>'
+                '<template><section id="js_content"><img src="img/template.png"></section></template>'
+                '<article id="js_content">'+body+'<span style="display:none !important"><img src="img/hidden.png"></span>'
+                '<img hidden src="img/invisible.png"></article><footer><img src="img/qrcode.png"></footer>',
+                encoding="utf-8")
+        source_html(0,'<p>第81篇的本地正文。</p><img src="img/missing-placeholder.png" data-src="img/0.png">')
+        source_html(1,'<p>第82篇的本地正文。</p><img src="img/0.png"><img alt="缺图">')
+        source_html(2,'<p>第83篇的本地正文。</p><img src="img/0.png">')
+        with (self.root/dirs[2]/"正文.md").open("a",encoding="utf-8") as stream:
+            stream.write("\n\n![正文附图](img/supplement.png)")
+        bid=self.create(dirs)
+        self.prepare()
+        ready,missing,extra=self.batch(bid)["reviews"]
+        self.assertEqual([r["state"] for r in (ready,missing,extra)],["pending","invalid","invalid"])
+        self.assertIn("第 2 处配图缺少图片地址",missing["note"])
+        self.assertIn("supplement.png",extra["note"])
+        self.approve(bid,[ready])
+        for job in self.batch(bid)["reviews"][0]["assignments"]:
+            report=self.client.get(BASE+f"jobs/{job['id']}/reprint-check").json
+            self.assertEqual((len(report["images"]),report["unique_images"],report["reader_url"]),(1,1,DESTINATION))
+            self.assertEqual(report["body_comparison"]["outside_images"],2)
+            with zipfile.ZipFile(io.BytesIO(self.client.get(BASE+f"editorial/{job['draft']}/export").data)) as archive:
+                self.assertEqual([n for n in archive.namelist() if n.startswith("img/")],["img/0.png"])
+                self.assertEqual(json.loads(archive.read("metadata.json"))["html_image_count"],1)
+        source_html(1,'<p>第82篇的本地正文。</p><img src="img/0.png">')
+        self.assertEqual(self.client.post(BASE+f"jobs/{missing['prepare_job']}/retry",json={}).status_code,200)
+        self.prepare()
+        accepted,repaired,unresolved=self.batch(bid)["reviews"]
+        self.assertEqual((accepted["state"],repaired["state"],unresolved["state"]),("approved","pending","invalid"))
+
+    def test_images_without_unique_article_root_use_visible_document_order(self):
+        from .folders import Images
+        for roots in ([],['id="js_content"','id="js_content"']):
+            parser=Images()
+            parser.feed('<img src="img/first.png"><div style="visibility:hidden"><img src="hidden.png"></div>'
+                        +''.join('<section '+flag+'><img src="img/repeat.png"></section>' for flag in roots)
+                        +'<img src="img/last.png">')
+            parser.close()
+            self.assertEqual(parser.refs,["img/first.png"]+["img/repeat.png"]*len(roots)+["img/last.png"])
+
+    def test_moved_repeated_image_shows_its_text_position_in_review(self):
+        directory=self.source(84)
+        folder=self.root/directory
+        md=folder/"正文.md"
+        md.write_text(md.read_text(encoding="utf-8").replace("第84篇的本地正文。",
+                      "甲\n\n![插图](img/0.png)\n\n乙丙"),encoding="utf-8")
+        (folder/"正文.html").write_text('<div id="js_content"><p>甲</p><img src="img/0.png">'
+            '<p>乙<img src="img/0.png">丙</p></div>',encoding="utf-8")
+        bid=self.create([directory])
+        self.prepare()
+        row=self.batch(bid)["reviews"][0]
+        self.assertEqual((row["state"],row["text_changed"],row["structure_changed"]),("pending",0,1))
+        snapshot=self.client.get(BASE+f"reprints/{bid}/{row['id']}?platform=zhihu").json["snapshot"]
+        self.assertEqual(snapshot["body_comparison"]["image_placement"],dict(count=1,position=2,
+            source=dict(before="甲乙",after="丙"),draft=dict(before="甲乙丙",after="")))
+
     def test_frozen_reprint_checks_every_asset_before_platform_contact(self):
         from . import rights
         from .zhihu_draft_worker import prepare_content

@@ -1346,9 +1346,11 @@ class Reprint(unittest.TestCase):
             self.assertIsNone(claim_draft(self.path,"fixture",choice_session="choice"))
             self.assertEqual(queue(older,None).status_code,409)
             self.assertEqual(queue(candidates[0],"choice",sha=older["sha"]).status_code,400)
+            self.assertEqual(queue(candidates[0],"choice",expected_slot=candidates[0]["slot"]+60).status_code,409)
+            self.assertIsNone(self.client.get(url(candidates[0])).json["record"])
             self.assertIsNone(self.client.get(url(older)).json["bridge"]["job_id"])
             with ThreadPoolExecutor(max_workers=2) as pool:
-                results=list(pool.map(lambda j:queue(j,"choice"),candidates))
+                results=list(pool.map(lambda j:queue(j,"choice",expected_slot=j["slot"]),candidates))
             self.assertCountEqual([r.status_code for r in results],[200,400])
             winner=candidates[next(i for i,r in enumerate(results) if r.status_code==200)]
             self.assertEqual(self.client.get(url(older)).json["bridge"]["job_id"],winner["id"])

@@ -310,6 +310,8 @@ def register(api,path,body):
                 recover_interrupted(db,now,job)
             elif action=="queue":
                 row=source(db,job)
+                if "expected_slot" in data and (type(data["expected_slot"]) is not int or data["expected_slot"]!=row["slot"]):
+                    return jsonify(error="该稿排期已变化，请重新打开任务详情核对后保存草稿"),409
                 if row["control"]!="active" or row["state"]=="cancelled":
                     raise ValueError("批次暂停或已取消")
                 connection=bridge_status(db)

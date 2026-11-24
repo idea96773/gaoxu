@@ -52,9 +52,11 @@
   </section>
 </template>
 <script setup>
-import {ref,computed,onMounted,onBeforeUnmount,watch} from 'vue'
+import {ref,computed,h,onMounted,onBeforeUnmount,watch} from 'vue'
 import {ElMessageBox} from 'element-plus'
 import DraftInspection from './DraftInspection.vue'
+import DraftSavePreview from './DraftSavePreview.vue'
+import {readFrozenReprint} from '../api/frozenReprint'
 import BridgeConnection from './BridgeConnection.vue'
 const props=defineProps({api:Function,job:Object,bindingsVersion:Number,date:Function})
 defineEmits(['accounts','inspected'])
@@ -91,11 +93,21 @@ async function change(data){
   finally{await load();busy.value=false}
 }
 async function enqueue(){
+  if(busy.value || !canSend.value)return
   const target=account.value,revision=grant.value.revision,generation=recovery.value?.generation,expected=eventId.value
   const choice=bridge.value?.choice_session
-  const message=(choice?'本次助手仅处理任务 #'+props.job.job.id+'。':'')+'将已冻结的《'+props.job.delivery.snapshot.title+'》及其配图发送至知乎账号「'+target.name+'」（'+target.user_id+'）的草稿箱。'
-  try{await ElMessageBox.confirm(message+(generation?' 请确认已在该账号查找，草稿箱中没有这篇稿件。':''),'确认保存平台草稿',{confirmButtonText:generation?'已核对无此稿，保存草稿':'仅保存草稿',cancelButtonText:'返回'})}catch{return}
-  await change({action:'queue',consent:true,user_id:target.user_id,sha:props.job.delivery.sha,scope_revision:revision,generation,checked_absent:!!generation,expected_event:expected,choice_session:choice})
+  busy.value=true
+  error.value=''
+  try{
+    const report=await readFrozenReprint(props.api,props.job)
+    if(stopped)return
+    const message=h(DraftSavePreview,{report,account:target,planned:props.date(report.planned),restored:!!generation})
+    await ElMessageBox.confirm(message,'确认保存知乎草稿',{confirmButtonText:generation?'已核对无此稿，保存草稿':'仅保存草稿',cancelButtonText:'返回'})
+    if(stopped)return
+    await change({action:'queue',consent:true,user_id:target.user_id,sha:report.sha,expected_slot:report.planned,
+      scope_revision:revision,generation,checked_absent:!!generation,expected_event:expected,choice_session:choice})
+  }catch(e){if(!stopped && e!=='cancel' && e!=='close')error.value=e.message || '未能核对冻结稿，请重新打开任务详情。'}
+  finally{busy.value=false}
 }
 async function recoverInterrupted(){
   await change({action:'recover_interrupted',choice_session:bridge.value.choice_session,expected_event:eventId.value,

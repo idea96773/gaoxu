@@ -18,6 +18,7 @@
 
 <script setup>
 import { ref } from 'vue'
+import { readFrozenReprint } from '../api/frozenReprint'
 import ReprintFrame from './ReprintFrame.vue'
 import ReprintBodyComparison from './ReprintBodyComparison.vue'
 
@@ -31,14 +32,7 @@ async function check() {
   error.value = ''
   report.value = null
   try {
-    const result = await props.api('jobs/' + props.job.job.id + '/reprint-check')
-    const { job, delivery } = props.job
-    if (result.job !== job.id || result.revision !== job.revision || result.draft !== delivery.draft_id ||
-        result.platform !== job.platform || result.account !== job.account || result.sha !== delivery.sha ||
-        result.planned !== job.slot) {
-      throw Error('任务信息已变化，请重新打开任务详情再核对。')
-    }
-    report.value = result
+    report.value = await readFrozenReprint(props.api, props.job)
   } catch (err) {
     error.value = err.message
   } finally {

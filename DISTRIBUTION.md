@@ -60,11 +60,15 @@
 .\scripts\windows-startup.ps1 -Action Status
 # 当前用户登录时自动运行，也立即启动监督进程
 .\scripts\windows-startup.ps1 -Action Enable -Trigger Logon
+# 绑定已有任务库，按提示粘贴管理台显示的当前任务库完整路径
+.\scripts\windows-startup.ps1 -Action Enable -Trigger Logon -Database (Read-Host '粘贴当前任务库路径')
 # 或者在机器启动时运行，使用当前 Windows 身份的 S4U 批处理登录
 .\scripts\windows-startup.ps1 -Action Enable -Trigger Startup
 # 禁用后续触发并让监督进程退出
 .\scripts\windows-startup.ps1 -Action Disable
 ```
+
+指定 `-Database` 后，新的监督进程会按注册时的绝对路径恢复。任务库及其相邻的 `.simulator` 回执库均须在原位。磁盘暂时离线时，监督进程等待后再检查。已运行的监督进程在下次启动后采用新注册的参数。
 
 监督进程默认每 15 秒核对 API 和调度器。已退出的组件会单独拉起；仍有进程但心跳异常时记录告警并退避，最长 5 分钟。日志在 `data/distribution/supervisor.log`。手动启动和自启动共用启动锁，调度器进程持有数据库实例锁。常规管理台与后台工作进程独立于窗口；草稿桥由操作员另行启动。
 

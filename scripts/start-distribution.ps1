@@ -1,4 +1,4 @@
-﻿param([ValidateRange(1,8)][int]$Concurrency=1,[ValidateRange(1,2)][int]$PreparationConcurrency=1,[switch]$RefreshCode,[switch]$RetireOnly,[IO.FileStream]$LauncherLock)
+﻿param([ValidateRange(1,8)][int]$Concurrency=1,[ValidateRange(1,2)][int]$PreparationConcurrency=1,[switch]$RefreshCode,[switch]$RetireOnly,[IO.FileStream]$LauncherLock,[string]$RequiredDatabase)
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 $python=Join-Path $root '.dist-venv/Scripts/python.exe'
@@ -93,6 +93,22 @@ if (!$LauncherLock) {
     $guard=[IO.File]::Open((Join-Path $state 'launcher.lock'),'OpenOrCreate','ReadWrite','None')
 }
 try {
+    if ($RequiredDatabase) {
+        if (!(Test-Path -LiteralPath $RequiredDatabase -PathType Leaf) -or !(Test-Path -LiteralPath ($RequiredDatabase+'.simulator') -PathType Leaf)) {
+            throw '绑定的任务库或回执库不可读取，请检查原磁盘和文件。'
+        }
+        $env:DIST_DB=$RequiredDatabase
+        if (Get-NetTCPConnection -LocalPort 5419 -State Listen -ErrorAction SilentlyContinue) {
+            $probe=New-Object Net.WebClient
+            try {
+                $probe.Proxy=$null
+                $live=$probe.DownloadString('http://127.0.0.1:5419/api/distribution/health') | ConvertFrom-Json
+            } finally {$probe.Dispose()}
+            if ($live.application -ne 'gaoxu' -or $live.database -ne $RequiredDatabase) {
+                throw '正在运行的管理台使用其他任务库或版本过旧，请核对后再启动绑定的任务库。'
+            }
+        }
+    }
     if ($RefreshCode -or $RetireOnly) {
         $prior=@(foreach ($component in 'distribution.api','distribution.engine') {
             Start-Component -Module $component -Inspect
@@ -125,7 +141,8 @@ for ($i=0;$i -lt 12;$i++) {
             try {$status=$reader.ReadToEnd() | ConvertFrom-Json} finally {$reader.Dispose()}
         } finally {$response.Dispose()}
         $versionsMatch=!$RefreshCode -or ($status.api_build -eq $expectedBuild -and $status.worker_build -eq $expectedBuild)
-        if ($status.application -eq 'gaoxu' -and $status.worker_online -and $versionsMatch) {$ready=$true;break}
+        if ($status.application -eq 'gaoxu' -and $status.worker_online -and $versionsMatch -and
+            (!$RequiredDatabase -or $status.database -eq $RequiredDatabase)) {$ready=$true;break}
     } catch {}
     Start-Sleep -Milliseconds 400
 }

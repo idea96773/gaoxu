@@ -2,6 +2,7 @@
     [ValidateSet('Status','Enable','Disable')][string]$Action='Status',
     [ValidateSet('Logon','Startup')][string]$Trigger='Logon',
     [ValidateRange(1,8)][int]$Concurrency=1,
+    [ValidateNotNullOrEmpty()][string]$Database,
     [switch]$AsJson
 )
 $ErrorActionPreference='Stop'
@@ -31,7 +32,7 @@ if ($existing -and $existing.Definition.RegistrationInfo.Description -ne $descri
 if ($Action -eq 'Status') {
     if ($AsJson) {
         [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
-        $report=[ordered]@{registered=[bool]$existing;enabled=$false;triggers=@();expected_database=$null}
+        $report=[ordered]@{registered=[bool]$existing;enabled=$false;triggers=@();expected_database=$null;database_pinned=$false}
         if ($existing) {
             $definition=$existing.Definition
             $report.enabled=$existing.Enabled -and (!(Test-Path -LiteralPath $policy) -or [IO.File]::ReadAllText($policy).Trim() -ne 'disabled')
@@ -40,11 +41,16 @@ if ($Action -eq 'Status') {
             })
             $actionItem=$definition.Actions.Item(1)
             $expectedArgs='-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File "'+$script+'" -Concurrency '
-            if ($definition.Actions.Count -eq 1 -and $actionItem.Arguments -match ('^'+[regex]::Escape($expectedArgs)+'[1-8]$') -and
+            if ($definition.Actions.Count -eq 1 -and $actionItem.Arguments -match ('^'+[regex]::Escape($expectedArgs)+'[1-8](?: -DatabaseUtf8 (?<db>[A-Za-z0-9+/]+=*))?$') -and
                 $actionItem.Path -and [IO.Path]::GetFullPath($actionItem.Path) -eq [IO.Path]::GetFullPath((Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe')) -and
                 $definition.Principal.UserId -in ($user.Name,$user.User.Value)) {
-                $database=[Environment]::GetEnvironmentVariable('DIST_DB','User')
-                if (!$database) {$database=[Environment]::GetEnvironmentVariable('DIST_DB','Machine')}
+                if ($Matches['db']) {
+                    $database=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Matches['db']))
+                    $report.database_pinned=$true
+                } else {
+                    $database=[Environment]::GetEnvironmentVariable('DIST_DB','User')
+                    if (!$database) {$database=[Environment]::GetEnvironmentVariable('DIST_DB','Machine')}
+                }
                 if (!$database) {$report.expected_database=Join-Path $state 'dry-run.sqlite'}
                 elseif ($database -match '^[A-Za-z]:[\\/]') {$report.expected_database=[IO.Path]::GetFullPath($database)}
                 elseif (![IO.Path]::IsPathRooted($database) -and !$database.Contains(':')) {
@@ -73,6 +79,13 @@ if (!(Test-Path -LiteralPath (Join-Path $root '.dist-venv/Scripts/python.exe')) 
 }
 $powershell=Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
 $arguments='-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File "'+$script+'" -Concurrency '+$Concurrency
+if ($Database) {
+    $file=Get-Item -LiteralPath $Database
+    if ($file -isnot [IO.FileInfo] -or !(Test-Path -LiteralPath ($file.FullName+'.simulator') -PathType Leaf)) {
+        throw '请选择已有的稿序任务库并核对旁边的 .simulator 回执库。'
+    }
+    $arguments+=' -DatabaseUtf8 '+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($file.FullName))
+}
 $run=New-ScheduledTaskAction -Execute $powershell -Argument $arguments -WorkingDirectory $root
 if ($Trigger -eq 'Startup') {
     $when=New-ScheduledTaskTrigger -AtStartup

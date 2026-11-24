@@ -306,7 +306,10 @@ def make_blueprint(path,fixed_root):
     from .runtime import health
     @api.get("/health")
     def heartbeat():
-        return jsonify(health(path))
+        result=health(path)
+        if platform_draft.local_console_request():
+            result["database"]=str(Path(path).resolve())
+        return jsonify(result)
 
     @api.get("/runtime-status")
     def runtime_status():
